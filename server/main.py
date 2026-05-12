@@ -134,6 +134,40 @@ def health():
 init_services()
 
 
+def _check_and_free_port(port: int):
+    import subprocess
+    import signal
+
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True, text=True, timeout=5
+        )
+        pids = [pid for pid in result.stdout.strip().split("\n") if pid]
+        if not pids:
+            return
+
+        for pid_str in pids:
+            pid = int(pid_str)
+            if pid == os.getpid():
+                continue
+            try:
+                os.kill(pid, signal.SIGTERM)
+                print(f"[启动] 已终止占用端口 {port} 的进程 (PID: {pid})")
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                print(f"[启动] 警告：无权限终止进程 (PID: {pid})，端口 {port} 可能仍被占用")
+
+        import time
+        time.sleep(0.5)
+    except Exception as e:
+        print(f"[启动] 端口检测异常: {e}")
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=17520)
+
+    PORT = 17520
+    _check_and_free_port(PORT)
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

@@ -227,6 +227,7 @@ class ToolSandbox:
         safe_imports = ", ".join(sorted(self._SAFE_MODULES))
         blocked_list = json.dumps(sorted(self._BLOCKED_MODULES))
         params_json = json.dumps(params, ensure_ascii=False)
+        tmpdir = os.path.realpath(tempfile.gettempdir())
 
         wrapper = (
             f"import {safe_imports}\n"
@@ -246,10 +247,24 @@ class ToolSandbox:
             "        raise ImportError(f'模块 {name} 已被沙箱禁用')\n"
             "    return _orig_import(name, *args, **kwargs)\n"
             "builtins.__import__ = _safe_import\n"
-            "_DANGEROUS_OS = ['system', 'popen', 'execv', 'execve', 'spawnl', 'spawnle', 'spawnlp', 'spawnlpe', 'spawnv', 'spawnve', 'spawnvp', 'spawnvpe', 'remove', 'rmdir', 'removedirs', 'renames', 'chmod', 'chown', 'link', 'symlink', 'kill', 'killpg', 'setuid', 'setgid', 'fork', 'forkpty']\n"
+            "_orig_unlink = _os.unlink\n"
+            "_orig_remove = _os.remove\n"
+            "_DANGEROUS_OS = ['system', 'popen', 'execv', 'execve', 'spawnl', 'spawnle', 'spawnlp', 'spawnlpe', 'spawnv', 'spawnve', 'spawnvp', 'spawnvpe', 'remove', 'rmdir', 'removedirs', 'renames', 'chmod', 'chown', 'link', 'symlink', 'kill', 'killpg', 'setuid', 'setgid', 'fork', 'forkpty', 'unlink']\n"
             "for _func in _DANGEROUS_OS:\n"
             "    if hasattr(_os, _func):\n"
             "        delattr(_os, _func)\n"
+            f"_SAFE_UNLINK_DIRS = [\n"
+            f"    _os.path.realpath(_os.path.join(_os.getcwd(), 'document_output')),\n"
+            f"    _os.path.realpath({json.dumps(tmpdir)}),\n"
+            "]\n"
+            "def _safe_unlink(path):\n"
+            "    real = _os.path.realpath(path)\n"
+            "    for _allowed in _SAFE_UNLINK_DIRS:\n"
+            "        if real == _allowed or real.startswith(_allowed + _os.sep):\n"
+            "            return _orig_unlink(path)\n"
+            "    raise PermissionError(f'[沙箱] 禁止删除此路径的文件: {path}')\n"
+            "_os.unlink = _safe_unlink\n"
+            "_os.remove = _safe_unlink\n"
             "os = _os\n"
         )
 
