@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Framework</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- 主题切换按钮 -->
+<button id="theme-toggle" class="theme-toggle" title="切换主题">🌙</button>
+
+<div id="app">
+  <!-- 左侧边栏 -->
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <button id="btn-new-session" class="btn-primary full-width">+ 新建对话</button>
+    </div>
+    <div id="session-list" class="session-list"></div>
+    <div class="sidebar-footer">
+      <button id="btn-settings" class="btn-settings">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        <span>设置</span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- 设置抽屉 -->
+  <div id="settings-drawer" class="drawer hidden">
+    <div class="drawer-header">
+      <h3>设置</h3>
+      <button id="btn-close-drawer" class="btn-icon">&times;</button>
+    </div>
+    <div class="drawer-menu">
+      <button class="drawer-item" data-action="config">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        <span>模型配置</span>
+      </button>
+      <button class="drawer-item" data-action="tools">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        <span>工具列表</span>
+      </button>
+      <button class="drawer-item" data-action="files">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        <span>文件列表</span>
+      </button>
+      <div style="border-top: 1px solid var(--border); margin: 4px 0;"></div>
+      <button class="drawer-item" data-action="logout" style="color: var(--danger);">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        <span>退出登录</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- 主聊天区域 -->
+  <main id="chat-area">
+    <div id="chat-messages" class="chat-messages">
+      <div class="welcome-message">
+        <h1>Agent Framework</h1>
+        <p>输入消息开始对话，或输入 <code>/</code> 查看可用命令</p>
+      </div>
+    </div>
+    <div class="chat-input-container">
+      <div id="command-suggestions" class="command-suggestions hidden"></div>
+      <div class="chat-input-wrapper">
+        <textarea id="chat-input" rows="1" placeholder="输入消息... (输入 / 查看命令)"></textarea>
+        <button id="btn-send" class="btn-send" title="发送">
+          <svg class="icon-send" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+          <svg class="icon-stop" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+        </button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- 模态框: 模型配置 -->
+<div id="modal-config" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>模型配置</h3>
+      <button class="btn-icon modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>API Key</label>
+        <input type="password" id="cfg-api-key" placeholder="输入 API Key">
+      </div>
+      <div class="form-group">
+        <label>Base URL</label>
+        <input type="text" id="cfg-base-url" placeholder="https://api.openai.com/v1">
+      </div>
+      <div class="form-group">
+        <label>模型名称</label>
+        <input type="text" id="cfg-model-name" placeholder="gpt-4">
+      </div>
+      <div class="form-group">
+        <label>最大历史轮次</label>
+        <input type="number" id="cfg-max-rounds" min="0" max="50" value="10">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button id="btn-save-config" class="btn-primary">保存配置</button>
+    </div>
+  </div>
+</div>
+
+<!-- 模态框: 工具列表 -->
+<div id="modal-tools" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-content modal-wide">
+    <div class="modal-header">
+      <h3>工具列表</h3>
+      <button class="btn-icon modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div id="tools-container" class="tools-container">
+        <p class="loading-text">加载中...</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 模态框: 文件列表 -->
+<div id="modal-files" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-content modal-wide">
+    <div class="modal-header">
+      <h3>文件列表</h3>
+      <button class="btn-icon modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div id="files-container" class="files-container">
+        <p class="loading-text">加载中...</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast 通知 -->
+<div id="toast" class="toast hidden"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

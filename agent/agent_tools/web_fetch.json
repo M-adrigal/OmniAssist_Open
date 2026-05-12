@@ -1,0 +1,18 @@
+{
+  "name": "web_fetch",
+  "description": "访问指定网页并提取页面中的文字内容，让Agent可以像浏览器一样阅读网页",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "要访问的网页URL地址，例如 https://www.example.com"
+      }
+    },
+    "required": ["url"]
+  },
+  "execution_mode": "local_execution",
+  "execution_prompt": "请编写Python代码来获取网页内容。参数为：{params}。使用urllib获取url对应的网页HTML，去除script、style标签和所有HTML标记，提取纯文本内容，限制在5000字符以内，将结果赋值给变量result。",
+  "execution_code": "import urllib.request\nimport re\n\nreq = urllib.request.Request(url, headers={\n    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',\n    'Accept': 'text/html,application/xhtml+xml',\n    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'\n})\n\ntry:\n    with urllib.request.urlopen(req, timeout=10) as resp:\n        html = resp.read().decode('utf-8', errors='replace')\nexcept Exception as e:\n    result = f'网页获取失败：{str(e)}'\n    raise SystemExit(0)\n\nhtml = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)\nhtml = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)\nhtml = re.sub(r'<noscript[^>]*>.*?</noscript>', '', html, flags=re.DOTALL | re.IGNORECASE)\nhtml = re.sub(r'<!--.*?-->', '', html, flags=re.DOTALL)\n\ntext = re.sub(r'<[^>]+>', '\\n', html)\ntext = re.sub(r'\\n\\s*\\n', '\\n', text)\ntext = re.sub(r'[ \\t]+', ' ', text)\nlines = [line.strip() for line in text.split('\\n') if line.strip()]\ntext = '\\n'.join(lines)\n\nif len(text) > 5000:\n    text = text[:5000] + '\\n...[内容已截断]'\n\nresult = text if text else '(页面无文字内容)'",
+  "created_at": "2026-05-06T17:00:00.000000"
+}

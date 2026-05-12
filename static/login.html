@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 - Agent Framework</title>
+  <style>
+    :root {
+      --bg-primary: #ffffff;
+      --bg-secondary: #f7f7f8;
+      --text-primary: #1a1a2e;
+      --text-secondary: #6b6b80;
+      --text-muted: #9a9ab0;
+      --accent: #1976d2;
+      --accent-hover: #1565c0;
+      --danger: #ef5350;
+      --border: #e0e0e8;
+      --radius: 8px;
+      --radius-lg: 12px;
+      --shadow: 0 4px 24px rgba(0,0,0,0.08);
+      --transition: 0.2s ease;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .login-container {
+      display: flex;
+      width: 780px;
+      min-height: 460px;
+      background: var(--bg-primary);
+      border-radius: 16px;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.1);
+      overflow: hidden;
+    }
+
+    .login-illustration {
+      flex: 1;
+      background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 40px;
+    }
+
+    .login-illustration svg {
+      width: 180px;
+      height: 180px;
+      margin-bottom: 24px;
+    }
+
+    .login-illustration h2 {
+      font-size: 20px;
+      font-weight: 700;
+      color: #1565c0;
+      margin-bottom: 8px;
+    }
+
+    .login-illustration p {
+      font-size: 14px;
+      color: #1976d2;
+      text-align: center;
+      line-height: 1.6;
+    }
+
+    .login-form {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 48px 40px;
+    }
+
+    .login-form h1 {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .login-form .subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 32px;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+    }
+
+    .form-group input {
+      width: 100%;
+      padding: 10px 14px;
+      font-size: 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+      outline: none;
+      transition: border-color var(--transition), box-shadow var(--transition);
+    }
+
+    .form-group input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.12);
+    }
+
+    .btn-login {
+      width: 100%;
+      padding: 11px 0;
+      font-size: 15px;
+      font-weight: 600;
+      color: #fff;
+      background: var(--accent);
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: background var(--transition);
+      margin-top: 8px;
+    }
+
+    .btn-login:hover { background: var(--accent-hover); }
+    .btn-login:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .error-msg {
+      font-size: 13px;
+      color: var(--danger);
+      margin-top: 12px;
+      text-align: center;
+      min-height: 20px;
+    }
+
+    @media (max-width: 800px) {
+      .login-container {
+        flex-direction: column;
+        width: 90vw;
+        min-height: auto;
+      }
+      .login-illustration { padding: 32px 24px; }
+      .login-illustration svg { width: 100px; height: 100px; }
+      .login-form { padding: 32px 24px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="login-container">
+    <div class="login-illustration">
+      <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="100" cy="70" r="40" fill="#1976d2" opacity="0.15"/>
+        <circle cx="100" cy="70" r="28" fill="#1976d2" opacity="0.25"/>
+        <circle cx="100" cy="70" r="16" fill="#1976d2" opacity="0.5"/>
+        <rect x="60" y="110" width="80" height="8" rx="4" fill="#1976d2" opacity="0.2"/>
+        <rect x="70" y="126" width="60" height="8" rx="4" fill="#1976d2" opacity="0.15"/>
+        <rect x="80" y="142" width="40" height="8" rx="4" fill="#1976d2" opacity="0.1"/>
+        <path d="M40 170 L70 140 L90 155 L110 130 L140 150 L160 135" stroke="#1976d2" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.4"/>
+        <circle cx="70" cy="140" r="3" fill="#1976d2" opacity="0.5"/>
+        <circle cx="90" cy="155" r="3" fill="#1976d2" opacity="0.5"/>
+        <circle cx="110" cy="130" r="3" fill="#1976d2" opacity="0.5"/>
+        <circle cx="140" cy="150" r="3" fill="#1976d2" opacity="0.5"/>
+      </svg>
+      <h2>Agent Framework</h2>
+      <p>轻量级 AI Agent 服务，<br>自然语言驱动工具调用</p>
+    </div>
+    <div class="login-form">
+      <h1>欢迎回来</h1>
+      <p class="subtitle">请登录以继续使用服务</p>
+      <div class="form-group">
+        <label>用户名</label>
+        <input type="text" id="username" placeholder="请输入用户名" autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label>密码</label>
+        <input type="password" id="password" placeholder="请输入密码" autocomplete="current-password">
+      </div>
+      <button class="btn-login" id="btn-login" onclick="handleLogin()">登 录</button>
+      <div class="error-msg" id="error-msg"></div>
+    </div>
+  </div>
+
+  <script>
+    const usernameInput = document.getElementById('username');
+    const passwordInput = document.getElementById('password');
+    const errorMsg = document.getElementById('error-msg');
+    const btnLogin = document.getElementById('btn-login');
+
+    let isComposing = false;
+    usernameInput.addEventListener('compositionstart', () => { isComposing = true; });
+    usernameInput.addEventListener('compositionend', () => { isComposing = false; });
+    passwordInput.addEventListener('compositionstart', () => { isComposing = true; });
+    passwordInput.addEventListener('compositionend', () => { isComposing = false; });
+
+    passwordInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !isComposing) handleLogin();
+    });
+    usernameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !isComposing) passwordInput.focus();
+    });
+
+    async function handleLogin() {
+      const username = usernameInput.value.trim();
+      const password = passwordInput.value;
+
+      if (!username || !password) {
+        errorMsg.textContent = '请输入用户名和密码';
+        return;
+      }
+
+      btnLogin.disabled = true;
+      btnLogin.textContent = '登录中...';
+      errorMsg.textContent = '';
+
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          document.cookie = `auth_token=${data.token}; path=/; max-age=86400; SameSite=Lax`;
+          window.location.href = '/';
+        } else {
+          const data = await res.json();
+          errorMsg.textContent = data.detail || '登录失败';
+        }
+      } catch (e) {
+        errorMsg.textContent = '网络错误，请重试';
+      } finally {
+        btnLogin.disabled = false;
+        btnLogin.textContent = '登 录';
+      }
+    }
+  </script>
+</body>
+</html>

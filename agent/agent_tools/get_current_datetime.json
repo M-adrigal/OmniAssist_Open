@@ -1,0 +1,18 @@
+{
+  "name": "get_current_datetime",
+  "description": "获取当前的日期和时间信息",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "format": {
+        "type": "string",
+        "description": "日期时间格式"
+      }
+    },
+    "required": []
+  },
+  "execution_mode": "local_execution",
+  "execution_prompt": "请返回当前日期时间 {params}",
+  "execution_code": "import datetime as _datetime\nresult = _datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')",
+  "created_at": "2026-01-22T21:00:00"
+}
