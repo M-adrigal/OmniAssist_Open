@@ -83,7 +83,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-AUTH_WHITELIST = {"/api/auth/login", "/login.html", "/favicon.ico"}
+AUTH_WHITELIST = {"/api/auth/login", "/api/health", "/login.html", "/favicon.ico"}
 
 
 @app.middleware("http")

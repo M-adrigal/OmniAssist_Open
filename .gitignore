@@ -10,17 +10,16 @@ ENV/
 env.bak/
 venv.bak/
 
-# Agent config
+# Agent config (contains encrypted API key)
 agent/.agent_config
 agent/.agent_salt
 agent/tool_sandbox/
 
-# Output directories
+# Generated output files
 Document_output/
 *.docx
 *.pdf
 *.xlsx
-*.txt
 
 # IDE
 .vscode/
@@ -37,6 +36,6 @@ Thumbs.db
 *.log
 logs/
 
-# Temporary files
+# Temporary
 tmp/
 temp/

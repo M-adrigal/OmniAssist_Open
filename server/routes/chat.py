@@ -21,6 +21,10 @@ async def _stream_chat(message: str, session_id: str = None):
     agent, llm, registry, config = get_dependencies()
     store = get_session_store()
 
+    if not config.get_api_key():
+        yield f"data: {json.dumps({'type': 'error', 'content': '请先在设置中配置模型 API Key'})}\n\n"
+        return
+
     if session_id and session_id in store:
         session = store[session_id]
         messages = session.get("messages", [])
