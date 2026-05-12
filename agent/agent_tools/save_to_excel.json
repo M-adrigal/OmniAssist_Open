@@ -1,0 +1,33 @@
+{
+  "name": "save_to_excel",
+  "description": "将表格数据保存到Excel文件中，文档将存储在项目的document_output/excel_output文件夹内",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "headers": {
+        "type": "string",
+        "description": "Excel表头，多个表头用逗号分隔，例如：'姓名,年龄,城市'"
+      },
+      "rows": {
+        "type": "string",
+        "description": "Excel数据行，每行用换行符分隔，行内各列用逗号分隔。例如：'张三,28,北京\\n李四,32,上海'"
+      },
+      "filename": {
+        "type": "string",
+        "description": "Excel文件名（无需扩展名），例如：'员工信息'、'销售报表'"
+      }
+    },
+    "required": [
+      "headers",
+      "rows",
+      "filename"
+    ]
+  },
+  "execution_mode": "local_execution",
+  "execution_prompt": "请编写Python代码，使用openpyxl库将表格数据保存为Excel文件。参数为：{params}。确保将文档保存到项目根目录下的'document_output/excel_output'文件夹中。如果文件夹不存在，请创建它。将生成的文档的完整文件路径赋值给变量result。只输出纯Python代码。",
+  "execution_code": "from openpyxl import Workbook\nfrom openpyxl.styles import Font, Alignment, PatternFill, Border, Side\nimport os\n\noutput_dir = os.path.join('document_output', 'excel_output')\nos.makedirs(output_dir, exist_ok=True)\nfilepath = os.path.join(output_dir, f'{filename}.xlsx')\n\nwb = Workbook()\nws = wb.active\nws.title = filename\n\nheader_font = Font(bold=True, size=12, color='FFFFFF')\nheader_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')\nheader_alignment = Alignment(horizontal='center', vertical='center')\nthin_border = Border(\n    left=Side(style='thin'),\n    right=Side(style='thin'),\n    top=Side(style='thin'),\n    bottom=Side(style='thin')\n)\n\nheader_list = [h.strip() for h in headers.split(',')]\nfor col_idx, header in enumerate(header_list, 1):\n    cell = ws.cell(row=1, column=col_idx, value=header)\n    cell.font = header_font\n    cell.fill = header_fill\n    cell.alignment = header_alignment\n    cell.border = thin_border\n\nrow_list = [r.strip() for r in rows.strip().split('\\n') if r.strip()]\nfor row_idx, row_str in enumerate(row_list, 2):\n    cols = [c.strip() for c in row_str.split(',')]\n    for col_idx, value in enumerate(cols, 1):\n        cell = ws.cell(row=row_idx, column=col_idx, value=value)\n        cell.alignment = Alignment(horizontal='center', vertical='center')\n        cell.border = thin_border\n\nfor col_idx in range(1, len(header_list) + 1):\n    max_length = 0\n    for row in ws.iter_rows(min_col=col_idx, max_col=col_idx):\n        for cell in row:\n            if cell.value:\n                max_length = max(max_length, len(str(cell.value)))\n    ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = max_length + 6\n\nwb.save(filepath)\nresult = f'Excel文件已成功保存至: {filepath}'",
+  "dependencies": [
+    "openpyxl"
+  ],
+  "output_dir": "document_output/excel_output"
+}

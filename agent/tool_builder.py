@@ -32,7 +32,13 @@ TOOL_BUILDER_SYSTEM_PROMPT = """# Tool 构建器系统提示
       * url (string)：API 地址模板，可使用 {参数名} 占位符，如 "https://api.weather.com/v1/current?city={city}"
       * method (string)：HTTP 请求方法，通常为 "GET" 或 "POST"
       * headers (object)：请求头，可使用 {参数名} 占位符，如 {"Authorization": "Bearer {api_key}"}
-    - output_dir (string)：可选字段。如果工具会生成文件（Word、Excel、PDF、CSV、图片等），必须提供此字段，值为一个有意义的目录名（如 "Word输出"、"Excel报表"）。execution_code 中必须使用此 output_dir 作为文件保存路径。
+    - output_dir (string)：可选字段。如果工具会生成文件（Word、Excel、PDF、CSV、图片等），必须提供此字段。所有输出文件统一放在 `document_output/` 目录下，按文件类型使用子目录，格式为 `document_output/{type}_output`，例如：
+     * Word文档 → `document_output/word_output`
+     * Excel文件 → `document_output/excel_output`
+     * PDF文件 → `document_output/pdf_output`
+     * CSV文件 → `document_output/csv_output`
+     * 图片文件 → `document_output/image_output`
+     execution_code 中必须使用此 output_dir 作为文件保存路径，并使用 `os.makedirs(output_dir, exist_ok=True)` 确保目录存在。
     - dependencies (list)：可选字段。工具依赖的 pip 包列表，如 ["python-docx", "openpyxl"]。
 3. 工具名称要简洁、表达功能核心，参数设计要合理、必要且最小化。
 4. 如果用户描述模糊或缺少必要信息，请在参数和描述中做出合理推断，但不要额外询问。
@@ -207,7 +213,13 @@ TOOL_SMART_GENERATOR_PROMPT = """# 智能工具生成器
    - "local_execution"：需要执行 Python 代码来完成任务的场景（如计算、文件生成、数据处理、编码转换等）。**此模式必须提供 execution_code 字段**，包含可直接执行的 Python 代码。
    - "http_request"：需要调用外部 API 获取数据的场景（如天气、汇率、新闻等）。**此模式必须提供 http_config 字段**。
    - "llm_simulated"：纯知识问答、内容生成等不需要代码执行也不需要外部 API 的场景。
-7. **output_dir 字段（文件输出类工具专用）**：如果工具会生成文件（Word、Excel、PDF、CSV、图片等），必须包含 `output_dir` 字段，值为一个有意义的目录名（如 "Word输出"、"Excel报表"、"PDF文档" 等）。execution_code 中必须使用此 output_dir 作为文件保存路径，并使用 `os.makedirs(output_dir, exist_ok=True)` 确保目录存在。
+7. **output_dir 字段（文件输出类工具专用）**：如果工具会生成文件（Word、Excel、PDF、CSV、图片等），必须包含 `output_dir` 字段。所有输出文件统一放在 `document_output/` 目录下，按文件类型使用子目录，格式为 `document_output/{type}_output`，例如：
+   - Word文档 → `document_output/word_output`
+   - Excel文件 → `document_output/excel_output`
+   - PDF文件 → `document_output/pdf_output`
+   - CSV文件 → `document_output/csv_output`
+   - 图片文件 → `document_output/image_output`
+   execution_code 中必须使用此 output_dir 作为文件保存路径，并使用 `os.makedirs(output_dir, exist_ok=True)` 确保目录存在。
 
 ## 输出格式
 
@@ -238,9 +250,9 @@ TOOL_SMART_GENERATOR_PROMPT = """# 智能工具生成器
     },
     "execution_mode": "local_execution",
     "execution_prompt": "请编写Python代码，使用python-docx库生成Word文档。参数为：{params}。将生成的文档保存到指定路径，并将保存路径赋值给变量result。只输出纯Python代码。",
-    "execution_code": "from docx import Document\\nimport os\\n\\noutput_dir = 'Word输出'\\nos.makedirs(output_dir, exist_ok=True)\\nfilepath = os.path.join(output_dir, f'{title}.docx')\\n\\ndoc = Document()\\ndoc.add_heading(title, level=1)\\ndoc.add_paragraph(content)\\ndoc.save(filepath)\\nresult = f'文档已保存至: {filepath}'",
+    "execution_code": "from docx import Document\\nimport os\\n\\noutput_dir = os.path.join('document_output', 'word_output')\\nos.makedirs(output_dir, exist_ok=True)\\nfilepath = os.path.join(output_dir, f'{title}.docx')\\n\\ndoc = Document()\\ndoc.add_heading(title, level=1)\\ndoc.add_paragraph(content)\\ndoc.save(filepath)\\nresult = f'文档已保存至: {filepath}'",
     "dependencies": ["python-docx"],
-    "output_dir": "Word输出"
+    "output_dir": "document_output/word_output"
   }
 }
 

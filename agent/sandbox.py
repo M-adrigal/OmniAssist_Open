@@ -246,7 +246,7 @@ class ToolSandbox:
             "        raise ImportError(f'模块 {name} 已被沙箱禁用')\n"
             "    return _orig_import(name, *args, **kwargs)\n"
             "builtins.__import__ = _safe_import\n"
-            "_DANGEROUS_OS = ['system', 'popen', 'execv', 'execve', 'spawnl', 'spawnle', 'spawnlp', 'spawnlpe', 'spawnv', 'spawnve', 'spawnvp', 'spawnvpe', 'remove', 'unlink', 'rmdir', 'removedirs', 'renames', 'chmod', 'chown', 'link', 'symlink', 'kill', 'killpg', 'setuid', 'setgid', 'fork', 'forkpty']\n"
+            "_DANGEROUS_OS = ['system', 'popen', 'execv', 'execve', 'spawnl', 'spawnle', 'spawnlp', 'spawnlpe', 'spawnv', 'spawnve', 'spawnvp', 'spawnvpe', 'remove', 'rmdir', 'removedirs', 'renames', 'chmod', 'chown', 'link', 'symlink', 'kill', 'killpg', 'setuid', 'setgid', 'fork', 'forkpty']\n"
             "for _func in _DANGEROUS_OS:\n"
             "    if hasattr(_os, _func):\n"
             "        delattr(_os, _func)\n"

@@ -16,6 +16,7 @@ agent/.agent_salt
 agent/tool_sandbox/
 
 # Generated output files
+document_output/
 Document_output/
 *.docx
 *.pdf

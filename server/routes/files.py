@@ -12,15 +12,18 @@ def get_project_root():
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+OUTPUT_ROOT = "document_output"
+
+
 def _get_output_dirs():
     project_root = get_project_root()
+    output_root = os.path.join(project_root, OUTPUT_ROOT)
+    if not os.path.isdir(output_root):
+        return []
     output_dirs = []
-    for entry in os.listdir(project_root):
-        entry_path = os.path.join(project_root, entry)
-        if os.path.isdir(entry_path) and entry != "agent" and entry != "server" \
-                and entry != "tool_sandbox" and entry != "static" \
-                and not entry.startswith(".") \
-                and not entry.startswith("__"):
+    for entry in os.listdir(output_root):
+        entry_path = os.path.join(output_root, entry)
+        if os.path.isdir(entry_path) and not entry.startswith("."):
             output_dirs.append(entry)
     return sorted(output_dirs)
 
@@ -28,24 +31,25 @@ def _get_output_dirs():
 @router.get("", response_model=list[FileItem])
 def list_files():
     project_root = get_project_root()
+    output_root = os.path.join(project_root, OUTPUT_ROOT)
     result = []
 
     for dir_name in _get_output_dirs():
-        dir_path = os.path.join(project_root, dir_name)
+        dir_path = os.path.join(output_root, dir_name)
         children = []
         for fname in sorted(os.listdir(dir_path)):
             fpath = os.path.join(dir_path, fname)
             if os.path.isfile(fpath) and not fname.startswith("."):
                 children.append(FileItem(
                     name=fname,
-                    path=os.path.join(dir_name, fname),
+                    path=os.path.join(OUTPUT_ROOT, dir_name, fname),
                     type="file",
                     size=os.path.getsize(fpath),
                 ))
 
         result.append(FileItem(
             name=dir_name,
-            path=dir_name,
+            path=os.path.join(OUTPUT_ROOT, dir_name),
             type="directory",
             size=0,
             children=children,
