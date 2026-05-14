@@ -57,13 +57,13 @@ def update_user_api(user_id: int, req: UserUpdateRequest, request: Request):
 
 
 @router.delete("/{user_id}")
-def delete_user_api(user_id: int, request: Request):
+def delete_user_api(user_id: int, request: Request, keep_files: bool = False):
     current_user = require_permission(request, "users", "delete")
 
     if user_id == current_user["id"]:
         raise HTTPException(status_code=400, detail="不能删除自己的账号")
 
-    if not delete_user(user_id):
+    if not delete_user(user_id, keep_files=keep_files):
         raise HTTPException(status_code=404, detail="用户不存在")
 
     return {"message": "用户已删除"}

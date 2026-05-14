@@ -1,33 +1,46 @@
 {
   "name": "save_to_excel",
-  "description": "将表格数据保存到Excel文件中，文档将存储在项目的document_output/excel_output文件夹内",
+  "description": "将表格数据保存为Excel(.xlsx)文件。支持两种模式：\n1. 简单模式：仅提供headers、rows和filename，生成带基础样式的表格\n2. 排版模式：额外提供formatting参数（JSON对象），精确控制多Sheet、单元格样式、数字格式、条件格式、图表等细节\n\n当用户提出任何表格样式或排版要求时（如字体、颜色、边框、数字格式、条件格式、图表等），必须使用排版模式，提供formatting参数。",
   "parameters": {
     "type": "object",
     "properties": {
       "headers": {
         "type": "string",
-        "description": "Excel表头，多个表头用逗号分隔，例如：'姓名,年龄,城市'"
+        "description": "（简单模式）Excel表头，多个表头用逗号分隔，例如：'姓名,年龄,城市'。排版模式下可为空字符串"
       },
       "rows": {
         "type": "string",
-        "description": "Excel数据行，每行用换行符分隔，行内各列用逗号分隔。例如：'张三,28,北京\\n李四,32,上海'"
+        "description": "（简单模式）Excel数据行，每行用换行符分隔，行内各列用逗号分隔。例如：'张三,28,北京\\n李四,32,上海'。排版模式下可为空字符串"
       },
       "filename": {
         "type": "string",
         "description": "Excel文件名（无需扩展名），例如：'员工信息'、'销售报表'"
+      },
+      "formatting": {
+        "type": "object",
+        "description": "排版描述JSON对象。当用户有排版要求时必须提供。结构如下：\n{\n  \"sheets\": [{\n    \"name\": \"Sheet1\",\n    \"tab_color\": \"#4472C4\",\n    \"freeze_pane\": \"A2\",\n    \"auto_fit_columns\": true,\n    \"default_font\": {\"name\": \"宋体\", \"size\": 11},\n    \"default_alignment\": {\"horizontal\": \"left\", \"vertical\": \"center\"},\n    \"data\": [[\"姓名\", \"年龄\", \"城市\"], [\"张三\", 28, \"北京\"]],\n    \"merged_cells\": [{\"range\": \"A1:D1\", \"content\": \"标题\", \"style\": {\"font\": {\"bold\": true, \"size\": 16}, \"alignment\": {\"horizontal\": \"center\"}}}],\n    \"styles\": [\n      {\"range\": \"1:1\", \"style\": {\"font\": {\"bold\": true, \"color\": \"#FFFFFF\"}, \"fill\": {\"color\": \"#4472C4\"}, \"alignment\": {\"horizontal\": \"center\"}}},\n      {\"range\": {\"column\": \"金额\"}, \"style\": {\"number_format\": \"thousands_2\"}}\n    ],\n    \"conditional_formats\": [\n      {\"range\": \"B2:B100\", \"type\": \"cell_value\", \"operator\": \"greaterThan\", \"value\": 100, \"style\": {\"font\": {\"color\": \"#FF0000\"}, \"fill\": {\"color\": \"#FFCCCC\"}}},\n      {\"range\": \"C2:C100\", \"type\": \"color_scale\"},\n      {\"range\": \"D2:D100\", \"type\": \"data_bar\"},\n      {\"range\": \"E2:E100\", \"type\": \"icon_set\", \"icon_style\": \"3Arrows\"}\n    ],\n    \"charts\": [{\"type\": \"bar\", \"title\": \"图表\", \"data_range\": \"A1:B10\", \"position\": \"E2\"}]\n  }]\n}\n\n数字格式预设：general/integer/decimal_1/decimal_2/thousands/thousands_2/currency/currency_usd/percent/percent_int/date/date_cn/datetime/time/text/scientific\n条件格式type：cell_value/color_scale/data_bar/icon_set/formula\n图表type：bar/line/pie",
+        "properties": {
+          "sheets": {
+            "type": "array",
+            "description": "工作表数组，每个元素描述一个Sheet"
+          },
+          "sheet_order": {
+            "type": "array",
+            "description": "Sheet排列顺序，字符串数组"
+          }
+        }
       }
     },
     "required": [
-      "headers",
-      "rows",
       "filename"
     ]
   },
   "execution_mode": "local_execution",
   "execution_prompt": "请编写Python代码，使用openpyxl库将表格数据保存为Excel文件。参数为：{params}。确保将文档保存到项目根目录下的'document_output/excel_output'文件夹中。如果文件夹不存在，请创建它。将生成的文档的完整文件路径赋值给变量result。只输出纯Python代码。",
-  "execution_code": "from openpyxl import Workbook\nfrom openpyxl.styles import Font, Alignment, PatternFill, Border, Side\nimport os\n\noutput_dir = os.path.join('document_output', 'excel_output')\nos.makedirs(output_dir, exist_ok=True)\nfilepath = os.path.join(output_dir, f'{filename}.xlsx')\n\nwb = Workbook()\nws = wb.active\nws.title = filename\n\nheader_font = Font(bold=True, size=12, color='FFFFFF')\nheader_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')\nheader_alignment = Alignment(horizontal='center', vertical='center')\nthin_border = Border(\n    left=Side(style='thin'),\n    right=Side(style='thin'),\n    top=Side(style='thin'),\n    bottom=Side(style='thin')\n)\n\nheader_list = [h.strip() for h in headers.split(',')]\nfor col_idx, header in enumerate(header_list, 1):\n    cell = ws.cell(row=1, column=col_idx, value=header)\n    cell.font = header_font\n    cell.fill = header_fill\n    cell.alignment = header_alignment\n    cell.border = thin_border\n\nrow_list = [r.strip() for r in rows.strip().split('\\n') if r.strip()]\nfor row_idx, row_str in enumerate(row_list, 2):\n    cols = [c.strip() for c in row_str.split(',')]\n    for col_idx, value in enumerate(cols, 1):\n        cell = ws.cell(row=row_idx, column=col_idx, value=value)\n        cell.alignment = Alignment(horizontal='center', vertical='center')\n        cell.border = thin_border\n\nfor col_idx in range(1, len(header_list) + 1):\n    max_length = 0\n    for row in ws.iter_rows(min_col=col_idx, max_col=col_idx):\n        for cell in row:\n            if cell.value:\n                max_length = max(max_length, len(str(cell.value)))\n    ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = max_length + 6\n\nwb.save(filepath)\nresult = f'Excel文件已成功保存至: {filepath}'",
+  "execution_code": "import sys\nimport os\nimport json\nsys.path.insert(0, os.getcwd())\nfrom agent.excel_formatter import create_excel_workbook\n\noutput_dir = os.path.join('document_output', 'excel_output')\n\nfmt = None\nif formatting and isinstance(formatting, str):\n    try:\n        fmt = json.loads(formatting)\n    except:\n        pass\nelif formatting and isinstance(formatting, dict):\n    fmt = formatting\n\nresult = create_excel_workbook(filename, headers=headers or '', rows=rows or '', formatting=fmt, output_dir=output_dir)",
   "dependencies": [
     "openpyxl"
   ],
-  "output_dir": "document_output/excel_output"
+  "output_dir": "document_output/excel_output",
+  "created_at": "2026-05-11T13:14:37.124841"
 }

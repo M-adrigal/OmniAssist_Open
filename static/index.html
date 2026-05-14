@@ -317,7 +317,7 @@
 <!-- 模态框: 删除确认 -->
 <div id="modal-confirm-delete" class="modal hidden">
   <div class="modal-overlay"></div>
-  <div class="modal-content" style="width:400px;">
+  <div class="modal-content" style="width:420px;">
     <div class="modal-header">
       <h3>确认删除</h3>
       <button class="btn-icon modal-close">&times;</button>
@@ -328,6 +328,12 @@
         <div class="confirm-text">
           确定要删除用户 <span class="confirm-highlight" id="confirm-delete-username"></span> 吗？<br>此操作不可撤销。
         </div>
+      </div>
+      <div class="form-group" style="margin-top:16px;">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;">
+          <input type="checkbox" id="confirm-keep-files" style="width:auto;">
+          保留该用户生成的文件
+        </label>
       </div>
     </div>
     <div class="modal-footer modal-footer-right">
@@ -369,6 +375,20 @@
     </div>
     <div id="search-dialog-results" class="search-dialog-results">
       <p class="search-dialog-hint">输入关键词搜索历史对话</p>
+    </div>
+  </div>
+</div>
+
+<!-- 文件预览弹窗 -->
+<div id="modal-file-preview" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-content modal-xl">
+    <div class="modal-header">
+      <h3 id="preview-title">文件预览</h3>
+      <button class="btn-icon modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div id="preview-content" class="preview-content"></div>
     </div>
   </div>
 </div>

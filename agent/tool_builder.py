@@ -716,8 +716,9 @@ def create_local_executor(tool_name: str, execution_code: str, dependencies: lis
             print(f"[警告] 工具仍会注册，首次调用时将自动重试安装")
 
     def executor(**kwargs) -> str:
+        user_id = kwargs.pop('_user_id', None)
         try:
-            return _sandbox.execute(execution_code, kwargs)
+            return _sandbox.execute(execution_code, kwargs, user_id=user_id)
         except Exception as e:
             return f"[工具 '{tool_name}' 执行失败] 错误信息：{str(e)}"
 

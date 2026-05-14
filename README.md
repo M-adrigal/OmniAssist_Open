@@ -17,7 +17,7 @@
 - **沙箱隔离**：工具代码在独立 venv 虚拟环境和子进程中执行，带超时保护，确保安全与稳定
 - **多会话管理**：支持多轮对话、多会话切换、上下文管理，会话持久化存储
 - **流式响应**：AI 回答实时流式输出，支持中途停止
-- **文件管理**：前端可直接查看和下载工具生成的文件
+- **文件管理**：前端可浏览、预览和下载工具生成的文件，点击文件名即可在新标签页中预览（支持 PDF、图片、文本等格式）
 - **上下文压缩**：支持设置上下文 token 上限（如 32k、64k、128k），自动压缩历史消息避免超限
 
 ## 快速开始
@@ -154,7 +154,7 @@ Agent 会自动完成以下步骤：
 │       ├── auth.py       # 认证（登录/登出/Token）
 │       ├── chat.py       # 聊天（流式对话/联网搜索）
 │       ├── config.py     # 模型与搜索配置
-│       ├── files.py      # 文件浏览与下载
+│       ├── files.py      # 文件浏览、预览与下载
 │       ├── sessions.py   # 会话管理
 │       ├── tools.py      # 工具管理 API
 │       └── users.py      # 用户管理
@@ -171,7 +171,12 @@ Agent 会自动完成以下步骤：
 │   ├── tools.py          # 工具注册与执行
 │   ├── tool_builder.py   # 自然语言工具生成（分析/生成/修复）
 │   ├── sandbox.py        # 安全执行沙箱（venv + 子进程）
+│   ├── pdf_formatter.py  # PDF 文档格式化引擎（ReportLab）
+│   ├── document_formatter.py  # Word 文档格式化引擎（python-docx）
+│   ├── excel_formatter.py     # Excel 文档格式化引擎（openpyxl）
+│   ├── ppt_formatter.py       # PPT 文档格式化引擎（python-pptx）
 │   └── agent_tools/      # 工具定义 JSON 文件
+├── document_output/      # 用户文件输出目录（按用户 ID 隔离）
 ├── requirements.txt      # Python 依赖
 ├── README.md             # 项目说明
 └── deploy.md             # 部署指南

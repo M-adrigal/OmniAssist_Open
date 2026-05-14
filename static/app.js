@@ -39,8 +39,6 @@ const COMMANDS = [
   { command: '/model set', description: '配置模型参数', category: '模型' },
   { command: '/model show', description: '查看当前模型配置', category: '模型' },
   { command: '/model update', description: '修改单个配置项', category: '模型' },
-  { command: '/agent thought on', description: '开启思考过程显示', category: 'Agent' },
-  { command: '/agent thought off', description: '关闭思考过程显示', category: 'Agent' },
 ];
 
 let state = {
@@ -273,6 +271,11 @@ async function sendMessage() {
   const input = $('#chat-input');
   const message = input.value.trim();
   if (!message || state.isStreaming) return;
+
+  if (/^\/agent\s+thought\s+(on|off)/i.test(message)) {
+    showToast('请使用输入框下方的「思考过程」按钮来切换', 'info');
+    return;
+  }
 
   input.value = '';
   input.style.height = 'auto';
@@ -813,13 +816,15 @@ let _deleteUserId = null;
 function openDeleteConfirm(dataset) {
   _deleteUserId = dataset.id;
   $('#confirm-delete-username').textContent = dataset.username;
+  $('#confirm-keep-files').checked = false;
   openModal('modal-confirm-delete');
 }
 
 async function confirmDeleteUser() {
   if (!_deleteUserId) return;
   try {
-    await API.del('/api/users/' + _deleteUserId);
+    const keepFiles = $('#confirm-keep-files').checked;
+    await API.del(`/api/users/${_deleteUserId}?keep_files=${keepFiles}`);
     showToast('用户已删除', 'success');
     closeModal('modal-confirm-delete');
     _deleteUserId = null;
@@ -868,7 +873,8 @@ async function loadFiles() {
     container.innerHTML = files.map(f => renderFileFolder(f)).join('');
 
     container.querySelectorAll('.file-folder-header').forEach(header => {
-      header.addEventListener('click', () => {
+      header.addEventListener('click', (e) => {
+        e.stopPropagation();
         const body = header.nextElementSibling;
         const arrow = header.querySelector('.arrow');
         body.classList.toggle('hidden');
@@ -894,32 +900,120 @@ async function loadFiles() {
   }
 }
 
-function renderFileFolder(folder) {
-  const children = (folder.children || []).map(f => `
+function renderFileItem(f) {
+  const ext = (f.name || '').split('.').pop().toLowerCase();
+  const icon = getFileIcon(ext);
+  const previewUrl = `/api/files/download?path=${encodeURIComponent(f.path)}&inline=true`;
+  return `
     <div class="file-item">
-      <span class="file-name">📄 ${escapeHtml(f.name)}</span>
+      <a href="${previewUrl}" target="_blank" class="file-name" title="点击在新标签页中预览">${icon} ${escapeHtml(f.name)}</a>
       <span class="file-size">${formatSize(f.size)}</span>
       <span class="file-actions">
         <button class="btn-sm" data-action="download" data-path="${escapeHtml(f.path)}">下载</button>
         <button class="btn-sm danger" data-action="delete-file" data-path="${escapeHtml(f.path)}">删除</button>
       </span>
     </div>
-  `).join('');
+  `;
+}
 
+function renderFileFolder(folder) {
+  const children = folder.children || [];
+  if (children.length === 0) return '';
+
+  const isTypeFolder = children[0] && children[0].type === 'directory';
+
+  if (isTypeFolder) {
+    const subFolders = children.map(sub => {
+      const fileItems = (sub.children || []).map(f => renderFileItem(f)).join('');
+      return `
+        <div class="file-folder file-folder-nested">
+          <div class="file-folder-header">
+            <span class="arrow">▶</span>
+            <span>📂 ${escapeHtml(sub.name)}</span>
+            <span style="margin-left:auto;color:var(--text-muted);font-size:12px">${(sub.children || []).length} 个文件</span>
+          </div>
+          <div class="file-folder-body hidden">${fileItems}</div>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="file-folder">
+        <div class="file-folder-header file-folder-header-user">
+          <span class="arrow">▶</span>
+          <span>👤 ${escapeHtml(folder.name)}</span>
+          <span style="margin-left:auto;color:var(--text-muted);font-size:12px">${children.length} 个分类</span>
+        </div>
+        <div class="file-folder-body hidden">${subFolders}</div>
+      </div>
+    `;
+  }
+
+  const fileItems = children.map(f => renderFileItem(f)).join('');
   return `
     <div class="file-folder">
       <div class="file-folder-header">
         <span class="arrow">▶</span>
         <span>📁 ${escapeHtml(folder.name)}</span>
-        <span style="margin-left:auto;color:var(--text-muted);font-size:12px">${(folder.children || []).length} 个文件</span>
+        <span style="margin-left:auto;color:var(--text-muted);font-size:12px">${children.length} 个文件</span>
       </div>
-      <div class="file-folder-body hidden">${children}</div>
+      <div class="file-folder-body hidden">${fileItems}</div>
     </div>
   `;
 }
 
+function getFileIcon(ext) {
+  const icons = {
+    pdf: '📕', doc: '📘', docx: '📘', xls: '📗', xlsx: '📗',
+    ppt: '📙', pptx: '📙', txt: '📄', md: '📝', csv: '📊',
+    json: '📋', xml: '📋', html: '🌐', css: '🎨', js: '📜',
+    py: '🐍', log: '📃', yaml: '📋', yml: '📋', png: '🖼️',
+    jpg: '🖼️', jpeg: '🖼️', gif: '🖼️', svg: '🖼️', webp: '🖼️',
+    zip: '📦', gz: '📦', tar: '📦',
+  };
+  return icons[ext] || '📄';
+}
+
+function isPreviewable(ext) {
+  const previewable = ['txt', 'md', 'csv', 'json', 'xml', 'html', 'css', 'js', 'py', 'log', 'yaml', 'yml', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'pdf'];
+  return previewable.includes(ext);
+}
+
 function downloadFile(path) {
   window.open(`/api/files/download?path=${encodeURIComponent(path)}`, '_blank');
+}
+
+async function previewFile(path, filename) {
+  const modal = $('#modal-file-preview');
+  const title = $('#preview-title');
+  const content = $('#preview-content');
+
+  title.textContent = filename || '文件预览';
+  content.innerHTML = '<p class="loading-text">加载中...</p>';
+  modal.classList.remove('hidden');
+
+  try {
+    const data = await API.get(`/api/files/preview?path=${encodeURIComponent(path)}`);
+
+    if (data.type === 'text') {
+      const ext = (filename || '').split('.').pop().toLowerCase();
+      const langMap = { js: 'javascript', ts: 'typescript', py: 'python', md: 'markdown', json: 'json', xml: 'xml', html: 'html', css: 'css', yaml: 'yaml', yml: 'yaml', csv: 'csv' };
+      const lang = langMap[ext] || '';
+      content.innerHTML = `<pre class="preview-code"><code class="${lang ? 'language-' + lang : ''}">${escapeHtml(data.content)}</code></pre>`;
+    } else if (data.type === 'image') {
+      content.innerHTML = `<div class="preview-image-wrap"><img src="/api/files/download?path=${encodeURIComponent(data.path)}" alt="${escapeHtml(data.filename)}" class="preview-image"></div>`;
+    } else if (data.type === 'pdf') {
+      content.innerHTML = `<iframe src="/api/files/download?path=${encodeURIComponent(data.path)}" class="preview-pdf"></iframe>`;
+    } else {
+      content.innerHTML = `<div class="preview-unsupported"><p>📄 此文件类型不支持预览</p><p style="margin-top:8px;font-size:13px;color:var(--text-muted);">${escapeHtml(data.filename)}</p><button class="btn-primary" style="margin-top:12px;" data-action="download" data-path="${escapeHtml(path)}">下载文件</button></div>`;
+      const dlBtn = content.querySelector('[data-action="download"]');
+      if (dlBtn) {
+        dlBtn.addEventListener('click', () => downloadFile(dlBtn.dataset.path));
+      }
+    }
+  } catch (e) {
+    content.innerHTML = `<p class="loading-text">加载失败: ${escapeHtml(e.message)}</p>`;
+  }
 }
 
 async function deleteFile(path) {

@@ -1,0 +1,32 @@
+{
+  "name": "save_to_pdf",
+  "description": "将内容保存为PDF文档。支持两种模式：\n1. 简单模式：仅提供content和filename，生成基础PDF文档\n2. 排版模式：额外提供formatting参数（JSON对象），精确控制页面属性、字体、段落样式、表格、列表、页眉页脚、超链接、书签、图像等细节\n\n当用户提出任何排版或样式要求时（如页面尺寸、字体、页边距、页眉页脚、表格样式等），必须使用排版模式，提供formatting参数。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "content": {
+        "type": "string",
+        "description": "简单模式下的文本内容。排版模式下可为空字符串"
+      },
+      "filename": {
+        "type": "string",
+        "description": "PDF文档的文件名（无需扩展名），例如：'报告'、'合同'"
+      },
+      "formatting": {
+        "type": "object",
+        "description": "排版描述JSON对象。当用户有排版/样式要求时必须提供。结构如下：\n{\n  \"title\": \"文档标题\",\n  \"author\": \"作者\",\n  \"page\": {\"paper_size\": \"A4\", \"orientation\": \"portrait\", \"margin_top_cm\": 2.54, \"margin_bottom_cm\": 2.54, \"margin_left_cm\": 2.54, \"margin_right_cm\": 2.54},\n  \"default_font\": {\"name\": \"宋体\", \"size_pt\": 12},\n  \"default_paragraph\": {\"alignment\": \"justify\", \"first_line_indent_cm\": 0.74, \"line_spacing\": {\"mode\": \"multiple\", \"value\": 1.5}},\n  \"header\": {\"text\": \"页眉文字\", \"show_line\": true},\n  \"footer\": {\"text\": \"页脚文字\", \"page_num_format\": \"page_of_total\", \"alignment\": \"center\"},\n  \"elements\": [\n    {\"type\": \"paragraph\", \"text\": \"正文内容\", \"level\": \"body\"},\n    {\"type\": \"paragraph\", \"text\": \"一级标题\", \"level\": \"heading1\", \"bookmark\": {\"name\": \"ch1\", \"title\": \"第一章\", \"level\": 0}},\n    {\"type\": \"paragraph\", \"text\": \"二级标题\", \"level\": \"heading2\", \"keep_with_next\": true},\n    {\"type\": \"paragraph\", \"text\": \"段前分页\", \"page_break_before\": true},\n    {\"type\": \"paragraph\", \"text\": \"超链接\", \"hyperlink\": {\"url\": \"https://example.com\"}},\n    {\"type\": \"paragraph\", \"text\": \"内部跳转\", \"hyperlink\": {\"internal_target\": \"ch1\"}},\n    {\"type\": \"table\", \"headers\": [\"列1\", \"列2\"], \"rows\": [[\"A\", \"B\"]], \"border_width\": 0.5, \"header_bg_color\": \"#4472C4\", \"stripe_rows\": true},\n    {\"type\": \"list\", \"list_type\": \"decimal\", \"items\": [\"项目1\", \"项目2\"]},\n    {\"type\": \"image\", \"path\": \"/path/to/img.png\", \"width_cm\": 10, \"alignment\": \"center\", \"quality\": 85, \"handle_transparency\": true},\n    {\"type\": \"table_of_contents\", \"title\": \"目录\", \"entries\": [{\"text\": \"第一节\", \"level\": 0, \"page\": 1}]},\n    {\"type\": \"page_break\"},\n    {\"type\": \"spacer\", \"height_cm\": 0.5}\n  ]\n}\n\n纸张paper_size：A4/A3/A5/B5/Letter/Legal\n边距单位支持cm/mm/inch/in，如\"2cm\"、\"20mm\"、\"1.5inch\"\n中文字体自动映射：宋体→SimSun/Songti SC，黑体→SimHei/Heiti SC，楷体→KaiTi/Kaiti SC等\n段落level：heading1/heading2/heading3/body\n行距mode：multiple(倍数)/fixed(固定磅值)\n页码page_num_format：page_only/page_of_total\n列表list_type：bullet/decimal/upper_letter/lower_letter/upper_roman/lower_roman"
+      }
+    },
+    "required": [
+      "content",
+      "filename"
+    ]
+  },
+  "execution_mode": "local_execution",
+  "execution_prompt": "请编写Python代码，使用reportlab库将内容保存为PDF文档。参数为：{params}。如果提供了formatting参数，调用agent.pdf_formatter.create_pdf_document()函数；否则使用简单模式。确保将文档保存到项目根目录下的'document_output/pdf_output'文件夹中。将生成的文档的完整文件路径赋值给变量result。只输出纯Python代码。",
+  "execution_code": "from reportlab.lib.pagesizes import A4\nfrom reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle\nfrom reportlab.lib.units import cm\nfrom reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer\nfrom reportlab.pdfbase import pdfmetrics\nfrom reportlab.pdfbase.ttfonts import TTFont\nimport os\nimport json\n\noutput_dir = os.path.join('document_output', 'pdf_output')\nos.makedirs(output_dir, exist_ok=True)\nfilepath = os.path.join(output_dir, f'{filename}.pdf')\n\nformatting = None\nif 'formatting' in dir() and formatting is not None:\n    if isinstance(formatting, str):\n        try:\n            formatting = json.loads(formatting)\n        except:\n            formatting = None\n\nif formatting and isinstance(formatting, dict):\n    from agent.pdf_formatter import create_pdf_document\n    result = create_pdf_document(filename, content=content, formatting=formatting, output_dir=output_dir)\nelse:\n    font_name = 'Helvetica'\n    font_paths = [\n        '/System/Library/Fonts/Hiragino Sans GB.ttc',\n        '/System/Library/Fonts/PingFang.ttc',\n        '/Library/Fonts/Arial Unicode.ttf',\n        'C:/Windows/Fonts/msyh.ttc',\n        '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',\n    ]\n    for fp in font_paths:\n        if os.path.exists(fp):\n            try:\n                pdfmetrics.registerFont(TTFont('ChineseFont', fp))\n                font_name = 'ChineseFont'\n                break\n            except:\n                pass\n\n    doc = SimpleDocTemplate(filepath, pagesize=A4, rightMargin=2*cm, leftMargin=2*cm, topMargin=2*cm, bottomMargin=2*cm)\n    styles = getSampleStyleSheet()\n    title_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], fontName=font_name, fontSize=18, spaceAfter=12)\n    body_style = ParagraphStyle('CustomBody', parent=styles['Normal'], fontName=font_name, fontSize=11, leading=18)\n\n    story = []\n    story.append(Paragraph(filename, title_style))\n    story.append(Spacer(1, 0.5*cm))\n\n    for para in [p.strip() for p in content.replace(chr(13), '').split(chr(10)) if p.strip()]:\n        story.append(Paragraph(para, body_style))\n        story.append(Spacer(1, 0.2*cm))\n\n    doc.build(story)\n    result = f'PDF文档已成功保存至: {filepath}'",
+  "dependencies": [
+    "reportlab"
+  ],
+  "output_dir": "document_output/pdf_output"
+}

@@ -101,6 +101,11 @@ def init_db() -> str:
 
     _seed_default_permissions(conn)
 
+    conn.execute(
+        "DELETE FROM permissions WHERE role = 'user' AND resource = 'tools' AND action IN ('write', 'delete')"
+    )
+    conn.commit()
+
     existing = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()
     admin_password = None
 
@@ -141,7 +146,7 @@ _DEFAULT_PERMISSIONS = {
     },
     "user": {
         "model_config_personal": ["read", "write"],
-        "tools": ["read", "write", "delete"],
+        "tools": ["read"],
         "sessions": ["read", "write", "delete"],
     },
 }
@@ -270,7 +275,9 @@ def create_user(username: str, password: str, user_type: str = "user", descripti
             (username, password_hash, user_type, description, now, now)
         )
         conn.commit()
-        return get_user_by_id(cursor.lastrowid)
+        user = get_user_by_id(cursor.lastrowid)
+        _create_user_directories(user["id"])
+        return user
     except sqlite3.IntegrityError:
         raise ValueError(f"用户名 '{username}' 已存在")
 
@@ -299,11 +306,30 @@ def update_user(user_id: int, **kwargs) -> dict | None:
     return get_user_by_id(user_id)
 
 
-def delete_user(user_id: int) -> bool:
+def delete_user(user_id: int, keep_files: bool = False) -> bool:
     conn = _get_connection()
     cursor = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
+    if cursor.rowcount > 0 and not keep_files:
+        _delete_user_files(user_id)
     return cursor.rowcount > 0
+
+
+def _create_user_directories(user_id: int):
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    output_root = os.path.join(project_root, "document_output")
+    user_dir = os.path.join(output_root, str(user_id))
+    sub_dirs = ["word_output", "excel_output", "pdf_output", "ppt_output", "csv_output", "image_output"]
+    for sub in sub_dirs:
+        os.makedirs(os.path.join(user_dir, sub), exist_ok=True)
+
+
+def _delete_user_files(user_id: int):
+    import shutil
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    user_dir = os.path.join(project_root, "document_output", str(user_id))
+    if os.path.isdir(user_dir):
+        shutil.rmtree(user_dir)
 
 
 def change_password(user_id: int, old_password: str, new_password: str) -> bool:

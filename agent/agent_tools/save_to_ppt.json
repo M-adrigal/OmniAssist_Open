@@ -1,0 +1,32 @@
+{
+  "name": "save_to_ppt",
+  "description": "将内容保存为PPT演示文稿(.pptx)。支持两种模式：\n1. 简单模式：仅提供content和filename，用'# 标题'标记每页幻灯片\n2. 排版模式：额外提供formatting参数（JSON对象），精确控制版式、文本样式、形状、图片、表格、图表、背景、动画、过渡等细节\n\n当用户提出任何幻灯片排版或样式要求时（如版式、字体、颜色、动画、背景、图表等），必须使用排版模式，提供formatting参数。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "content": {
+        "type": "string",
+        "description": "简单模式下的文本内容。用'# 标题'标记每页幻灯片的标题，后续文本为该页正文内容。排版模式下可为空字符串"
+      },
+      "filename": {
+        "type": "string",
+        "description": "PPT文件名（无需扩展名），例如：'演示文稿'、'项目汇报'"
+      },
+      "formatting": {
+        "type": "object",
+        "description": "排版描述JSON对象。当用户有排版/样式/动画要求时必须提供。结构如下：\n{\n  \"slide_size\": {\"width_cm\": 33.867, \"height_cm\": 19.05},\n  \"theme\": {\"primary_color\": \"#1F4E79\", \"title_font\": {\"name\": \"微软雅黑\", \"size\": 36, \"bold\": true}, \"body_font\": {\"name\": \"微软雅黑\", \"size\": 18}},\n  \"slides\": [{\n    \"layout\": \"title_content\",\n    \"background\": {\"type\": \"solid\", \"color\": \"#FFFFFF\"},\n    \"transition\": \"fade\",\n    \"elements\": [\n      {\"type\": \"title\", \"text\": \"标题\", \"style\": {\"font\": {\"bold\": true, \"size\": 36}, \"alignment\": \"center\"}},\n      {\"type\": \"text\", \"text\": \"正文内容\", \"style\": {\"font\": {\"size\": 18}, \"alignment\": \"left\"}, \"bullet\": {\"level\": 0, \"character\": \"•\"}},\n      {\"type\": \"image\", \"path\": \"img.png\", \"position\": {\"left_cm\": 2, \"top_cm\": 3, \"width_cm\": 10, \"height_cm\": 7}},\n      {\"type\": \"shape\", \"shape_type\": \"rectangle\", \"fill\": {\"color\": \"#4472C4\"}, \"position\": {\"left_cm\": 1, \"top_cm\": 1, \"width_cm\": 5, \"height_cm\": 3}},\n      {\"type\": \"table\", \"headers\": [\"列1\", \"列2\"], \"rows\": [[\"A\", \"B\"]], \"position\": {\"left_cm\": 2, \"top_cm\": 5, \"width_cm\": 20, \"height_cm\": 8}},\n      {\"type\": \"chart\", \"chart_type\": \"bar\", \"data\": [[\"类别\", \"A\", \"B\"], [\"值\", 10, 20]], \"position\": {\"left_cm\": 2, \"top_cm\": 5, \"width_cm\": 20, \"height_cm\": 10}},\n      {\"type\": \"footer\", \"text\": \"页脚\", \"style\": {\"font\": {\"size\": 10}}}\n    ]\n  }]\n}\n\n版式layout：cover/toc/title_content/two_column/image_text/blank/section_header\n形状shape_type：rectangle/circle/arrow/line/triangle/diamond/star\n图表chart_type：bar/line/pie\n过渡transition：fade/push/wipe/cover/uncover/dissolve等\n动画animation：fade/float_in/fly_in/grow_shrink/spin/swivel等"
+      }
+    },
+    "required": [
+      "content",
+      "filename"
+    ]
+  },
+  "execution_mode": "local_execution",
+  "execution_prompt": "请编写Python代码，使用python-pptx库将内容保存为PPT演示文稿。参数为：{params}。如果提供了formatting参数，调用agent.ppt_formatter.create_ppt_presentation()函数；否则使用简单模式解析content中的'# 标题'标记。确保将文档保存到项目根目录下的'document_output/ppt_output'文件夹中。将生成的文档的完整文件路径赋值给变量result。只输出纯Python代码。",
+  "execution_code": "from pptx import Presentation\nfrom pptx.util import Inches, Pt\nfrom pptx.dml.color import RGBColor\nimport os\nimport json\n\noutput_dir = os.path.join('document_output', 'ppt_output')\nos.makedirs(output_dir, exist_ok=True)\nfilepath = os.path.join(output_dir, f'{filename}.pptx')\n\nformatting = None\nif 'formatting' in dir() and formatting is not None:\n    if isinstance(formatting, str):\n        try:\n            formatting = json.loads(formatting)\n        except:\n            formatting = None\n\nif formatting and isinstance(formatting, dict):\n    from agent.ppt_formatter import create_ppt_presentation\n    result = create_ppt_presentation(filename, content=content, formatting=formatting, output_dir=output_dir)\nelse:\n    prs = Presentation()\n    prs.slide_width = Inches(13.333)\n    prs.slide_height = Inches(7.5)\n\n    slides_data = []\n    current_slide = None\n    for line in [l.strip() for l in content.replace(chr(13), '').split(chr(10)) if l.strip()]:\n        if line.startswith('# '):\n            if current_slide is not None:\n                slides_data.append(current_slide)\n            current_slide = {'title': line[2:].strip(), 'content': []}\n        elif current_slide is not None:\n            current_slide['content'].append(line)\n    if current_slide is not None:\n        slides_data.append(current_slide)\n\n    if not slides_data:\n        slides_data = [{'title': filename, 'content': [p.strip() for p in content.replace(chr(13), '').split(chr(10)) if p.strip()]}]\n\n    for slide_data in slides_data:\n        slide_layout = prs.slide_layouts[1]\n        slide = prs.slides.add_slide(slide_layout)\n        if slide.shapes.title:\n            slide.shapes.title.text = slide_data['title']\n        if slide_data['content'] and len(slide.placeholders) > 1:\n            body = slide.placeholders[1]\n            tf = body.text_frame\n            tf.clear()\n            for i, line in enumerate(slide_data['content']):\n                if i == 0:\n                    tf.paragraphs[0].text = line\n                    tf.paragraphs[0].font.size = Pt(18)\n                else:\n                    p = tf.add_paragraph()\n                    p.text = line\n                    p.font.size = Pt(18)\n\n    prs.save(filepath)\n    result = f'PPT演示文稿已成功保存至: {filepath}'",
+  "dependencies": [
+    "python-pptx"
+  ],
+  "output_dir": "document_output/ppt_output"
+}

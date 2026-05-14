@@ -43,12 +43,13 @@ class ToolRegistry:
             })
         return specs
 
-    def execute(self, name, arguments: dict) -> str:
+    def execute(self, name, arguments: dict, user_id: int = None) -> str:
         """根据工具名和参数执行对应的函数
 
         Args:
             name (str): 工具名称
             arguments (dict): 参数字典
+            user_id (int): 可选，当前用户ID，用于文件输出隔离
 
         Returns:
             str: 执行结果的字符串形式，出错时返回错误信息
@@ -57,6 +58,8 @@ class ToolRegistry:
             return f"Error: Tool '{name}' not found"
         
         try:
+            if user_id is not None:
+                arguments['_user_id'] = user_id
             result = self.tools[name]["function"](**arguments)
             return str(result)
         except Exception as e:

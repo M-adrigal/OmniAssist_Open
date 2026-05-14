@@ -1,7 +1,8 @@
 import os
 import json
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from server.models import ToolInfo, ToolCreate, ToolUpdate
+from server.routes.auth import require_permission
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
@@ -45,7 +46,8 @@ def list_tools():
 
 
 @router.post("", response_model=dict)
-def create_tool(body: ToolCreate):
+def create_tool(body: ToolCreate, request: Request):
+    require_permission(request, "tools", "write")
     registry, builder, llm, config, agent = get_dependencies()
     tools_dir = get_tools_dir()
 
@@ -105,7 +107,8 @@ def create_tool(body: ToolCreate):
         tool_json.get("execution_code", ""),
         tool_json.get("http_config", {}),
         llm,
-        tool_json.get("dependencies")
+        tool_json.get("dependencies"),
+        tool_json.get("response_formatter")
     )
     registry.register_tool(
         name=tool_json["name"],
@@ -130,7 +133,8 @@ def create_tool(body: ToolCreate):
 
 
 @router.put("/{tool_name}", response_model=dict)
-def update_tool(tool_name: str, body: ToolUpdate):
+def update_tool(tool_name: str, body: ToolUpdate, request: Request):
+    require_permission(request, "tools", "write")
     registry, builder, llm, config, agent = get_dependencies()
     tools_dir = get_tools_dir()
 
@@ -170,7 +174,8 @@ def update_tool(tool_name: str, body: ToolUpdate):
         tool_json.get("execution_code", ""),
         tool_json.get("http_config", {}),
         llm,
-        tool_json.get("dependencies")
+        tool_json.get("dependencies"),
+        tool_json.get("response_formatter")
     )
     registry.register_tool(
         name=tool_name,
@@ -195,7 +200,8 @@ def update_tool(tool_name: str, body: ToolUpdate):
 
 
 @router.delete("/{tool_name}", response_model=dict)
-def delete_tool(tool_name: str):
+def delete_tool(tool_name: str, request: Request):
+    require_permission(request, "tools", "delete")
     registry, _, _, _, _ = get_dependencies()
     tools_dir = get_tools_dir()
 

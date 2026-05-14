@@ -79,8 +79,8 @@ def init_services():
 
     _tool_registry.load_tools_from_dir(
         tools_dir,
-        func_factory=lambda name, prompt, mode, code, http_cfg, deps:
-            _create_executor(name, prompt, mode, code, http_cfg, _llm_client, deps)
+        func_factory=lambda name, prompt, mode, code, http_cfg, deps, fmt=None:
+            _create_executor(name, prompt, mode, code, http_cfg, _llm_client, deps, fmt)
     )
 
     show_thought = False

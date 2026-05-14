@@ -279,6 +279,13 @@ async def _handle_command(message: str, session_id: str, user_id: int):
 
     msg = message.strip()
 
+    def _check_perm(action: str):
+        from server.database import get_user_by_id, check_permission
+        user = get_user_by_id(user_id)
+        if not user or not check_permission(user.get("user_type", "user"), "tools", action):
+            return False
+        return True
+
     if msg == "/help" or msg == "help":
         help_text = """**可用命令：**
 
@@ -331,6 +338,10 @@ async def _handle_command(message: str, session_id: str, user_id: int):
         return
 
     if msg.startswith("/tool add"):
+        if not _check_perm("write"):
+            yield f"data: {json.dumps({'type': 'error', 'content': '权限不足：仅管理员可以创建工具'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
         parts = msg.split(maxsplit=2)
         description = parts[2].strip() if len(parts) > 2 else ""
         if not description:
@@ -435,6 +446,10 @@ async def _handle_command(message: str, session_id: str, user_id: int):
         return
 
     if msg.startswith("/tool update"):
+        if not _check_perm("write"):
+            yield f"data: {json.dumps({'type': 'error', 'content': '权限不足：仅管理员可以修改工具'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
         parts = msg.split(maxsplit=3)
         tool_name = parts[2].strip() if len(parts) > 2 else ""
         update_desc = parts[3].strip() if len(parts) > 3 else ""
@@ -512,6 +527,10 @@ async def _handle_command(message: str, session_id: str, user_id: int):
         return
 
     if msg.startswith("/tool delete"):
+        if not _check_perm("delete"):
+            yield f"data: {json.dumps({'type': 'error', 'content': '权限不足：仅管理员可以删除工具'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
         parts = msg.split(maxsplit=2)
         tool_name = parts[2].strip() if len(parts) > 2 else ""
         if not tool_name:
@@ -724,7 +743,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_name, 'arguments': tool_arguments})}\n\n"
 
             try:
-                tool_result = registry.execute(tool_name, tool_arguments)
+                tool_result = registry.execute(tool_name, tool_arguments, user_id=user_id)
             except Exception as e:
                 tool_result = f"工具执行错误: {str(e)}"
 

@@ -118,7 +118,12 @@ class ToolSandbox:
         except Exception:
             print("清理失败，可能需要手动清理。")
 
-    def execute(self, code: str, params: dict, timeout: int = 30) -> str:
+    def execute(self, code: str, params: dict, timeout: int = 30, user_id: int = None) -> str:
+        if user_id is not None:
+            code = code.replace("'document_output/'", f"'document_output/{user_id}/'")
+            code = code.replace('"document_output/"', f'"document_output/{user_id}/"')
+            code = code.replace("'document_output'", f"'document_output/{user_id}'")
+            code = code.replace('"document_output"', f'"document_output/{user_id}"')
         wrapper = self._build_wrapper(code, params)
         base_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(base_dir)
