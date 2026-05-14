@@ -1,5 +1,7 @@
 import os
 import sys
+import secrets
+import subprocess
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +19,7 @@ from agent.agent import SimpleAgent
 from agent.main import _create_executor
 
 from server.routes import routers
+from server.database import init_db, DB_PATH
 
 _config: AgentConfig = None
 _llm_client: LLMClient = None
@@ -24,6 +27,9 @@ _tool_registry: ToolRegistry = None
 _tool_builder: ToolBuilder = None
 _agent: SimpleAgent = None
 _session_store: dict = {}
+_db_process: subprocess.Popen = None
+_db_user = "root"
+_db_password: str = None
 
 
 def init_services():
@@ -45,8 +51,8 @@ def init_services():
     )
 
     show_thought = _config.get("show_thought", False)
-    max_rounds = _config.get("max_history_rounds", 10)
-    _agent = SimpleAgent(_llm_client, _tool_registry, max_history_rounds=max_rounds, show_thought=show_thought)
+    context_limit = _config.get("context_limit", "")
+    _agent = SimpleAgent(_llm_client, _tool_registry, context_limit=context_limit, show_thought=show_thought)
 
 
 def get_config() -> AgentConfig:
@@ -69,11 +75,17 @@ def get_agent() -> SimpleAgent:
     return _agent
 
 
+def update_agent_context_limit(context_limit: str):
+    global _agent
+    if _agent:
+        _agent.update_context_limit(context_limit)
+
+
 def get_session_store() -> dict:
     return _session_store
 
 
-app = FastAPI(title="Agent Framework API", version="1.0.0")
+app = FastAPI(title="OmniAssist API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -108,7 +120,6 @@ for router in routers:
     app.include_router(router)
 
 static_dir = os.path.join(_project_root, "static")
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
 @app.get("/")
@@ -121,14 +132,31 @@ def serve_login():
     return FileResponse(os.path.join(static_dir, "login.html"))
 
 
+@app.get("/favicon.ico")
+def serve_favicon():
+    return FileResponse(os.path.join(static_dir, "favicon.svg"), media_type="image/svg+xml")
+
+
 @app.on_event("startup")
 def startup():
-    pass
+    global _db_password
+
+    admin_pw = init_db()
+    if admin_pw:
+        print(f"\n[用户体系] 数据库已初始化")
+        print(f"[用户体系] 默认管理员账号: admin")
+        print(f"[用户体系] 默认管理员密码: {admin_pw}")
+        print(f"[用户体系] 请登录后及时修改密码！\n")
+
+    _db_password = _generate_db_password()
+    _start_sqlite_web()
 
 
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+app.mount("/static", StaticFiles(directory=static_dir, html=False), name="static")
 
 
 init_services()
@@ -163,6 +191,36 @@ def _check_and_free_port(port: int):
         time.sleep(0.5)
     except Exception as e:
         print(f"[启动] 端口检测异常: {e}")
+
+
+def _generate_db_password(length: int = 8) -> str:
+    chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    return ''.join(secrets.choice(chars) for _ in range(length))
+
+
+def _start_sqlite_web():
+    global _db_process
+    DB_PORT = 17521
+
+    _check_and_free_port(DB_PORT)
+
+    try:
+        _db_process = subprocess.Popen(
+            [
+                sys.executable, "-m", "sqlite_web",
+                "--host", "127.0.0.1",
+                "--port", str(DB_PORT),
+                "--no-browser",
+                DB_PATH,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        print(f"[数据库管理] sqlite-web 已启动: http://127.0.0.1:{DB_PORT}")
+        print(f"[数据库管理] 仅限本机访问，数据库文件: {DB_PATH}")
+    except Exception as e:
+        print(f"[数据库管理] sqlite-web 启动失败: {e}")
+        print(f"[数据库管理] 请先安装: pip install sqlite-web")
 
 
 if __name__ == "__main__":

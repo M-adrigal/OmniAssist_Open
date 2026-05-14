@@ -11,21 +11,63 @@ SYSTEM_PROMPT_WITH_THOUGHT = """你是一个能使用工具的助手，可以根
 class SimpleAgent:
     """Agent 主循环类，处理多轮对话和工具调用"""
 
-    def __init__(self, llm_client, tool_registry, max_history_rounds=10, show_thought=False):
+    def __init__(self, llm_client, tool_registry, context_limit='', show_thought=False):
         """初始化 SimpleAgent
 
         Args:
             llm_client: LLMClient 实例
             tool_registry: ToolRegistry 实例
-            max_history_rounds: 最大保留的对话轮数（一轮=一问一答）
+            context_limit: 上下文限制，如 "32k"、"64k"、"128k"，为空则使用模型最大上下文
             show_thought: 是否显示思考过程
         """
         self.llm = llm_client
         self.tool_registry = tool_registry
         self.show_thought = show_thought
-        self.max_history_rounds = max_history_rounds
+        self.context_limit = context_limit
+        self._context_limit_tokens = self._parse_context_limit(context_limit)
         self.messages = []
         self._rebuild_system_message()
+
+    @staticmethod
+    def _parse_context_limit(limit_str: str) -> int:
+        """解析上下文限制字符串为 token 数
+
+        Args:
+            limit_str: 如 "32k"、"64k"、"128k"，空字符串表示不限制
+
+        Returns:
+            int: token 数量，0 表示不限制
+        """
+        if not limit_str or not limit_str.strip():
+            return 0
+        limit_str = limit_str.strip().lower()
+        if limit_str.endswith('k'):
+            try:
+                return int(float(limit_str[:-1]) * 1000)
+            except ValueError:
+                return 0
+        try:
+            return int(limit_str)
+        except ValueError:
+            return 0
+
+    @staticmethod
+    def _estimate_tokens(messages: list) -> int:
+        """估算消息列表的 token 数量
+
+        使用字符数/4 的粗略估算（1 token ≈ 4 英文字符）
+
+        Args:
+            messages: 消息列表
+
+        Returns:
+            int: 估算的 token 数
+        """
+        total = 0
+        for msg in messages:
+            content = msg.get('content', '') or ''
+            total += len(content) // 4 + 1
+        return total
 
     def _rebuild_system_message(self):
         """根据 show_thought 状态重建系统消息"""
@@ -45,6 +87,15 @@ class SimpleAgent:
         self.show_thought = enabled
         self._rebuild_system_message()
 
+    def update_context_limit(self, context_limit: str):
+        """更新上下文限制
+
+        Args:
+            context_limit: 如 "32k"、"64k"、"128k"，空字符串表示不限制
+        """
+        self.context_limit = context_limit
+        self._context_limit_tokens = self._parse_context_limit(context_limit)
+
     def reset(self):
         """重置对话上下文"""
         self._rebuild_system_message()
@@ -53,26 +104,98 @@ class SimpleAgent:
         ]
 
     def _trim_messages(self):
-        """裁剪消息历史，保留最近的对话轮数"""
-        if self.max_history_rounds == 0:
+        """根据上下文 token 限制裁剪消息历史"""
+        if self._context_limit_tokens == 0:
             return
 
         if len(self.messages) <= 1:
             return
-        
-        # 保留 system 消息
+
         system_msg = self.messages[0]
         history_msgs = self.messages[1:]
-        
-        # 每轮对话约2-4条消息（user + assistant + tool...），这里保守估计
-        messages_per_round = 4
-        max_keep = self.max_history_rounds * messages_per_round
-        
-        if len(history_msgs) > max_keep:
-            # 保留最近的消息
-            history_msgs = history_msgs[-max_keep:]
-        
+
+        system_tokens = self._estimate_tokens([system_msg])
+        available_tokens = self._context_limit_tokens - system_tokens
+        if available_tokens <= 0:
+            self.messages = [system_msg]
+            return
+
+        while history_msgs:
+            estimated = self._estimate_tokens(history_msgs)
+            if estimated <= available_tokens:
+                break
+            history_msgs = history_msgs[1:]
+
         self.messages = [system_msg] + history_msgs
+
+    @staticmethod
+    def compress_messages(messages: list, llm_client, context_limit_tokens: int = 0) -> list:
+        """压缩消息历史，将早期对话总结为摘要
+
+        当消息的估算 token 数超过上下文限制的 70% 时触发压缩。
+        保留最近 4 轮对话（8条消息），将更早的消息压缩为一条摘要。
+
+        Args:
+            messages: 消息列表（不含 system prompt）
+            llm_client: LLMClient 实例，用于生成摘要
+            context_limit_tokens: 上下文 token 限制，0 表示不限制
+
+        Returns:
+            list: 压缩后的消息列表
+        """
+        if context_limit_tokens == 0:
+            return messages
+
+        if len(messages) < 10:
+            return messages
+
+        estimated = SimpleAgent._estimate_tokens(messages)
+        threshold = int(context_limit_tokens * 0.7)
+
+        if estimated <= threshold:
+            return messages
+
+        keep_count = 8
+        if len(messages) <= keep_count:
+            return messages
+
+        old_messages = messages[:-keep_count]
+        recent_messages = messages[-keep_count:]
+
+        summary_text = _generate_summary(old_messages, llm_client)
+
+        if summary_text:
+            compressed = [{"role": "system", "content": f"[历史对话摘要] {summary_text}"}]
+            compressed.extend(recent_messages)
+            return compressed
+
+        return recent_messages
+
+
+def _generate_summary(messages: list, llm_client) -> str:
+    """使用 LLM 生成对话摘要"""
+    conversation_text = ""
+    for msg in messages:
+        role = "用户" if msg["role"] == "user" else "助手"
+        content = msg.get("content", "") or ""
+        if len(content) > 500:
+            content = content[:500] + "..."
+        conversation_text += f"{role}: {content}\n"
+
+    summary_prompt = (
+        "请用一段简洁的文字（不超过200字）总结以下对话的核心内容和关键信息，"
+        "包括用户的主要问题和助手给出的重要结论：\n\n"
+        f"{conversation_text}"
+    )
+
+    try:
+        response = llm_client.chat(
+            [{"role": "user", "content": summary_prompt}],
+            tools=None
+        )
+        return response.get("content", "").strip()
+    except Exception:
+        return ""
 
     def run(self, user_input: str, max_iterations=10) -> str:
         """运行 Agent 主循环（单轮任务）

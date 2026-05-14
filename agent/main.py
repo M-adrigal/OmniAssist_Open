@@ -718,44 +718,34 @@ def _handle_model_set(config: AgentConfig, llm_client: LLMClient):
     if not model_name:
         model_name = current_model
 
-    current_rounds = config.get('max_history_rounds')
-    if current_rounds is not None:
-        rounds_hint = f" [当前: {current_rounds}轮，0=不限制]"
+    current_limit = config.get('context_limit') or ''
+    if current_limit:
+        limit_hint = f" [当前: {current_limit}]"
     else:
-        rounds_hint = " [0=不限制，默认使用模型最大上下文]"
-    rounds_prompt = f"上下文轮数{rounds_hint}: "
+        limit_hint = " [如 32k、64k、128k，留空则使用模型最大上下文]"
+    limit_prompt = f"上下文限制{limit_hint}: "
 
     try:
-        rounds_input = input(rounds_prompt).strip()
+        limit_input = input(limit_prompt).strip()
     except (EOFError, KeyboardInterrupt):
         return
-    if rounds_input.lower() == "exit":
+    if limit_input.lower() == "exit":
         print("已取消配置。")
         return
 
-    if rounds_input == "":
-        max_history_rounds = 0
-    else:
-        try:
-            max_history_rounds = int(rounds_input)
-            if max_history_rounds < 0:
-                print("上下文轮数不能为负数，已取消配置。")
-                return
-        except ValueError:
-            print("请输入有效的数字，已取消配置。")
-            return
+    context_limit = limit_input if limit_input else ""
 
     config.set_model(api_key, base_url, model_name)
-    config.set('max_history_rounds', max_history_rounds)
+    config.set('context_limit', context_limit)
     llm_client.refresh()
     print(f"\n配置已保存并生效！")
     print(f"  Model: {model_name}")
     print(f"  Base URL: {base_url}")
     print(f"  API Key: {config.get_masked_api_key()}")
-    if max_history_rounds == 0:
-        print(f"  上下文轮数: 不限制（使用模型最大上下文）")
+    if context_limit:
+        print(f"  上下文限制: {context_limit}")
     else:
-        print(f"  上下文轮数: {max_history_rounds}")
+        print(f"  上下文限制: 使用模型最大上下文")
 
 
 def _handle_model_show(config: AgentConfig):
@@ -769,11 +759,11 @@ def _handle_model_show(config: AgentConfig):
     print(f"  Model Name: {info['model_name']}")
     print(f"  Base URL:   {info['base_url']}")
     print(f"  API Key:    {info['api_key']}")
-    rounds = info['max_history_rounds']
-    if rounds == 0:
-        print(f"  上下文轮数: 不限制（使用模型最大上下文）")
+    limit = info['context_limit']
+    if limit:
+        print(f"  上下文限制: {limit}")
     else:
-        print(f"  上下文轮数: {rounds}")
+        print(f"  上下文限制: 使用模型最大上下文")
 
 
 def _handle_model_update(config: AgentConfig, llm_client: LLMClient):
@@ -788,8 +778,8 @@ def _handle_model_update(config: AgentConfig, llm_client: LLMClient):
     print(f"  1) Model Name: {info['model_name']}")
     print(f"  2) Base URL:   {info['base_url']}")
     print(f"  3) API Key:    {info['api_key']}")
-    rounds_display = "不限制" if info['max_history_rounds'] == 0 else str(info['max_history_rounds'])
-    print(f"  4) 上下文轮数: {rounds_display}")
+    limit_display = info['context_limit'] if info['context_limit'] else "使用模型最大上下文"
+    print(f"  4) 上下文限制: {limit_display}")
     print()
     print("输入序号选择要修改的项（输入 exit 取消）：")
 
@@ -846,28 +836,17 @@ def _handle_model_update(config: AgentConfig, llm_client: LLMClient):
 
     elif choice == "4":
         try:
-            new_value = input("新的上下文轮数（0=不限制）: ").strip()
+            new_value = input("新的上下文限制（如 32k、64k、128k，留空使用模型最大上下文）: ").strip()
         except (EOFError, KeyboardInterrupt):
             return
         if new_value.lower() == "exit":
             print("已取消更新。")
             return
-        if new_value == "":
-            print("输入不能为空，已取消更新。")
-            return
-        try:
-            rounds = int(new_value)
-            if rounds < 0:
-                print("上下文轮数不能为负数，已取消更新。")
-                return
-        except ValueError:
-            print("请输入有效的数字，已取消更新。")
-            return
-        config.set('max_history_rounds', rounds)
-        if rounds == 0:
-            print("上下文轮数已更新为：不限制（使用模型最大上下文）")
+        config.set('context_limit', new_value if new_value else "")
+        if new_value:
+            print(f"上下文限制已更新为：{new_value}")
         else:
-            print(f"上下文轮数已更新为：{rounds}")
+            print("上下文限制已更新为：使用模型最大上下文")
 
     else:
         print("无效的序号，已取消更新。")
@@ -955,9 +934,7 @@ def main():
 
     tool_registry = ToolRegistry()
 
-    max_history_rounds = config.get('max_history_rounds')
-    if max_history_rounds is None:
-        max_history_rounds = 10
+    context_limit = config.get('context_limit') or ''
     llm_client = LLMClient(config=config)
 
     tools_dir = config.get('tools_dir') or os.path.join(base_dir, "agent_tools")
@@ -969,7 +946,7 @@ def main():
         func_factory=lambda name, prompt, mode, code, http_cfg, deps=None: _create_executor(name, prompt, mode, code, http_cfg, llm_client, deps)
     )
 
-    agent = SimpleAgent(llm_client, tool_registry, max_history_rounds=max_history_rounds,
+    agent = SimpleAgent(llm_client, tool_registry, context_limit=context_limit,
                         show_thought=config.get('show_thought', False))
     builder = ToolBuilder(llm_client)
 

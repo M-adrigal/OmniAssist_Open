@@ -21,8 +21,17 @@ def get_config():
         model_name=config.get("model_name", ""),
         base_url=config.get("base_url", ""),
         api_key_masked=config.get_masked_api_key(),
-        max_history_rounds=config.get("max_history_rounds", 10),
+        context_limit=config.get("context_limit", ""),
+        tavily_api_key_masked=_mask_key(config.get("tavily_api_key", "")),
     )
+
+
+def _mask_key(key: str) -> str:
+    if not key:
+        return "(未设置)"
+    if len(key) <= 8:
+        return "*" * len(key)
+    return key[:4] + "*" * (len(key) - 8) + key[-4:]
 
 
 @router.put("", response_model=ModelConfigResponse)
@@ -36,8 +45,12 @@ def update_config(body: ModelConfigUpdate):
         config.set("base_url", body.base_url)
     if body.model_name is not None:
         config.set("model_name", body.model_name)
-    if body.max_history_rounds is not None:
-        config.set("max_history_rounds", body.max_history_rounds)
+    if body.context_limit is not None:
+        config.set("context_limit", body.context_limit)
+        from server.main import update_agent_context_limit
+        update_agent_context_limit(body.context_limit)
+    if body.tavily_api_key is not None:
+        config.set("tavily_api_key", body.tavily_api_key)
 
     llm.refresh()
 
@@ -45,5 +58,6 @@ def update_config(body: ModelConfigUpdate):
         model_name=config.get("model_name", ""),
         base_url=config.get("base_url", ""),
         api_key_masked=config.get_masked_api_key(),
-        max_history_rounds=config.get("max_history_rounds", 10),
+        context_limit=config.get("context_limit", ""),
+        tavily_api_key_masked=_mask_key(config.get("tavily_api_key", "")),
     )

@@ -65,13 +65,17 @@ Agent：Word 文档已保存至 document_output/word_output/
 | 命令 | 说明 |
 | --- | --- |
 | `/help` | 显示帮助信息 |
+| `exit` | 退出程序 |
+| `reset` | 重置对话上下文 |
 | `/tool list` | 查看所有已安装的工具 |
 | `/tool add` | 通过自然语言新增工具 |
 | `/tool update <工具名>` | 修改已有工具 |
 | `/tool delete <工具名>` | 删除指定工具 |
-| `/model set` | 配置模型参数 |
-| `/model status` | 查看当前模型配置 |
-| `/clear` | 重置对话上下文 |
+| `/model set` | 配置模型参数（API Key 加密存储） |
+| `/model show` | 查看当前模型配置 |
+| `/model update` | 修改单个配置项 |
+| `/agent thought on` | 开启 Agent 思考过程显示 |
+| `/agent thought off` | 关闭 Agent 思考过程显示 |
 
 ## 创建自定义工具
 

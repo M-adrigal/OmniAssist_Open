@@ -5,6 +5,7 @@ from typing import Optional, List, Dict, Any
 class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     message: str
+    web_search: str = "off"
 
 
 class SessionCreate(BaseModel):
@@ -19,14 +20,16 @@ class ModelConfigUpdate(BaseModel):
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     model_name: Optional[str] = None
-    max_history_rounds: Optional[int] = None
+    context_limit: Optional[str] = None
+    tavily_api_key: Optional[str] = None
 
 
 class ModelConfigResponse(BaseModel):
     model_name: str
     base_url: str
     api_key_masked: str
-    max_history_rounds: int
+    context_limit: str
+    tavily_api_key_masked: str
 
 
 class ToolCreate(BaseModel):
@@ -58,3 +61,50 @@ class CommandItem(BaseModel):
     command: str
     description: str
     category: str
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    token: str
+    message: str
+    user_type: str
+    username: str
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+    confirm_password: str
+
+
+class UserCreateRequest(BaseModel):
+    username: str
+    password: str
+    user_type: str = "user"
+    description: str = ""
+
+
+class UserUpdateRequest(BaseModel):
+    password: Optional[str] = None
+    user_type: Optional[str] = None
+    description: Optional[str] = None
+
+
+class UserResponse(BaseModel):
+    id: int
+    username: str
+    user_type: str
+    description: str
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class CurrentUserResponse(BaseModel):
+    id: int
+    username: str
+    user_type: str
+    description: str

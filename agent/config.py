@@ -140,7 +140,7 @@ class AgentConfig:
             'base_url': self.get('base_url', '(未设置)'),
             'api_key': self.get_masked_api_key(),
             'show_thought': self.get('show_thought', False),
-            'max_history_rounds': self.get('max_history_rounds', 10),
+            'context_limit': self.get('context_limit', ''),
         }
 
     def toggle_thought(self) -> bool:

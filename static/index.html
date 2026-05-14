@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Agent Framework</title>
+<title>OmniAssist</title>
+<link rel="icon" href="/favicon.ico">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -15,6 +16,24 @@
   <!-- 左侧边栏 -->
   <aside id="sidebar">
     <div class="sidebar-header">
+      <div class="sidebar-brand">
+        <div class="brand-logo">
+          <svg width="28" height="28" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect width="48" height="48" rx="12" fill="url(#brand-grad)"/>
+            <defs>
+              <linearGradient id="brand-grad" x1="0" y1="0" x2="48" y2="48">
+                <stop offset="0%" stop-color="#3B82F6"/>
+                <stop offset="100%" stop-color="#8B5CF6"/>
+              </linearGradient>
+            </defs>
+            <text x="24" y="33" text-anchor="middle" fill="white" font-size="20" font-weight="800" font-family="sans-serif">OA</text>
+          </svg>
+        </div>
+        <span class="brand-name">OmniAssist</span>
+        <button id="btn-search-dialog" class="btn-search-icon" title="搜索对话">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </button>
+      </div>
       <button id="btn-new-session" class="btn-primary full-width">+ 新建对话</button>
     </div>
     <div id="session-list" class="session-list"></div>
@@ -46,6 +65,19 @@
         <span>文件列表</span>
       </button>
       <div style="border-top: 1px solid var(--border); margin: 4px 0;"></div>
+      <button class="drawer-item" data-action="search-config">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        <span>联网搜索配置</span>
+      </button>
+      <button class="drawer-item" data-action="change-password">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <span>修改密码</span>
+      </button>
+      <button class="drawer-item drawer-item-admin hidden" data-action="user-management">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span>用户管理</span>
+      </button>
+      <div style="border-top: 1px solid var(--border); margin: 4px 0;"></div>
       <button class="drawer-item" data-action="logout" style="color: var(--danger);">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
         <span>退出登录</span>
@@ -57,8 +89,9 @@
   <main id="chat-area">
     <div id="chat-messages" class="chat-messages">
       <div class="welcome-message">
-        <h1>Agent Framework</h1>
-        <p>输入消息开始对话，或输入 <code>/</code> 查看可用命令</p>
+        <h1>OmniAssist</h1>
+        <p>计时算文查网，一站式全能辅助</p>
+        <p style="margin-top:8px;font-size:13px;">输入消息开始对话，或输入 <code>/</code> 查看可用命令</p>
       </div>
     </div>
     <div class="chat-input-container">
@@ -66,8 +99,14 @@
       <div class="chat-input-wrapper">
         <textarea id="chat-input" rows="1" placeholder="输入消息... (输入 / 查看命令)"></textarea>
         <button id="btn-send" class="btn-send" title="发送">
-          <svg class="icon-send" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-          <svg class="icon-stop" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+          <svg class="icon-send" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+          <svg class="icon-stop" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+        </button>
+      </div>
+      <div class="chat-input-toolbar">
+        <button id="btn-web-search" class="btn-web-search" data-mode="off">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          <span>联网搜索</span>
         </button>
       </div>
     </div>
@@ -96,12 +135,33 @@
         <input type="text" id="cfg-model-name" placeholder="gpt-4">
       </div>
       <div class="form-group">
-        <label>最大历史轮次</label>
-        <input type="number" id="cfg-max-rounds" min="0" max="50" value="10">
+        <label>上下文限制</label>
+        <input type="text" id="cfg-context-limit" placeholder="如 32k、64k、128k，留空则使用模型最大上下文">
       </div>
     </div>
     <div class="modal-footer">
       <button id="btn-save-config" class="btn-primary">保存配置</button>
+    </div>
+  </div>
+</div>
+
+<!-- 模态框: 联网搜索配置 -->
+<div id="modal-search-config" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-content modal-sm">
+    <div class="modal-header">
+      <h3>联网搜索配置</h3>
+      <button class="btn-icon modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Tavily API Key</label>
+        <input type="password" id="cfg-tavily-key" placeholder="输入 Tavily API Key 以启用联网搜索">
+        <p class="form-hint">获取 API Key：<a href="https://app.tavily.com/home" target="_blank">https://app.tavily.com/home</a></p>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button id="btn-save-search-config" class="btn-primary">保存配置</button>
     </div>
   </div>
 </div>
@@ -140,6 +200,167 @@
 
 <!-- Toast 通知 -->
 <div id="toast" class="toast hidden"></div>
+
+<!-- 模态框: 修改密码 -->
+<div id="modal-change-password" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>修改密码</h3>
+      <button class="btn-icon modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>原密码</label>
+        <input type="password" id="cp-old-password" placeholder="请输入原密码">
+      </div>
+      <div class="form-group">
+        <label>新密码</label>
+        <input type="password" id="cp-new-password" placeholder="请输入新密码（至少6位）">
+      </div>
+      <div class="form-group">
+        <label>确认新密码</label>
+        <input type="password" id="cp-confirm-password" placeholder="请再次输入新密码">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel modal-close">取消</button>
+      <button id="btn-save-password" class="btn-primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 模态框: 用户管理 -->
+<div id="modal-user-management" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-content modal-xl">
+    <div class="modal-header">
+      <h3>用户管理</h3>
+      <button class="btn-icon modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="user-toolbar">
+        <button id="btn-add-user" class="btn-primary btn-sm-height">+ 新增用户</button>
+        <input type="text" id="user-search" placeholder="搜索用户名...">
+      </div>
+      <div class="user-table-wrap">
+        <table class="user-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>用户名</th>
+              <th>用户类型</th>
+              <th>描述</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="user-table-body">
+            <tr><td colspan="5" class="loading-text">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 模态框: 新增/编辑用户 -->
+<div id="modal-user-form" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 id="user-form-title">新增用户</h3>
+      <button class="btn-icon modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="user-form-id">
+      <div class="form-group">
+        <label>用户名 <span style="color:var(--danger);">*</span></label>
+        <input type="text" id="user-form-username" placeholder="请输入用户名">
+      </div>
+      <div class="form-group">
+        <label>密码 <span style="color:var(--danger);">*</span></label>
+        <div class="password-input-wrap">
+          <input type="password" id="user-form-password" placeholder="请输入密码（至少6位）">
+          <button type="button" class="password-toggle" id="btn-toggle-user-password" title="显示密码">👁</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>用户类型 <span style="color:var(--danger);">*</span></label>
+        <select id="user-form-type">
+          <option value="user">普通用户</option>
+          <option value="admin">管理员</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>用户描述</label>
+        <input type="text" id="user-form-desc" placeholder="请输入用户描述（选填）">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel modal-close">取消</button>
+      <button id="btn-submit-user" class="btn-primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 模态框: 删除确认 -->
+<div id="modal-confirm-delete" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-content" style="width:400px;">
+    <div class="modal-header">
+      <h3>确认删除</h3>
+      <button class="btn-icon modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="confirm-body">
+        <div class="confirm-icon">⚠️</div>
+        <div class="confirm-text">
+          确定要删除用户 <span class="confirm-highlight" id="confirm-delete-username"></span> 吗？<br>此操作不可撤销。
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer modal-footer-right">
+      <button class="btn-cancel modal-close">取消</button>
+      <button id="btn-confirm-delete" class="btn-danger">确认删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- 通用确认弹窗 -->
+<div id="modal-generic-confirm" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-content" style="width:400px;">
+    <div class="modal-header">
+      <h3 id="generic-confirm-title">确认操作</h3>
+      <button class="btn-icon modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="confirm-body">
+        <div class="confirm-icon">⚠️</div>
+        <div class="confirm-text" id="generic-confirm-text"></div>
+      </div>
+    </div>
+    <div class="modal-footer modal-footer-right">
+      <button class="btn-cancel modal-close" id="btn-generic-cancel">取消</button>
+      <button id="btn-generic-confirm" class="btn-danger">确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- 搜索对话弹窗 -->
+<div id="modal-search-dialog" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-content search-dialog-content">
+    <div class="search-dialog-header">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="text" id="search-dialog-input" class="search-dialog-input" placeholder="搜索历史对话主题..." autofocus>
+      <button class="btn-icon search-dialog-close" id="btn-search-dialog-close">&times;</button>
+    </div>
+    <div id="search-dialog-results" class="search-dialog-results">
+      <p class="search-dialog-hint">输入关键词搜索历史对话</p>
+    </div>
+  </div>
+</div>
 
 <script src="/static/app.js"></script>
 </body>

@@ -31,13 +31,16 @@ const API = {
 
 const COMMANDS = [
   { command: '/help', description: '显示帮助信息', category: '通用' },
-  { command: '/model set', description: '配置模型参数，如 /model set model_name=gpt-4', category: '模型' },
-  { command: '/model status', description: '查看当前模型配置', category: '模型' },
-  { command: '/tool list', description: '列出所有可用工具', category: '工具' },
-  { command: '/tool create', description: '创建新工具，如 /tool create 描述', category: '工具' },
-  { command: '/tool delete', description: '删除工具，如 /tool delete 工具名', category: '工具' },
-  { command: '/file list', description: '列出所有输出文件', category: '文件' },
-  { command: '/clear', description: '清空当前对话', category: '通用' },
+  { command: '/reset', description: '重置对话上下文', category: '对话' },
+  { command: '/tool list', description: '查看所有已安装的工具', category: '工具' },
+  { command: '/tool add', description: '通过自然语言新增工具', category: '工具' },
+  { command: '/tool update', description: '通过自然语言修改已有工具', category: '工具' },
+  { command: '/tool delete', description: '删除指定工具', category: '工具' },
+  { command: '/model set', description: '配置模型参数', category: '模型' },
+  { command: '/model show', description: '查看当前模型配置', category: '模型' },
+  { command: '/model update', description: '修改单个配置项', category: '模型' },
+  { command: '/agent thought on', description: '开启思考过程显示', category: 'Agent' },
+  { command: '/agent thought off', description: '关闭思考过程显示', category: 'Agent' },
 ];
 
 let state = {
@@ -47,6 +50,8 @@ let state = {
   commandMode: false,
   commandFilter: '',
   selectedCommandIdx: -1,
+  currentUser: null,
+  webSearch: 'off',
 };
 
 function $(sel) { return document.querySelector(sel); }
@@ -58,6 +63,41 @@ function showToast(msg, type = 'info') {
   toast.className = `toast ${type}`;
   clearTimeout(toast._timeout);
   toast._timeout = setTimeout(() => toast.classList.add('hidden'), 3000);
+}
+
+function showConfirmDialog(title, message, confirmText = '确认', danger = true) {
+  return new Promise((resolve) => {
+    const modal = $('#modal-generic-confirm');
+    $('#generic-confirm-title').textContent = title;
+    $('#generic-confirm-text').textContent = message;
+    const confirmBtn = $('#btn-generic-confirm');
+    confirmBtn.textContent = confirmText;
+    confirmBtn.className = danger ? 'btn-danger' : 'btn-primary';
+
+    const cleanup = () => {
+      modal.classList.add('hidden');
+      confirmBtn.removeEventListener('click', onConfirm);
+    };
+
+    const onConfirm = () => {
+      cleanup();
+      resolve(true);
+    };
+
+    const onCancel = () => {
+      cleanup();
+      resolve(false);
+    };
+
+    confirmBtn.addEventListener('click', onConfirm);
+
+    modal.querySelectorAll('.modal-close').forEach(btn => {
+      btn.addEventListener('click', onCancel);
+    });
+    modal.querySelector('.modal-overlay').addEventListener('click', onCancel);
+
+    modal.classList.remove('hidden');
+  });
 }
 
 function formatSize(bytes) {
@@ -106,6 +146,21 @@ function renderSessions() {
   });
 }
 
+let _searchTimer = null;
+
+async function searchSessions(query) {
+  if (!query.trim()) {
+    await loadSessions();
+    return;
+  }
+  try {
+    state.sessions = await API.get(`/api/sessions/search?q=${encodeURIComponent(query.trim())}`);
+    renderSessions();
+  } catch (e) {
+    console.error('搜索会话失败:', e);
+  }
+}
+
 async function createSession() {
   try {
     const s = await API.post('/api/sessions', { title: '新对话' });
@@ -119,7 +174,8 @@ async function createSession() {
 }
 
 async function deleteSession(id) {
-  if (!confirm('确定要删除这个会话吗？此操作不可撤销。')) return;
+  const confirmed = await showConfirmDialog('删除对话', '确定要删除这个对话吗？此操作不可撤销。', '删除');
+  if (!confirmed) return;
   try {
     await API.del(`/api/sessions/${id}`);
     if (state.currentSessionId === id) {
@@ -151,8 +207,9 @@ function clearMessages() {
   const container = $('#chat-messages');
   container.innerHTML = `
     <div class="welcome-message">
-      <h1>Agent Framework</h1>
-      <p>输入消息开始对话，或输入 <code>/</code> 查看可用命令</p>
+      <h1>OmniAssist</h1>
+      <p>计时算文查网，一站式全能辅助</p>
+      <p style="margin-top:8px;font-size:13px;">输入消息开始对话，或输入 <code>/</code> 查看可用命令</p>
     </div>`;
 }
 
@@ -246,6 +303,7 @@ async function sendMessage() {
       body: JSON.stringify({
         session_id: state.currentSessionId,
         message: message,
+        web_search: state.webSearch,
       }),
       signal: abortController.signal,
     });
@@ -440,11 +498,17 @@ function closeAllModals() {
 async function loadConfig() {
   try {
     const config = await API.get('/api/config');
-    $('#cfg-api-key').value = '';
-    $('#cfg-api-key').placeholder = config.api_key_masked;
-    $('#cfg-base-url').value = config.base_url;
-    $('#cfg-model-name').value = config.model_name;
-    $('#cfg-max-rounds').value = config.max_history_rounds;
+    const apiKeyEl = $('#cfg-api-key');
+    const baseUrlEl = $('#cfg-base-url');
+    const modelNameEl = $('#cfg-model-name');
+    const contextLimitEl = $('#cfg-context-limit');
+    if (apiKeyEl) {
+      apiKeyEl.value = '';
+      apiKeyEl.placeholder = config.api_key_masked || '';
+    }
+    if (baseUrlEl) baseUrlEl.value = config.base_url || '';
+    if (modelNameEl) modelNameEl.value = config.model_name || '';
+    if (contextLimitEl) contextLimitEl.value = config.context_limit || '';
   } catch (e) {
     showToast('加载配置失败: ' + e.message, 'error');
   }
@@ -452,11 +516,18 @@ async function loadConfig() {
 
 async function saveConfig() {
   const body = {};
-  const apiKey = $('#cfg-api-key').value.trim();
-  if (apiKey) body.api_key = apiKey;
-  body.base_url = $('#cfg-base-url').value.trim();
-  body.model_name = $('#cfg-model-name').value.trim();
-  body.max_history_rounds = parseInt($('#cfg-max-rounds').value) || 10;
+  const apiKeyEl = $('#cfg-api-key');
+  const baseUrlEl = $('#cfg-base-url');
+  const modelNameEl = $('#cfg-model-name');
+  const contextLimitEl = $('#cfg-context-limit');
+
+  if (apiKeyEl) {
+    const apiKey = apiKeyEl.value.trim();
+    if (apiKey) body.api_key = apiKey;
+  }
+  if (baseUrlEl) body.base_url = baseUrlEl.value.trim();
+  if (modelNameEl) body.model_name = modelNameEl.value.trim();
+  if (contextLimitEl) body.context_limit = contextLimitEl.value.trim();
 
   try {
     await API.put('/api/config', body);
@@ -464,6 +535,232 @@ async function saveConfig() {
     closeModal('modal-config');
   } catch (e) {
     showToast('保存失败: ' + e.message, 'error');
+  }
+}
+
+async function loadSearchConfig() {
+  try {
+    const config = await API.get('/api/config');
+    const tavilyKeyEl = $('#cfg-tavily-key');
+    if (tavilyKeyEl) {
+      tavilyKeyEl.value = '';
+      tavilyKeyEl.placeholder = config.tavily_api_key_masked || '';
+    }
+  } catch (e) {
+    showToast('加载搜索配置失败: ' + e.message, 'error');
+  }
+}
+
+async function saveSearchConfig() {
+  const tavilyKeyEl = $('#cfg-tavily-key');
+  if (!tavilyKeyEl) return;
+
+  const tavilyKey = tavilyKeyEl.value.trim();
+  if (!tavilyKey) {
+    showToast('请输入 Tavily API Key', 'error');
+    return;
+  }
+
+  try {
+    await API.put('/api/config', { tavily_api_key: tavilyKey });
+    showToast('搜索配置已保存', 'success');
+    closeModal('modal-search-config');
+  } catch (e) {
+    showToast('保存失败: ' + e.message, 'error');
+  }
+}
+
+// ===== 用户信息 =====
+async function loadCurrentUser() {
+  try {
+    state.currentUser = await API.get('/api/auth/me');
+    updateAdminUI();
+  } catch (e) {
+    state.currentUser = null;
+  }
+}
+
+function updateAdminUI() {
+  const isAdmin = state.currentUser && state.currentUser.user_type === 'admin';
+  $$('.drawer-item-admin').forEach(el => {
+    el.classList.toggle('hidden', !isAdmin);
+  });
+}
+
+// ===== 修改密码 =====
+function openChangePassword() {
+  $('#cp-old-password').value = '';
+  $('#cp-new-password').value = '';
+  $('#cp-confirm-password').value = '';
+  openModal('modal-change-password');
+}
+
+async function savePassword() {
+  const oldPassword = $('#cp-old-password').value;
+  const newPassword = $('#cp-new-password').value;
+  const confirmPassword = $('#cp-confirm-password').value;
+
+  if (!oldPassword) { showToast('请输入原密码', 'error'); return; }
+  if (!newPassword) { showToast('请输入新密码', 'error'); return; }
+  if (newPassword.length < 6) { showToast('新密码长度不能少于6位', 'error'); return; }
+  if (newPassword !== confirmPassword) { showToast('两次输入的新密码不一致', 'error'); return; }
+
+  try {
+    await API.put('/api/auth/password', {
+      old_password: oldPassword,
+      new_password: newPassword,
+      confirm_password: confirmPassword,
+    });
+    showToast('密码修改成功', 'success');
+    closeModal('modal-change-password');
+  } catch (e) {
+    showToast('密码修改失败: ' + e.message, 'error');
+  }
+}
+
+// ===== 用户管理 =====
+let _allUsers = [];
+
+async function loadUsers() {
+  const tbody = $('#user-table-body');
+  tbody.innerHTML = '<tr><td colspan="5" class="loading-text">加载中...</td></tr>';
+  try {
+    _allUsers = await API.get('/api/users');
+    renderUserTable(_allUsers);
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="5" class="loading-text">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
+  }
+}
+
+function renderUserTable(users) {
+  const tbody = $('#user-table-body');
+  if (users.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="loading-text">暂无用户</td></tr>';
+    return;
+  }
+  tbody.innerHTML = users.map(u => {
+    const isAdmin = u.user_type === 'admin';
+    const deleteBtn = isAdmin
+      ? '<button class="btn-sm" disabled style="opacity:0.4;cursor:not-allowed;" title="管理员不可删除">-</button>'
+      : `<button class="btn-sm danger" data-action="delete-user" data-id="${u.id}" data-username="${escapeHtml(u.username)}">删除</button>`;
+    return `
+      <tr>
+        <td>${u.id}</td>
+        <td>${escapeHtml(u.username)}</td>
+        <td><span class="user-type-badge ${u.user_type}">${isAdmin ? '管理员' : '普通用户'}</span></td>
+        <td>${escapeHtml(u.description || '-')}</td>
+        <td>
+          <div class="actions">
+            <button class="btn-sm" data-action="edit-user" data-id="${u.id}" data-username="${escapeHtml(u.username)}" data-type="${u.user_type}" data-desc="${escapeHtml(u.description || '')}">编辑</button>
+            ${deleteBtn}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  tbody.querySelectorAll('[data-action="edit-user"]').forEach(btn => {
+    btn.addEventListener('click', () => openEditUser(btn.dataset));
+  });
+  tbody.querySelectorAll('[data-action="delete-user"]').forEach(btn => {
+    btn.addEventListener('click', () => openDeleteConfirm(btn.dataset));
+  });
+}
+
+function filterUsers() {
+  const keyword = $('#user-search').value.trim().toLowerCase();
+  if (!keyword) {
+    renderUserTable(_allUsers);
+    return;
+  }
+  const filtered = _allUsers.filter(u => u.username.toLowerCase().includes(keyword));
+  renderUserTable(filtered);
+}
+
+function openAddUser() {
+  $('#user-form-title').textContent = '新增用户';
+  $('#user-form-id').value = '';
+  $('#user-form-username').value = '';
+  $('#user-form-username').readOnly = false;
+  $('#user-form-password').value = '';
+  $('#user-form-password').type = 'password';
+  $('#btn-toggle-user-password').textContent = '👁';
+  $('#user-form-type').value = 'user';
+  $('#user-form-desc').value = '';
+  openModal('modal-user-form');
+}
+
+function openEditUser(dataset) {
+  $('#user-form-title').textContent = '编辑用户';
+  $('#user-form-id').value = dataset.id;
+  $('#user-form-username').value = dataset.username;
+  $('#user-form-username').readOnly = true;
+  $('#user-form-password').value = '';
+  $('#user-form-password').type = 'password';
+  $('#btn-toggle-user-password').textContent = '👁';
+  $('#user-form-type').value = dataset.type;
+  $('#user-form-desc').value = dataset.desc;
+  openModal('modal-user-form');
+}
+
+async function submitUserForm() {
+  const id = $('#user-form-id').value;
+  const username = $('#user-form-username').value.trim();
+  const password = $('#user-form-password').value;
+  const userType = $('#user-form-type').value;
+  const desc = $('#user-form-desc').value.trim();
+
+  if (!id) {
+    if (!username) { showToast('请输入用户名', 'error'); return; }
+    if (!password) { showToast('请输入密码', 'error'); return; }
+    if (password.length < 6) { showToast('密码长度不能少于6位', 'error'); return; }
+
+    try {
+      await API.post('/api/users', {
+        username, password, user_type: userType, description: desc,
+      });
+      showToast('用户创建成功', 'success');
+      closeModal('modal-user-form');
+      loadUsers();
+    } catch (e) {
+      showToast('创建失败: ' + e.message, 'error');
+    }
+  } else {
+    const body = { user_type: userType, description: desc };
+    if (password) {
+      if (password.length < 6) { showToast('密码长度不能少于6位', 'error'); return; }
+      body.password = password;
+    }
+
+    try {
+      await API.put('/api/users/' + id, body);
+      showToast('用户更新成功', 'success');
+      closeModal('modal-user-form');
+      loadUsers();
+    } catch (e) {
+      showToast('更新失败: ' + e.message, 'error');
+    }
+  }
+}
+
+let _deleteUserId = null;
+
+function openDeleteConfirm(dataset) {
+  _deleteUserId = dataset.id;
+  $('#confirm-delete-username').textContent = dataset.username;
+  openModal('modal-confirm-delete');
+}
+
+async function confirmDeleteUser() {
+  if (!_deleteUserId) return;
+  try {
+    await API.del('/api/users/' + _deleteUserId);
+    showToast('用户已删除', 'success');
+    closeModal('modal-confirm-delete');
+    _deleteUserId = null;
+    loadUsers();
+  } catch (e) {
+    showToast('删除失败: ' + e.message, 'error');
   }
 }
 
@@ -561,7 +858,8 @@ function downloadFile(path) {
 }
 
 async function deleteFile(path) {
-  if (!confirm(`确定要删除 ${path} 吗？`)) return;
+  const confirmed = await showConfirmDialog('删除文件', `确定要删除 ${path} 吗？`, '删除');
+  if (!confirmed) return;
   try {
     await API.del(`/api/files?path=${encodeURIComponent(path)}`);
     showToast('文件已删除', 'success');
@@ -600,6 +898,74 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#btn-new-session').addEventListener('click', createSession);
   $('#btn-settings').addEventListener('click', toggleDrawer);
   $('#btn-close-drawer').addEventListener('click', () => $('#settings-drawer').classList.add('hidden'));
+
+  // 搜索对话弹窗
+  const searchDialog = $('#modal-search-dialog');
+  const searchDialogInput = $('#search-dialog-input');
+  const searchDialogResults = $('#search-dialog-results');
+  let _searchDialogTimer = null;
+
+  $('#btn-search-dialog').addEventListener('click', () => {
+    searchDialog.classList.remove('hidden');
+    setTimeout(() => searchDialogInput.focus(), 100);
+    searchDialogInput.value = '';
+    searchDialogResults.innerHTML = '<p class="search-dialog-hint">输入关键词搜索历史对话</p>';
+  });
+
+  $('#btn-search-dialog-close').addEventListener('click', () => {
+    searchDialog.classList.add('hidden');
+  });
+
+  searchDialog.querySelector('.modal-overlay').addEventListener('click', () => {
+    searchDialog.classList.add('hidden');
+  });
+
+  searchDialogInput.addEventListener('input', () => {
+    clearTimeout(_searchDialogTimer);
+    const query = searchDialogInput.value.trim();
+    if (!query) {
+      searchDialogResults.innerHTML = '<p class="search-dialog-hint">输入关键词搜索历史对话</p>';
+      return;
+    }
+    _searchDialogTimer = setTimeout(() => searchSessionsDialog(query), 300);
+  });
+
+  async function searchSessionsDialog(query) {
+    try {
+      const sessions = await API.get(`/api/sessions/search?q=${encodeURIComponent(query)}`);
+      if (sessions.length === 0) {
+        searchDialogResults.innerHTML = '<p class="search-dialog-empty">未找到匹配的对话</p>';
+        return;
+      }
+      searchDialogResults.innerHTML = sessions.map(s => {
+        const date = new Date(s.created_at * 1000);
+        const timeStr = date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+        return `
+          <div class="search-dialog-item" data-id="${s.id}">
+            <div class="item-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            </div>
+            <div class="item-info">
+              <div class="item-title">${escapeHtml(s.title || '新对话')}</div>
+              <div class="item-meta">${timeStr} · ${s.message_count || 0} 条消息</div>
+            </div>
+            <div class="item-enter">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      searchDialogResults.querySelectorAll('.search-dialog-item').forEach(el => {
+        el.addEventListener('click', () => {
+          searchDialog.classList.add('hidden');
+          switchSession(el.dataset.id);
+        });
+      });
+    } catch (e) {
+      searchDialogResults.innerHTML = '<p class="search-dialog-empty">搜索失败: ' + escapeHtml(e.message) + '</p>';
+    }
+  }
 
   $('#btn-send').addEventListener('click', () => {
     if (state.isStreaming) {
@@ -671,6 +1037,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (action === 'config') { loadConfig(); openModal('modal-config'); }
       if (action === 'tools') { loadTools(); openModal('modal-tools'); }
       if (action === 'files') { loadFiles(); openModal('modal-files'); }
+      if (action === 'search-config') { loadSearchConfig(); openModal('modal-search-config'); }
+      if (action === 'change-password') { openChangePassword(); }
+      if (action === 'user-management') { loadUsers(); openModal('modal-user-management'); }
       if (action === 'logout') {
         document.cookie = 'auth_token=; path=/; max-age=0';
         window.location.href = '/login.html';
@@ -693,6 +1062,54 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 配置保存
   $('#btn-save-config').addEventListener('click', saveConfig);
+
+  // 修改密码
+  $('#btn-save-password').addEventListener('click', savePassword);
+
+  // 用户管理
+  $('#btn-add-user').addEventListener('click', openAddUser);
+  $('#btn-submit-user').addEventListener('click', submitUserForm);
+  $('#btn-confirm-delete').addEventListener('click', confirmDeleteUser);
+  $('#user-search').addEventListener('input', filterUsers);
+
+  // 密码显示切换
+  $('#btn-toggle-user-password').addEventListener('click', () => {
+    const input = $('#user-form-password');
+    const btn = $('#btn-toggle-user-password');
+    if (input.type === 'password') {
+      input.type = 'text';
+      btn.textContent = '🙈';
+    } else {
+      input.type = 'password';
+      btn.textContent = '👁';
+    }
+  });
+
+  // 加载当前用户信息
+  loadCurrentUser();
+
+  // 联网搜索三态切换: off -> auto -> on -> off
+  const WEB_SEARCH_MODES = ['off', 'auto', 'on'];
+  const WEB_SEARCH_LABELS = {
+    off: '联网搜索',
+    auto: '联网搜索·自动',
+    on: '联网搜索·开启',
+  };
+  $('#btn-web-search').addEventListener('click', () => {
+    const btn = $('#btn-web-search');
+    const currentIdx = WEB_SEARCH_MODES.indexOf(state.webSearch);
+    const nextIdx = (currentIdx + 1) % WEB_SEARCH_MODES.length;
+    state.webSearch = WEB_SEARCH_MODES[nextIdx];
+    btn.dataset.mode = state.webSearch;
+    btn.querySelector('span').textContent = WEB_SEARCH_LABELS[state.webSearch];
+    btn.classList.remove('active', 'auto');
+    if (state.webSearch === 'on') btn.classList.add('active');
+    if (state.webSearch === 'auto') btn.classList.add('auto');
+    btn.title = WEB_SEARCH_LABELS[state.webSearch];
+  });
+
+  // 保存搜索配置
+  $('#btn-save-search-config').addEventListener('click', saveSearchConfig);
 
   // 快捷键
   document.addEventListener('keydown', (e) => {
