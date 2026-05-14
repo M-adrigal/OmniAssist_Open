@@ -15,6 +15,12 @@ agent/.agent_config
 agent/.agent_salt
 agent/tool_sandbox/
 
+# Database files (generated at runtime)
+*.db
+*.db-shm
+*.db-wal
+.db_secret
+
 # Generated output files
 document_output/
 Document_output/

@@ -65,10 +65,6 @@
         <span>文件列表</span>
       </button>
       <div style="border-top: 1px solid var(--border); margin: 4px 0;"></div>
-      <button class="drawer-item" data-action="search-config">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-        <span>联网搜索配置</span>
-      </button>
       <button class="drawer-item" data-action="change-password">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         <span>修改密码</span>
@@ -108,6 +104,10 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
           <span>联网搜索</span>
         </button>
+        <button id="btn-thought" class="btn-thought" data-mode="off">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/><path d="M12 6v.01M12 10v4M12 17v.01"/></svg>
+          <span>思考过程</span>
+        </button>
       </div>
     </div>
   </main>
@@ -122,46 +122,57 @@
       <button class="btn-icon modal-close">&times;</button>
     </div>
     <div class="modal-body">
-      <div class="form-group">
-        <label>API Key</label>
-        <input type="password" id="cfg-api-key" placeholder="输入 API Key">
+      <div id="config-tabs" class="config-tabs hidden">
+        <button class="config-tab active" data-tab="personal">个人模型</button>
+        <button class="config-tab" data-tab="global">全局模型</button>
+        <button class="config-tab" data-tab="search">联网搜索</button>
       </div>
-      <div class="form-group">
-        <label>Base URL</label>
-        <input type="text" id="cfg-base-url" placeholder="https://api.openai.com/v1">
+      <div id="config-tab-personal" class="config-tab-content">
+        <div class="form-group">
+          <label>API Key</label>
+          <input type="password" id="cfg-api-key" placeholder="输入 API Key">
+        </div>
+        <div class="form-group">
+          <label>Base URL</label>
+          <input type="text" id="cfg-base-url" placeholder="https://api.openai.com/v1">
+        </div>
+        <div class="form-group">
+          <label>模型名称</label>
+          <input type="text" id="cfg-model-name" placeholder="gpt-4">
+        </div>
+        <div class="form-group">
+          <label>上下文限制</label>
+          <input type="text" id="cfg-context-limit" placeholder="如 32k、64k、128k，留空则使用模型最大上下文">
+        </div>
       </div>
-      <div class="form-group">
-        <label>模型名称</label>
-        <input type="text" id="cfg-model-name" placeholder="gpt-4">
+      <div id="config-tab-global" class="config-tab-content hidden">
+        <div class="form-group">
+          <label>API Key</label>
+          <input type="password" id="cfg-global-api-key" placeholder="输入全局 API Key">
+        </div>
+        <div class="form-group">
+          <label>Base URL</label>
+          <input type="text" id="cfg-global-base-url" placeholder="https://api.openai.com/v1">
+        </div>
+        <div class="form-group">
+          <label>模型名称</label>
+          <input type="text" id="cfg-global-model-name" placeholder="gpt-4">
+        </div>
+        <div class="form-group">
+          <label>上下文限制</label>
+          <input type="text" id="cfg-global-context-limit" placeholder="如 32k、64k、128k，留空则使用模型最大上下文">
+        </div>
       </div>
-      <div class="form-group">
-        <label>上下文限制</label>
-        <input type="text" id="cfg-context-limit" placeholder="如 32k、64k、128k，留空则使用模型最大上下文">
+      <div id="config-tab-search" class="config-tab-content hidden">
+        <div class="form-group">
+          <label>Tavily API Key（联网搜索）</label>
+          <input type="password" id="cfg-search-tavily-key" placeholder="输入 Tavily API Key 以启用联网搜索">
+          <p class="form-hint">获取 API Key：<a href="https://app.tavily.com/home" target="_blank">https://app.tavily.com/home</a></p>
+        </div>
       </div>
     </div>
     <div class="modal-footer">
       <button id="btn-save-config" class="btn-primary">保存配置</button>
-    </div>
-  </div>
-</div>
-
-<!-- 模态框: 联网搜索配置 -->
-<div id="modal-search-config" class="modal hidden">
-  <div class="modal-overlay"></div>
-  <div class="modal-content modal-sm">
-    <div class="modal-header">
-      <h3>联网搜索配置</h3>
-      <button class="btn-icon modal-close">&times;</button>
-    </div>
-    <div class="modal-body">
-      <div class="form-group">
-        <label>Tavily API Key</label>
-        <input type="password" id="cfg-tavily-key" placeholder="输入 Tavily API Key 以启用联网搜索">
-        <p class="form-hint">获取 API Key：<a href="https://app.tavily.com/home" target="_blank">https://app.tavily.com/home</a></p>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button id="btn-save-search-config" class="btn-primary">保存配置</button>
     </div>
   </div>
 </div>

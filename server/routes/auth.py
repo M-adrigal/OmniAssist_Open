@@ -7,7 +7,7 @@ from base64 import urlsafe_b64encode, urlsafe_b64decode
 
 from fastapi import APIRouter, HTTPException, Request
 from server.models import LoginRequest, LoginResponse, ChangePasswordRequest, CurrentUserResponse
-from server.database import authenticate, change_password, get_user_by_id
+from server.database import authenticate, change_password, get_user_by_id, check_permission, get_role_permissions
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -70,11 +70,15 @@ def get_current_user(request: Request) -> dict | None:
 
 
 def require_admin(request: Request):
+    return require_permission(request, "users", "read")
+
+
+def require_permission(request: Request, resource: str, action: str):
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
-    if user["user_type"] != "admin":
-        raise HTTPException(status_code=403, detail="需要管理员权限")
+    if not check_permission(user["user_type"], resource, action):
+        raise HTTPException(status_code=403, detail=f"权限不足：需要 {resource}:{action}")
     return user
 
 
@@ -135,3 +139,13 @@ def get_me(request: Request):
         user_type=db_user["user_type"],
         description=db_user.get("description", ""),
     )
+
+
+@router.get("/permissions")
+def get_my_permissions(request: Request):
+    user = require_login(request)
+    permissions = get_role_permissions(user["user_type"])
+    return {
+        "role": user["user_type"],
+        "permissions": permissions,
+    }

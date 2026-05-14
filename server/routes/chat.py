@@ -2,11 +2,14 @@ import json
 import asyncio
 import re
 from datetime import datetime
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from server.models import ChatRequest
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+
+from server.routes.auth import get_current_user
 
 
 def get_dependencies():
@@ -17,6 +20,21 @@ def get_dependencies():
 def get_session_store():
     from server.main import get_session_store as gss
     return gss()
+
+
+def _resolve_llm_client(user_id: int):
+    from server.database import resolve_model_config
+    from agent.llm import LLMClient
+    cfg = resolve_model_config(user_id)
+    if not cfg.get("api_key"):
+        return None, cfg
+    llm = LLMClient()
+    llm.client = __import__("openai").OpenAI(
+        api_key=cfg["api_key"],
+        base_url=cfg.get("base_url", "")
+    )
+    llm.model = cfg.get("model_name", "")
+    return llm, cfg
 
 
 def _load_session_messages(session_id: str) -> list:
@@ -255,18 +273,169 @@ def _do_web_search(query: str, api_key: str, scenario: str = "general") -> str:
         return f"搜索出错: {str(e)}"
 
 
-async def _stream_chat(message: str, session_id: str = None, web_search: str = "off"):
-    agent, llm, registry, config = get_dependencies()
+async def _handle_command(message: str, session_id: str, user_id: int):
+    agent, _, registry, config = get_dependencies()
     store = get_session_store()
 
-    if not config.get_api_key():
+    msg = message.strip()
+
+    if msg == "/help" or msg == "help":
+        help_text = """**可用命令：**
+
+| 命令 | 说明 |
+|------|------|
+| `/help` | 显示此帮助信息 |
+| `/reset` | 重置当前对话上下文 |
+| `/tool list` | 查看所有已安装的工具 |
+| `/tool add` | 通过自然语言新增工具 |
+| `/tool update <工具名>` | 修改已有工具 |
+| `/tool delete <工具名>` | 删除指定工具 |
+| `/model show` | 查看当前模型配置 |
+| `/agent thought on` | 开启思考过程显示 |
+| `/agent thought off` | 关闭思考过程显示 |
+
+> 提示：`/tool add`、`/tool update`、`/tool delete`、`/model set`、`/model update` 等操作也可以在左侧设置面板中完成。"""
+        yield f"data: {json.dumps({'type': 'token', 'content': help_text})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        return
+
+    if msg == "/reset" or msg == "reset":
+        agent.reset()
+        if session_id and session_id in store:
+            store[session_id]["messages"] = []
+            _save_session_messages(session_id, [])
+        yield f"data: {json.dumps({'type': 'token', 'content': '对话上下文已重置，可以开始新的对话。'})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        return
+
+    if msg == "/tool list":
+        tools = registry.list_tools()
+        if not tools:
+            text = "当前没有已安装的工具。\n\n使用 `/tool add` 命令或在设置面板中通过自然语言创建工具。"
+        else:
+            lines = [f"已安装 {len(tools)} 个工具："]
+            for name, info in tools.items():
+                mode = ""
+                tool_data = _load_tool_json(name)
+                if tool_data:
+                    mode_map = {
+                        "local_execution": "本地执行",
+                        "http_request": "HTTP请求",
+                        "llm_simulated": "LLM模拟",
+                    }
+                    mode = f" ({mode_map.get(tool_data.get('execution_mode', ''), '')})"
+                lines.append(f"- **{name}**{mode}: {info.get('description', '')}")
+            text = "\n".join(lines)
+        yield f"data: {json.dumps({'type': 'token', 'content': text})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        return
+
+    if msg.startswith("/tool add"):
+        yield f"data: {json.dumps({'type': 'token', 'content': '请在左侧设置面板 → **工具列表** 中使用自然语言创建工具，或直接描述你需要的工具功能，我来帮你分析。'})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        return
+
+    if msg.startswith("/tool update"):
+        parts = msg.split(maxsplit=2)
+        tool_name = parts[2] if len(parts) > 2 else ""
+        if tool_name:
+            yield f"data: {json.dumps({'type': 'token', 'content': f'请在左侧设置面板 → **工具列表** 中找到工具 `{tool_name}` 并进行修改。'})}\n\n"
+        else:
+            yield f"data: {json.dumps({'type': 'token', 'content': '用法：`/tool update <工具名>`\n\n也可以在左侧设置面板 → **工具列表** 中修改工具。'})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        return
+
+    if msg.startswith("/tool delete"):
+        parts = msg.split(maxsplit=2)
+        tool_name = parts[2] if len(parts) > 2 else ""
+        if tool_name:
+            yield f"data: {json.dumps({'type': 'token', 'content': f'请在左侧设置面板 → **工具列表** 中找到工具 `{tool_name}` 并删除。'})}\n\n"
+        else:
+            yield f"data: {json.dumps({'type': 'token', 'content': '用法：`/tool delete <工具名>`\n\n也可以在左侧设置面板 → **工具列表** 中删除工具。'})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        return
+
+    if msg == "/model show":
+        from server.database import resolve_model_config
+        cfg = resolve_model_config(user_id)
+        text = (
+            f"**当前模型配置：**\n\n"
+            f"- 模型名称：`{cfg.get('model_name', '(未设置)')}`\n"
+            f"- Base URL：`{cfg.get('base_url', '(未设置)')}`\n"
+            f"- API Key：{cfg.get('api_key_masked', '(未设置)')}\n"
+            f"- 上下文限制：{cfg.get('context_limit') or '使用模型最大上下文'}\n"
+            f"- 配置类型：{cfg.get('config_type', 'none')}"
+        )
+        yield f"data: {json.dumps({'type': 'token', 'content': text})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        return
+
+    if msg.startswith("/model set") or msg.startswith("/model update"):
+        yield f"data: {json.dumps({'type': 'token', 'content': '请在左侧设置面板 → **模型配置** 中配置模型参数。'})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        return
+
+    if msg.startswith("/agent thought"):
+        parts = msg.split(maxsplit=3)
+        arg = parts[3].lower() if len(parts) > 3 else ""
+        if arg in ("on", "off"):
+            enabled = (arg == "on")
+            agent.set_show_thought(enabled)
+            try:
+                from server.database import save_model_config
+                save_model_config(user_id, show_thought=enabled)
+            except Exception:
+                pass
+            status = "开启" if enabled else "关闭"
+            yield f"data: {json.dumps({'type': 'token', 'content': f'思考过程显示已{status}。'})}\n\n"
+        else:
+            yield f"data: {json.dumps({'type': 'token', 'content': '用法：`/agent thought on` 或 `/agent thought off`'})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        return
+
+    return
+
+
+def _load_tool_json(tool_name: str) -> dict:
+    import os as _os
+    base_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    tools_dir = _os.path.join(base_dir, "agent", "agent_tools")
+    filepath = _os.path.join(tools_dir, f"{tool_name}.json")
+    if _os.path.isfile(filepath):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    return {}
+
+
+async def _stream_chat(message: str, session_id: str = None, web_search: str = "off", user_id: int = None):
+    agent, _, registry, _ = get_dependencies()
+    store = get_session_store()
+
+    if user_id is None:
+        yield f"data: {json.dumps({'type': 'error', 'content': '用户未登录'})}\n\n"
+        return
+
+    if message.strip().startswith("/"):
+        handled = False
+        async for chunk in _handle_command(message, session_id, user_id):
+            if chunk is not None:
+                handled = True
+                yield chunk
+        if handled:
+            return
+
+    llm, cfg = _resolve_llm_client(user_id)
+    if llm is None:
         yield f"data: {json.dumps({'type': 'error', 'content': '请先在设置中配置模型 API Key'})}\n\n"
         return
 
     if session_id:
         messages = _load_session_messages(session_id)
         if messages:
-            compressed = _compress_if_needed(messages, llm, config)
+            compressed = _compress_if_needed(messages, llm, cfg)
             if len(compressed) < len(messages):
                 _save_session_messages(session_id, compressed)
                 messages = compressed
@@ -280,7 +449,9 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
     search_context = ""
     search_scenario = "general"
     if web_search in ("auto", "on"):
-        tavily_key = config.get("tavily_api_key", "")
+        from server.database import get_search_config
+        search_cfg = get_search_config()
+        tavily_key = search_cfg.get("tavily_api_key", "")
         if tavily_key:
             search_scenario = _classify_query(message)
             scenario_label = SCENARIO_CONFIG[search_scenario]["label"]
@@ -380,12 +551,14 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
 
 @router.post("/stream")
-async def chat_stream(body: ChatRequest):
+async def chat_stream(body: ChatRequest, request: Request):
     if not body.message.strip():
         raise HTTPException(status_code=400, detail="消息不能为空")
 
+    user = get_current_user(request)
+
     return StreamingResponse(
-        _stream_chat(body.message, body.session_id, body.web_search),
+        _stream_chat(body.message, body.session_id, body.web_search, user["id"]),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

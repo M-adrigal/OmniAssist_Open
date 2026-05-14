@@ -1,6 +1,5 @@
 import os
 import sys
-import secrets
 import subprocess
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,7 +18,7 @@ from agent.agent import SimpleAgent
 from agent.main import _create_executor
 
 from server.routes import routers
-from server.database import init_db, DB_PATH
+from server.database import init_db, DB_PATH, _generate_random_password
 
 _config: AgentConfig = None
 _llm_client: LLMClient = None
@@ -40,7 +39,42 @@ def init_services():
     tools_dir = os.path.join(base_dir, "agent", "agent_tools")
 
     _config = AgentConfig(config_path)
-    _llm_client = LLMClient(config=_config)
+
+    from server.database import get_model_config, save_model_config, get_search_config, save_search_config
+
+    global_cfg = get_model_config(None)
+
+    if global_cfg and global_cfg.get("api_key"):
+        _llm_client = LLMClient(
+            api_key=global_cfg["api_key"],
+            base_url=global_cfg.get("base_url", ""),
+            model=global_cfg.get("model_name", ""),
+            config=_config,
+        )
+    else:
+        file_api_key = _config.get_api_key()
+        if file_api_key:
+            save_model_config(
+                None,
+                api_key=file_api_key,
+                base_url=_config.get("base_url", ""),
+                model_name=_config.get("model_name", ""),
+                context_limit=_config.get("context_limit", ""),
+                show_thought=_config.get("show_thought", False),
+            )
+            tavily_encrypted = _config._data.get("tavily_api_key_encrypted", "")
+            if tavily_encrypted:
+                try:
+                    from agent.config import _decrypt as _file_decrypt
+                    tavily_key = _file_decrypt(tavily_encrypted, _config.config_dir)
+                    if tavily_key:
+                        save_search_config(tavily_api_key=tavily_key)
+                except Exception:
+                    pass
+            global_cfg = get_model_config(None)
+
+        _llm_client = LLMClient(config=_config)
+
     _tool_registry = ToolRegistry()
     _tool_builder = ToolBuilder(_llm_client)
 
@@ -50,8 +84,16 @@ def init_services():
             _create_executor(name, prompt, mode, code, http_cfg, _llm_client, deps)
     )
 
-    show_thought = _config.get("show_thought", False)
-    context_limit = _config.get("context_limit", "")
+    show_thought = False
+    context_limit = ""
+
+    if global_cfg:
+        show_thought = global_cfg.get("show_thought", False)
+        context_limit = global_cfg.get("context_limit", "")
+    else:
+        show_thought = _config.get("show_thought", False)
+        context_limit = _config.get("context_limit", "")
+
     _agent = SimpleAgent(_llm_client, _tool_registry, context_limit=context_limit, show_thought=show_thought)
 
 
@@ -79,6 +121,33 @@ def update_agent_context_limit(context_limit: str):
     global _agent
     if _agent:
         _agent.update_context_limit(context_limit)
+
+
+def update_agent_show_thought(show_thought: bool):
+    global _agent
+    if _agent:
+        _agent.set_show_thought(show_thought)
+
+
+def refresh_global_llm():
+    global _llm_client, _agent
+    from server.database import get_model_config
+
+    cfg = get_model_config(None)
+    if not cfg or not cfg.get("api_key"):
+        return
+
+    _llm_client.client = __import__("openai").OpenAI(
+        api_key=cfg["api_key"],
+        base_url=cfg.get("base_url", "")
+    )
+    _llm_client.model = cfg.get("model_name", "")
+
+    context_limit = cfg.get("context_limit", "")
+    show_thought = cfg.get("show_thought", False)
+    if _agent:
+        _agent.update_context_limit(context_limit)
+        _agent.set_show_thought(show_thought)
 
 
 def get_session_store() -> dict:
@@ -148,7 +217,9 @@ def startup():
         print(f"[用户体系] 默认管理员密码: {admin_pw}")
         print(f"[用户体系] 请登录后及时修改密码！\n")
 
-    _db_password = _generate_db_password()
+    refresh_global_llm()
+
+    _db_password = _generate_random_password()
     _start_sqlite_web()
 
 
@@ -191,11 +262,6 @@ def _check_and_free_port(port: int):
         time.sleep(0.5)
     except Exception as e:
         print(f"[启动] 端口检测异常: {e}")
-
-
-def _generate_db_password(length: int = 8) -> str:
-    chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    return ''.join(secrets.choice(chars) for _ in range(length))
 
 
 def _start_sqlite_web():

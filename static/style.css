@@ -43,6 +43,8 @@
   --shadow: 0 4px 24px rgba(0,0,0,0.5);
 }
 
+.hidden { display: none !important; }
+
 .dark .chat-input-wrapper {
   background: #1e1e1e;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.04);
@@ -52,16 +54,19 @@
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4), 0 0 0 2px rgba(59, 130, 246, 0.4);
 }
 
-.dark .btn-web-search {
+.dark .btn-web-search,
+.dark .btn-thought {
   background: #2a2a2a;
   color: #cccccc;
 }
 
-.dark .btn-web-search:hover {
+.dark .btn-web-search:hover,
+.dark .btn-thought:hover {
   background: #333333;
 }
 
-.dark .btn-web-search.active {
+.dark .btn-web-search.active,
+.dark .btn-thought.active {
   background: rgba(59, 130, 246, 0.2);
   color: #60a5fa;
 }
@@ -434,7 +439,8 @@ body {
   margin-top: 12px;
 }
 
-.btn-web-search {
+.btn-web-search,
+.btn-thought {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -451,20 +457,24 @@ body {
   user-select: none;
 }
 
-.btn-web-search:hover {
+.btn-web-search:hover,
+.btn-thought:hover {
   background: #E5E7EB;
 }
 
-.btn-web-search:active {
+.btn-web-search:active,
+.btn-thought:active {
   transform: scale(0.96);
 }
 
-.btn-web-search.active {
+.btn-web-search.active,
+.btn-thought.active {
   background: rgba(59, 130, 246, 0.12);
   color: var(--accent);
 }
 
-.btn-web-search.active svg {
+.btn-web-search.active svg,
+.btn-thought.active svg {
   stroke: var(--accent);
 }
 
@@ -723,6 +733,39 @@ body {
 
 .form-hint a:hover {
   text-decoration: underline;
+}
+
+.config-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 20px;
+  border-bottom: 2px solid var(--border);
+}
+
+.config-tab {
+  padding: 8px 20px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.config-tab:hover {
+  color: var(--text-primary);
+}
+
+.config-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.config-tab-content.hidden {
+  display: none;
 }
 
 /* 工具列表 */

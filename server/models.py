@@ -21,7 +21,7 @@ class ModelConfigUpdate(BaseModel):
     base_url: Optional[str] = None
     model_name: Optional[str] = None
     context_limit: Optional[str] = None
-    tavily_api_key: Optional[str] = None
+    show_thought: Optional[bool] = None
 
 
 class ModelConfigResponse(BaseModel):
@@ -29,7 +29,13 @@ class ModelConfigResponse(BaseModel):
     base_url: str
     api_key_masked: str
     context_limit: str
-    tavily_api_key_masked: str
+    config_type: str = "none"
+    show_thought: bool = False
+
+
+class SearchConfigResponse(BaseModel):
+    tavily_api_key: Optional[str] = None
+    tavily_api_key_masked: str = "(未设置)"
 
 
 class ToolCreate(BaseModel):

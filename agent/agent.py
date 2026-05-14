@@ -171,6 +171,97 @@ class SimpleAgent:
 
         return recent_messages
 
+    def run(self, user_input: str, max_iterations=10) -> str:
+        """运行 Agent 主循环（单轮任务）
+
+        Args:
+            user_input (str): 用户输入
+            max_iterations (int, optional): 最大迭代次数，默认为 10
+
+        Returns:
+            str: 最终回复
+        """
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_input}
+        ]
+
+        tool_specs = self.tool_registry.get_all_openai_specs()
+
+        for _ in range(max_iterations):
+            response = self.llm.chat(messages, tools=tool_specs)
+
+            if "tool_calls" not in response:
+                return response["content"]
+
+            messages.append(response)
+
+            for tool_call in response["tool_calls"]:
+                tool_name = tool_call["function"]["name"]
+                tool_arguments = json.loads(tool_call["function"]["arguments"])
+
+                print(f"[调用工具] {tool_name} 参数: {tool_arguments}")
+
+                tool_result = self.tool_registry.execute(tool_name, tool_arguments)
+
+                print(f"[工具结果] {tool_result}")
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call["id"],
+                    "name": tool_name,
+                    "content": tool_result
+                })
+
+        return "已达到最大迭代次数，无法完成任务。"
+
+    def chat(self, user_input: str, max_iterations=10) -> str:
+        """多轮对话，保持上下文
+
+        Args:
+            user_input (str): 用户输入
+            max_iterations (int, optional): 最大迭代次数，默认为 10
+
+        Returns:
+            str: 最终回复
+        """
+        self.messages.append({"role": "user", "content": user_input})
+
+        self._trim_messages()
+
+        tool_specs = self.tool_registry.get_all_openai_specs()
+
+        for _ in range(max_iterations):
+            response = self.llm.chat(self.messages, tools=tool_specs)
+
+            if self.show_thought and response.get("content"):
+                print(f"[思考] {response['content'].strip()}")
+
+            if "tool_calls" not in response:
+                self.messages.append(response)
+                return response["content"]
+
+            self.messages.append(response)
+
+            for tool_call in response["tool_calls"]:
+                tool_name = tool_call["function"]["name"]
+                tool_arguments = json.loads(tool_call["function"]["arguments"])
+
+                print(f"[调用工具] {tool_name} 参数: {tool_arguments}")
+
+                tool_result = self.tool_registry.execute(tool_name, tool_arguments)
+
+                print(f"[工具结果] {tool_result}")
+
+                self.messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call["id"],
+                    "name": tool_name,
+                    "content": tool_result
+                })
+
+        return "已达到最大迭代次数，无法完成任务。"
+
 
 def _generate_summary(messages: list, llm_client) -> str:
     """使用 LLM 生成对话摘要"""
@@ -196,97 +287,6 @@ def _generate_summary(messages: list, llm_client) -> str:
         return response.get("content", "").strip()
     except Exception:
         return ""
-
-    def run(self, user_input: str, max_iterations=10) -> str:
-        """运行 Agent 主循环（单轮任务）
-
-        Args:
-            user_input (str): 用户输入
-            max_iterations (int, optional): 最大迭代次数，默认为 10
-
-        Returns:
-            str: 最终回复
-        """
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_input}
-        ]
-        
-        tool_specs = self.tool_registry.get_all_openai_specs()
-        
-        for _ in range(max_iterations):
-            response = self.llm.chat(messages, tools=tool_specs)
-            
-            if "tool_calls" not in response:
-                return response["content"]
-            
-            messages.append(response)
-            
-            for tool_call in response["tool_calls"]:
-                tool_name = tool_call["function"]["name"]
-                tool_arguments = json.loads(tool_call["function"]["arguments"])
-                
-                print(f"[调用工具] {tool_name} 参数: {tool_arguments}")
-                
-                tool_result = self.tool_registry.execute(tool_name, tool_arguments)
-                
-                print(f"[工具结果] {tool_result}")
-                
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call["id"],
-                    "name": tool_name,
-                    "content": tool_result
-                })
-        
-        return "已达到最大迭代次数，无法完成任务。"
-
-    def chat(self, user_input: str, max_iterations=10) -> str:
-        """多轮对话，保持上下文
-
-        Args:
-            user_input (str): 用户输入
-            max_iterations (int, optional): 最大迭代次数，默认为 10
-
-        Returns:
-            str: 最终回复
-        """
-        self.messages.append({"role": "user", "content": user_input})
-        
-        self._trim_messages()
-        
-        tool_specs = self.tool_registry.get_all_openai_specs()
-        
-        for _ in range(max_iterations):
-            response = self.llm.chat(self.messages, tools=tool_specs)
-            
-            if self.show_thought and response.get("content"):
-                print(f"[思考] {response['content'].strip()}")
-            
-            if "tool_calls" not in response:
-                self.messages.append(response)
-                return response["content"]
-            
-            self.messages.append(response)
-            
-            for tool_call in response["tool_calls"]:
-                tool_name = tool_call["function"]["name"]
-                tool_arguments = json.loads(tool_call["function"]["arguments"])
-                
-                print(f"[调用工具] {tool_name} 参数: {tool_arguments}")
-                
-                tool_result = self.tool_registry.execute(tool_name, tool_arguments)
-                
-                print(f"[工具结果] {tool_result}")
-                
-                self.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call["id"],
-                    "name": tool_name,
-                    "content": tool_result
-                })
-        
-        return "已达到最大迭代次数，无法完成任务。"
 
 
 if __name__ == "__main__":

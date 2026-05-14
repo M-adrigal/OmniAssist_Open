@@ -57,6 +57,50 @@ def init_db() -> str:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at)")
 
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS model_configs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER UNIQUE,
+            api_key_encrypted TEXT DEFAULT '',
+            base_url TEXT DEFAULT '',
+            model_name TEXT DEFAULT '',
+            context_limit TEXT DEFAULT '',
+            show_thought INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    """)
+
+    try:
+        conn.execute("ALTER TABLE model_configs ADD COLUMN show_thought INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_model_configs_user_id ON model_configs(user_id)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS search_config (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            tavily_api_key_encrypted TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS permissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            role TEXT NOT NULL,
+            resource TEXT NOT NULL,
+            action TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(role, resource, action)
+        )
+    """)
+
+    _seed_default_permissions(conn)
+
     existing = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()
     admin_password = None
 
@@ -84,6 +128,85 @@ def init_db() -> str:
 def _generate_random_password(length: int = 8) -> str:
     chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     return ''.join(secrets.choice(chars) for _ in range(length))
+
+
+_DEFAULT_PERMISSIONS = {
+    "admin": {
+        "users": ["read", "write", "delete"],
+        "model_config_global": ["read", "write"],
+        "search_config": ["read", "write"],
+        "model_config_personal": ["read", "write"],
+        "tools": ["read", "write", "delete"],
+        "sessions": ["read", "write", "delete"],
+    },
+    "user": {
+        "model_config_personal": ["read", "write"],
+        "tools": ["read", "write", "delete"],
+        "sessions": ["read", "write", "delete"],
+    },
+}
+
+
+def _seed_default_permissions(conn: sqlite3.Connection):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for role, resources in _DEFAULT_PERMISSIONS.items():
+        for resource, actions in resources.items():
+            for action in actions:
+                conn.execute(
+                    "INSERT OR IGNORE INTO permissions (role, resource, action, created_at) VALUES (?, ?, ?, ?)",
+                    (role, resource, action, now)
+                )
+    conn.commit()
+
+
+def get_role_permissions(role: str) -> dict[str, list[str]]:
+    conn = _get_connection()
+    rows = conn.execute(
+        "SELECT resource, action FROM permissions WHERE role = ? ORDER BY resource, action",
+        (role,)
+    ).fetchall()
+    result: dict[str, list[str]] = {}
+    for row in rows:
+        resource = row["resource"]
+        action = row["action"]
+        if resource not in result:
+            result[resource] = []
+        result[resource].append(action)
+    return result
+
+
+def check_permission(role: str, resource: str, action: str) -> bool:
+    conn = _get_connection()
+    row = conn.execute(
+        "SELECT 1 FROM permissions WHERE role = ? AND resource = ? AND action = ?",
+        (role, resource, action)
+    ).fetchone()
+    return row is not None
+
+
+def set_permission(role: str, resource: str, action: str, granted: bool) -> bool:
+    conn = _get_connection()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if granted:
+        conn.execute(
+            "INSERT OR IGNORE INTO permissions (role, resource, action, created_at) VALUES (?, ?, ?, ?)",
+            (role, resource, action, now)
+        )
+    else:
+        conn.execute(
+            "DELETE FROM permissions WHERE role = ? AND resource = ? AND action = ?",
+            (role, resource, action)
+        )
+    conn.commit()
+    return True
+
+
+def list_all_permissions() -> list[dict]:
+    conn = _get_connection()
+    rows = conn.execute(
+        "SELECT role, resource, action FROM permissions ORDER BY role, resource, action"
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def _hash_password(password: str) -> str:
@@ -295,3 +418,157 @@ def search_sessions(user_id: int, query: str) -> list[dict]:
         d.pop("messages", None)
         result.append(d)
     return result
+
+
+# ===== 模型配置加密与存储 =====
+
+import base64 as _base64
+
+_SECRET_KEY_FILE = os.path.join(DB_DIR, ".db_secret")
+
+
+def _get_or_create_secret() -> bytes:
+    if os.path.isfile(_SECRET_KEY_FILE):
+        with open(_SECRET_KEY_FILE, "rb") as f:
+            return f.read()
+    secret = secrets.token_bytes(32)
+    with open(_SECRET_KEY_FILE, "wb") as f:
+        f.write(secret)
+    try:
+        os.chmod(_SECRET_KEY_FILE, 0o600)
+    except Exception:
+        pass
+    return secret
+
+
+def _encrypt_db(plaintext: str) -> str:
+    if not plaintext:
+        return ""
+    key = _get_or_create_secret()
+    plain_bytes = plaintext.encode("utf-8")
+    encrypted = bytes(p ^ key[i % len(key)] for i, p in enumerate(plain_bytes))
+    return _base64.b64encode(encrypted).decode("ascii")
+
+
+def _decrypt_db(ciphertext: str) -> str:
+    if not ciphertext:
+        return ""
+    key = _get_or_create_secret()
+    encrypted = _base64.b64decode(ciphertext)
+    decrypted = bytes(e ^ key[i % len(key)] for i, e in enumerate(encrypted))
+    return decrypted.decode("utf-8")
+
+
+def _mask_key(key: str) -> str:
+    if not key:
+        return "(未设置)"
+    if len(key) <= 8:
+        return "*" * len(key)
+    return key[:4] + "*" * (len(key) - 8) + key[-4:]
+
+
+def get_model_config(user_id: int = None) -> dict | None:
+    conn = _get_connection()
+    if user_id is not None:
+        row = conn.execute("SELECT * FROM model_configs WHERE user_id = ?", (user_id,)).fetchone()
+    else:
+        row = conn.execute("SELECT * FROM model_configs WHERE user_id IS NULL").fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d["api_key"] = _decrypt_db(d.get("api_key_encrypted", ""))
+    d["api_key_masked"] = _mask_key(d["api_key"])
+    d["show_thought"] = bool(d.get("show_thought", 0))
+    return d
+
+
+def resolve_model_config(user_id: int) -> dict:
+    personal = get_model_config(user_id)
+    if personal and personal.get("api_key"):
+        personal["config_type"] = "personal"
+        return personal
+    global_cfg = get_model_config(None)
+    if global_cfg:
+        global_cfg["config_type"] = "global"
+        return global_cfg
+    return {
+        "api_key": "", "base_url": "", "model_name": "",
+        "context_limit": "",
+        "api_key_masked": "(未设置)",
+        "config_type": "none",
+        "show_thought": False,
+    }
+
+
+def save_model_config(user_id: int = None, **kwargs) -> dict:
+    conn = _get_connection()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    updates = {}
+    if "api_key" in kwargs:
+        updates["api_key_encrypted"] = _encrypt_db(kwargs["api_key"] or "")
+    if "base_url" in kwargs:
+        updates["base_url"] = kwargs["base_url"] or ""
+    if "model_name" in kwargs:
+        updates["model_name"] = kwargs["model_name"] or ""
+    if "context_limit" in kwargs:
+        updates["context_limit"] = kwargs["context_limit"] or ""
+    if "show_thought" in kwargs:
+        updates["show_thought"] = 1 if kwargs["show_thought"] else 0
+
+    if user_id is not None:
+        existing = conn.execute("SELECT id FROM model_configs WHERE user_id = ?", (user_id,)).fetchone()
+    else:
+        existing = conn.execute("SELECT id FROM model_configs WHERE user_id IS NULL").fetchone()
+
+    if existing:
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [existing["id"]]
+        conn.execute(f"UPDATE model_configs SET {set_clause}, updated_at = ? WHERE id = ?",
+                     values + [now])
+    else:
+        fields = ["user_id"] + list(updates.keys()) + ["created_at", "updated_at"]
+        placeholders = ", ".join("?" for _ in fields)
+        values = [user_id] + list(updates.values()) + [now, now]
+        conn.execute(f"INSERT INTO model_configs ({', '.join(fields)}) VALUES ({placeholders})", values)
+
+    conn.commit()
+    return get_model_config(user_id)
+
+
+def delete_model_config(user_id: int) -> bool:
+    conn = _get_connection()
+    cursor = conn.execute("DELETE FROM model_configs WHERE user_id = ?", (user_id,))
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def get_search_config() -> dict:
+    conn = _get_connection()
+    row = conn.execute("SELECT * FROM search_config WHERE id = 1").fetchone()
+    if not row:
+        return {"tavily_api_key": "", "tavily_api_key_masked": "(未设置)"}
+    d = dict(row)
+    d["tavily_api_key"] = _decrypt_db(d.get("tavily_api_key_encrypted", ""))
+    d["tavily_api_key_masked"] = _mask_key(d["tavily_api_key"])
+    return d
+
+
+def save_search_config(tavily_api_key: str = None) -> dict:
+    conn = _get_connection()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    encrypted = _encrypt_db(tavily_api_key or "")
+
+    existing = conn.execute("SELECT id FROM search_config WHERE id = 1").fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE search_config SET tavily_api_key_encrypted = ?, updated_at = ? WHERE id = 1",
+            (encrypted, now)
+        )
+    else:
+        conn.execute(
+            "INSERT INTO search_config (id, tavily_api_key_encrypted, created_at, updated_at) VALUES (1, ?, ?, ?)",
+            (encrypted, now, now)
+        )
+    conn.commit()
+    return get_search_config()

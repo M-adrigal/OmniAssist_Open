@@ -51,7 +51,9 @@ let state = {
   commandFilter: '',
   selectedCommandIdx: -1,
   currentUser: null,
+  permissions: {},
   webSearch: 'off',
+  showThought: false,
 };
 
 function $(sel) { return document.querySelector(sel); }
@@ -495,6 +497,30 @@ function closeAllModals() {
 }
 
 // ===== 模型配置 =====
+let _configTab = 'personal';
+
+function switchConfigTab(tab) {
+  _configTab = tab;
+  document.querySelectorAll('.config-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.tab === tab);
+  });
+  $('#config-tab-personal').classList.toggle('hidden', tab !== 'personal');
+  $('#config-tab-global').classList.toggle('hidden', tab !== 'global');
+  $('#config-tab-search').classList.toggle('hidden', tab !== 'search');
+}
+
+function updateThoughtButton() {
+  const btn = $('#btn-thought');
+  if (!btn) return;
+  if (state.showThought) {
+    btn.classList.add('active');
+    btn.querySelector('span').textContent = '思考过程·开';
+  } else {
+    btn.classList.remove('active');
+    btn.querySelector('span').textContent = '思考过程';
+  }
+}
+
 async function loadConfig() {
   try {
     const config = await API.get('/api/config');
@@ -509,17 +535,75 @@ async function loadConfig() {
     if (baseUrlEl) baseUrlEl.value = config.base_url || '';
     if (modelNameEl) modelNameEl.value = config.model_name || '';
     if (contextLimitEl) contextLimitEl.value = config.context_limit || '';
+
+    state.showThought = config.show_thought || false;
+    updateThoughtButton();
+
+    if (hasPermission('model_config_global', 'read')) {
+      $('#config-tabs').classList.remove('hidden');
+      try {
+        const globalCfg = await API.get('/api/config/global');
+        const gApiKeyEl = $('#cfg-global-api-key');
+        const gBaseUrlEl = $('#cfg-global-base-url');
+        const gModelNameEl = $('#cfg-global-model-name');
+        const gContextLimitEl = $('#cfg-global-context-limit');
+        if (gApiKeyEl) {
+          gApiKeyEl.value = '';
+          gApiKeyEl.placeholder = globalCfg.api_key_masked || '';
+        }
+        if (gBaseUrlEl) gBaseUrlEl.value = globalCfg.base_url || '';
+        if (gModelNameEl) gModelNameEl.value = globalCfg.model_name || '';
+        if (gContextLimitEl) gContextLimitEl.value = globalCfg.context_limit || '';
+      } catch (e) {
+        // 全局配置加载失败不阻塞
+      }
+      try {
+        const searchCfg = await API.get('/api/config/search');
+        const searchKeyEl = $('#cfg-search-tavily-key');
+        if (searchKeyEl) {
+          searchKeyEl.value = '';
+          searchKeyEl.placeholder = searchCfg.tavily_api_key_masked || '';
+        }
+      } catch (e) {
+        // 搜索配置加载失败不阻塞
+      }
+    } else {
+      $('#config-tabs').classList.add('hidden');
+    }
+    switchConfigTab('personal');
   } catch (e) {
     showToast('加载配置失败: ' + e.message, 'error');
   }
 }
 
 async function saveConfig() {
+  const tab = _configTab;
+
+  if (tab === 'search') {
+    const searchKeyEl = $('#cfg-search-tavily-key');
+    const body = {};
+    if (searchKeyEl) {
+      const key = searchKeyEl.value.trim();
+      if (key) body.tavily_api_key = key;
+    }
+    try {
+      await API.put('/api/config/search', body);
+      showToast('联网搜索配置已保存', 'success');
+      closeModal('modal-config');
+    } catch (e) {
+      showToast('保存失败: ' + e.message, 'error');
+    }
+    return;
+  }
+
+  const isGlobal = tab === 'global';
+  const prefix = isGlobal ? 'cfg-global-' : 'cfg-';
   const body = {};
-  const apiKeyEl = $('#cfg-api-key');
-  const baseUrlEl = $('#cfg-base-url');
-  const modelNameEl = $('#cfg-model-name');
-  const contextLimitEl = $('#cfg-context-limit');
+
+  const apiKeyEl = $(`#${prefix}api-key`);
+  const baseUrlEl = $(`#${prefix}base-url`);
+  const modelNameEl = $(`#${prefix}model-name`);
+  const contextLimitEl = $(`#${prefix}context-limit`);
 
   if (apiKeyEl) {
     const apiKey = apiKeyEl.value.trim();
@@ -529,42 +613,12 @@ async function saveConfig() {
   if (modelNameEl) body.model_name = modelNameEl.value.trim();
   if (contextLimitEl) body.context_limit = contextLimitEl.value.trim();
 
+  const url = isGlobal ? '/api/config/global' : '/api/config';
+
   try {
-    await API.put('/api/config', body);
+    await API.put(url, body);
     showToast('配置已保存', 'success');
     closeModal('modal-config');
-  } catch (e) {
-    showToast('保存失败: ' + e.message, 'error');
-  }
-}
-
-async function loadSearchConfig() {
-  try {
-    const config = await API.get('/api/config');
-    const tavilyKeyEl = $('#cfg-tavily-key');
-    if (tavilyKeyEl) {
-      tavilyKeyEl.value = '';
-      tavilyKeyEl.placeholder = config.tavily_api_key_masked || '';
-    }
-  } catch (e) {
-    showToast('加载搜索配置失败: ' + e.message, 'error');
-  }
-}
-
-async function saveSearchConfig() {
-  const tavilyKeyEl = $('#cfg-tavily-key');
-  if (!tavilyKeyEl) return;
-
-  const tavilyKey = tavilyKeyEl.value.trim();
-  if (!tavilyKey) {
-    showToast('请输入 Tavily API Key', 'error');
-    return;
-  }
-
-  try {
-    await API.put('/api/config', { tavily_api_key: tavilyKey });
-    showToast('搜索配置已保存', 'success');
-    closeModal('modal-search-config');
   } catch (e) {
     showToast('保存失败: ' + e.message, 'error');
   }
@@ -574,16 +628,27 @@ async function saveSearchConfig() {
 async function loadCurrentUser() {
   try {
     state.currentUser = await API.get('/api/auth/me');
+    const permData = await API.get('/api/auth/permissions');
+    state.permissions = permData.permissions || {};
     updateAdminUI();
   } catch (e) {
     state.currentUser = null;
+    state.permissions = {};
   }
 }
 
+function hasPermission(resource, action) {
+  const resPerms = state.permissions[resource];
+  return resPerms && resPerms.includes(action);
+}
+
 function updateAdminUI() {
-  const isAdmin = state.currentUser && state.currentUser.user_type === 'admin';
+  const canManageUsers = hasPermission('users', 'read');
+  const canManageGlobalConfig = hasPermission('model_config_global', 'read');
+  const canManageSearch = hasPermission('search_config', 'read');
+  const showAdmin = canManageUsers || canManageGlobalConfig || canManageSearch;
   $$('.drawer-item-admin').forEach(el => {
-    el.classList.toggle('hidden', !isAdmin);
+    el.classList.toggle('hidden', !showAdmin);
   });
 }
 
@@ -1037,7 +1102,6 @@ document.addEventListener('DOMContentLoaded', () => {
       if (action === 'config') { loadConfig(); openModal('modal-config'); }
       if (action === 'tools') { loadTools(); openModal('modal-tools'); }
       if (action === 'files') { loadFiles(); openModal('modal-files'); }
-      if (action === 'search-config') { loadSearchConfig(); openModal('modal-search-config'); }
       if (action === 'change-password') { openChangePassword(); }
       if (action === 'user-management') { loadUsers(); openModal('modal-user-management'); }
       if (action === 'logout') {
@@ -1108,8 +1172,23 @@ document.addEventListener('DOMContentLoaded', () => {
     btn.title = WEB_SEARCH_LABELS[state.webSearch];
   });
 
+  $('#btn-thought').addEventListener('click', async () => {
+    state.showThought = !state.showThought;
+    updateThoughtButton();
+    try {
+      await API.put('/api/config', { show_thought: state.showThought });
+    } catch (e) {
+      showToast('保存思考设置失败: ' + e.message, 'error');
+      state.showThought = !state.showThought;
+      updateThoughtButton();
+    }
+  });
+
   // 保存搜索配置
-  $('#btn-save-search-config').addEventListener('click', saveSearchConfig);
+  // 配置标签页切换
+  document.querySelectorAll('.config-tab').forEach(tab => {
+    tab.addEventListener('click', () => switchConfigTab(tab.dataset.tab));
+  });
 
   // 快捷键
   document.addEventListener('keydown', (e) => {
