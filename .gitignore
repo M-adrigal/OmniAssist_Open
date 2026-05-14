@@ -20,6 +20,7 @@ agent/tool_sandbox/
 *.db-shm
 *.db-wal
 .db_secret
+.db_web_password
 
 # Generated output files
 document_output/

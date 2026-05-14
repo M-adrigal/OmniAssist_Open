@@ -13,8 +13,8 @@ from server.routes.auth import get_current_user
 
 
 def get_dependencies():
-    from server.main import get_agent, get_llm_client, get_tool_registry, get_config
-    return get_agent(), get_llm_client(), get_tool_registry(), get_config()
+    from server.main import get_agent, get_llm_client, get_tool_registry, get_tool_builder, get_config
+    return get_agent(), get_llm_client(), get_tool_registry(), get_tool_builder(), get_config()
 
 
 def get_session_store():
@@ -274,7 +274,7 @@ def _do_web_search(query: str, api_key: str, scenario: str = "general") -> str:
 
 
 async def _handle_command(message: str, session_id: str, user_id: int):
-    agent, _, registry, config = get_dependencies()
+    agent, llm, registry, builder, config = get_dependencies()
     store = get_session_store()
 
     msg = message.strip()
@@ -331,27 +331,207 @@ async def _handle_command(message: str, session_id: str, user_id: int):
         return
 
     if msg.startswith("/tool add"):
-        yield f"data: {json.dumps({'type': 'token', 'content': '请在左侧设置面板 → **工具列表** 中使用自然语言创建工具，或直接描述你需要的工具功能，我来帮你分析。'})}\n\n"
+        parts = msg.split(maxsplit=2)
+        description = parts[2].strip() if len(parts) > 2 else ""
+        if not description:
+            yield f"data: {json.dumps({'type': 'token', 'content': '请描述你需要创建的工具功能，例如：\n`/tool add 帮我创建一个可以查询任意城市实时天气的工具`'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
+        yield f"data: {json.dumps({'type': 'status', 'content': '正在分析工具需求...'})}\n\n"
+
+        existing = [(name, info.get("description", ""))
+                    for name, info in registry.list_tools().items()]
+
+        from agent.main import _check_duplicate_tool
+        dup_check = _check_duplicate_tool(description, existing, llm)
+        if dup_check.get("is_duplicate"):
+            matched = dup_check.get("matched_tool", "未知")
+            reason = dup_check.get("reason", "")
+            yield f"data: {json.dumps({'type': 'token', 'content': f'[重复检测] {reason}\n\n检测到与已有工具 **{matched}** 功能相似。\n\n如需修改已有工具，请使用 `/tool update {matched} <修改描述>`。\n如需强制创建新工具，请在描述中明确说明与已有工具的区别。'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
+        yield f"data: {json.dumps({'type': 'status', 'content': '正在智能生成工具...'})}\n\n"
+
+        try:
+            smart_result = builder.smart_generate(description)
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'content': f'工具生成失败: {str(e)}'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
+        if not smart_result.get("success"):
+            need_info = smart_result.get("need_info", False)
+            questions = smart_result.get("questions", [])
+            reason = smart_result.get("reason", "")
+            if need_info and questions:
+                lines = [f"需要补充以下信息：\n"]
+                if reason:
+                    lines.append(f"{reason}\n")
+                for i, q in enumerate(questions, 1):
+                    lines.append(f"  {i}. {q}")
+                lines.append(f"\n请使用 `/tool add 原描述 + 补充信息` 重新创建，例如：")
+                lines.append(f"`/tool add {description}。补充：第1点答案是xxx，第2点答案是xxx`")
+                yield f"data: {json.dumps({'type': 'token', 'content': '\n'.join(lines)})}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'token', 'content': f'工具生成未成功: {reason or "请提供更详细的描述"}'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
+        tool_json = smart_result["tool"]
+        valid, msg = builder.validate_tool_json(tool_json)
+        if not valid:
+            try:
+                tool_json = builder.repair_tool(tool_json, f"校验失败原因：{msg}")
+                tool_json["name"] = tool_json.get("name", "")
+                valid, msg = builder.validate_tool_json(tool_json)
+            except Exception:
+                pass
+            if not valid:
+                yield f"data: {json.dumps({'type': 'error', 'content': f'工具定义校验失败: {msg}'})}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                return
+
+        import os as _os
+        base_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+        tools_dir = _os.path.join(base_dir, "agent", "agent_tools")
+
+        try:
+            builder.save_tool_to_file(tool_json, tools_dir=tools_dir)
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'content': f'保存失败: {str(e)}'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
+        from agent.main import _ensure_output_dir, _create_executor
+        _ensure_output_dir(tool_json)
+
+        executor = _create_executor(
+            tool_json["name"], tool_json["execution_prompt"],
+            tool_json["execution_mode"],
+            tool_json.get("execution_code", ""),
+            tool_json.get("http_config", {}),
+            llm,
+            tool_json.get("dependencies")
+        )
+        registry.register_tool(
+            name=tool_json["name"],
+            description=tool_json["description"],
+            parameters=tool_json["parameters"],
+            func=executor
+        )
+
+        agent.reset()
+
+        mode_map = {
+            "local_execution": "本地执行",
+            "http_request": "HTTP请求",
+            "llm_simulated": "LLM模拟",
+        }
+        mode_label = mode_map.get(tool_json.get("execution_mode", ""), "")
+        yield f"data: {json.dumps({'type': 'token', 'content': f'工具 **{tool_json["name"]}** 已创建成功！\n\n- 描述：{tool_json["description"]}\n- 执行模式：{mode_label}\n- 参数：{json.dumps(tool_json.get("parameters", {}), ensure_ascii=False)}\n\n对话上下文已重置，新工具立即可用。'})}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
         return
 
     if msg.startswith("/tool update"):
-        parts = msg.split(maxsplit=2)
-        tool_name = parts[2] if len(parts) > 2 else ""
-        if tool_name:
-            yield f"data: {json.dumps({'type': 'token', 'content': f'请在左侧设置面板 → **工具列表** 中找到工具 `{tool_name}` 并进行修改。'})}\n\n"
-        else:
-            yield f"data: {json.dumps({'type': 'token', 'content': '用法：`/tool update <工具名>`\n\n也可以在左侧设置面板 → **工具列表** 中修改工具。'})}\n\n"
+        parts = msg.split(maxsplit=3)
+        tool_name = parts[2].strip() if len(parts) > 2 else ""
+        update_desc = parts[3].strip() if len(parts) > 3 else ""
+        if not tool_name:
+            yield f"data: {json.dumps({'type': 'token', 'content': '用法：`/tool update <工具名> <修改描述>`\n\n例如：`/tool update weather 增加湿度参数`'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+        if not update_desc:
+            yield f"data: {json.dumps({'type': 'token', 'content': f'请描述对工具 **{tool_name}** 的修改内容，例如：\n`/tool update {tool_name} 增加湿度参数`'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
+        import os as _os
+        base_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+        tools_dir = _os.path.join(base_dir, "agent", "agent_tools")
+        filepath = _os.path.join(tools_dir, f"{tool_name}.json")
+        if not _os.path.isfile(filepath):
+            yield f"data: {json.dumps({'type': 'error', 'content': f'工具 **{tool_name}** 不存在，请先使用 `/tool add` 创建。'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
+        yield f"data: {json.dumps({'type': 'status', 'content': '正在分析修改需求...'})}\n\n"
+
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                original_tool = json.load(f)
+        except Exception:
+            original_tool = {}
+
+        try:
+            tool_json = builder.repair_tool(original_tool, update_desc)
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'content': f'修复失败: {str(e)}'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
+        tool_json["name"] = tool_name
+        valid, msg = builder.validate_tool_json(tool_json)
+        if not valid:
+            yield f"data: {json.dumps({'type': 'error', 'content': f'修复后校验失败: {msg}'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
+        try:
+            builder.save_tool_to_file(tool_json, tools_dir=tools_dir)
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'content': f'保存失败: {str(e)}'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
+        registry.unregister_tool(tool_name)
+
+        from agent.main import _ensure_output_dir, _create_executor
+        _ensure_output_dir(tool_json)
+
+        executor = _create_executor(
+            tool_name, tool_json["execution_prompt"],
+            tool_json["execution_mode"],
+            tool_json.get("execution_code", ""),
+            tool_json.get("http_config", {}),
+            llm,
+            tool_json.get("dependencies")
+        )
+        registry.register_tool(
+            name=tool_name,
+            description=tool_json["description"],
+            parameters=tool_json["parameters"],
+            func=executor
+        )
+
+        agent.reset()
+
+        yield f"data: {json.dumps({'type': 'token', 'content': f'工具 **{tool_name}** 已更新成功！\n\n- 描述：{tool_json["description"]}\n- 参数：{json.dumps(tool_json.get("parameters", {}), ensure_ascii=False)}\n\n对话上下文已重置，更新后的工具立即可用。'})}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
         return
 
     if msg.startswith("/tool delete"):
         parts = msg.split(maxsplit=2)
-        tool_name = parts[2] if len(parts) > 2 else ""
-        if tool_name:
-            yield f"data: {json.dumps({'type': 'token', 'content': f'请在左侧设置面板 → **工具列表** 中找到工具 `{tool_name}` 并删除。'})}\n\n"
-        else:
-            yield f"data: {json.dumps({'type': 'token', 'content': '用法：`/tool delete <工具名>`\n\n也可以在左侧设置面板 → **工具列表** 中删除工具。'})}\n\n"
+        tool_name = parts[2].strip() if len(parts) > 2 else ""
+        if not tool_name:
+            yield f"data: {json.dumps({'type': 'token', 'content': '用法：`/tool delete <工具名>`\n\n例如：`/tool delete weather`'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
+        import os as _os
+        base_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+        tools_dir = _os.path.join(base_dir, "agent", "agent_tools")
+        filepath = _os.path.join(tools_dir, f"{tool_name}.json")
+        if not _os.path.isfile(filepath):
+            yield f"data: {json.dumps({'type': 'error', 'content': f'工具 **{tool_name}** 不存在。'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
+        _os.remove(filepath)
+        registry.unregister_tool(tool_name)
+
+        yield f"data: {json.dumps({'type': 'token', 'content': f'工具 **{tool_name}** 已删除。'})}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
         return
 
@@ -411,7 +591,7 @@ def _load_tool_json(tool_name: str) -> dict:
 
 
 async def _stream_chat(message: str, session_id: str = None, web_search: str = "off", user_id: int = None):
-    agent, _, registry, _ = get_dependencies()
+    agent, _, registry, _, _ = get_dependencies()
     store = get_session_store()
 
     if user_id is None:
@@ -471,7 +651,17 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
         "6. 如果用户需要计算，使用 simple_calculator 工具\n"
         "7. 如果用户需要网页内容，使用 web_fetch 工具\n"
         "8. 如果用户需要农历转换，使用 convert_gregorian_to_lunar 工具\n"
-        "9. 调用工具前先确认参数是否齐全，参数不齐时向用户询问"
+        "9. 调用工具前先确认参数是否齐全，参数不齐时向用户询问\n\n"
+        "回答风格原则（重要）：\n"
+        "根据回答内容的性质，灵活选择最合适的表达形式，避免千篇一律的Markdown列表：\n"
+        "- 结构化数据（天气、股票、赛程、对比信息等）：优先使用Markdown表格，一目了然\n"
+        "- 步骤说明、教程、操作指南：使用有序列表，清晰展示先后顺序\n"
+        "- 多个并列要点、特性列举：使用无序列表，简洁明了\n"
+        "- 叙事性内容、故事、新闻、分析：使用自然段落，流畅阅读\n"
+        "- 代码、命令、配置：使用代码块，方便复制\n"
+        "- 简短问答、闲聊：直接一句话回复，不需要任何格式\n"
+        "- 引用、名言、定义：使用引用块（> 开头）\n"
+        "核心原则：让回答的形式服务于内容，而不是所有回答都用同一种格式。"
     )
 
     if search_context:

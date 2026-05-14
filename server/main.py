@@ -28,7 +28,6 @@ _agent: SimpleAgent = None
 _session_store: dict = {}
 _db_process: subprocess.Popen = None
 _db_user = "root"
-_db_password: str = None
 
 
 def init_services():
@@ -208,8 +207,6 @@ def serve_favicon():
 
 @app.on_event("startup")
 def startup():
-    global _db_password
-
     admin_pw = init_db()
     if admin_pw:
         print(f"\n[用户体系] 数据库已初始化")
@@ -217,9 +214,16 @@ def startup():
         print(f"[用户体系] 默认管理员密码: {admin_pw}")
         print(f"[用户体系] 请登录后及时修改密码！\n")
 
+        pw_file = os.path.join(os.path.dirname(DB_PATH), ".db_web_password")
+        with open(pw_file, "w") as f:
+            f.write(admin_pw)
+        try:
+            os.chmod(pw_file, 0o600)
+        except Exception:
+            pass
+
     refresh_global_llm()
 
-    _db_password = _generate_random_password()
     _start_sqlite_web()
 
 
@@ -266,27 +270,124 @@ def _check_and_free_port(port: int):
 
 def _start_sqlite_web():
     global _db_process
-    DB_PORT = 17521
+    DB_PROXY_PORT = 17521
+    DB_BACKEND_PORT = 17523
 
-    _check_and_free_port(DB_PORT)
+    _check_and_free_port(DB_PROXY_PORT)
+    _check_and_free_port(DB_BACKEND_PORT)
+
+    password_file = os.path.join(os.path.dirname(DB_PATH), ".db_web_password")
+    if os.path.isfile(password_file):
+        with open(password_file, "r") as f:
+            web_password = f.read().strip()
+    else:
+        web_password = _generate_random_password(12)
+        with open(password_file, "w") as f:
+            f.write(web_password)
+        try:
+            os.chmod(password_file, 0o600)
+        except Exception:
+            pass
+        print(f"[数据库管理] 未找到密码文件，已生成临时密码，请通过平台修改管理员密码以同步")
 
     try:
         _db_process = subprocess.Popen(
             [
                 sys.executable, "-m", "sqlite_web",
                 "--host", "127.0.0.1",
-                "--port", str(DB_PORT),
+                "--port", str(DB_BACKEND_PORT),
                 "--no-browser",
                 DB_PATH,
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        print(f"[数据库管理] sqlite-web 已启动: http://127.0.0.1:{DB_PORT}")
-        print(f"[数据库管理] 仅限本机访问，数据库文件: {DB_PATH}")
     except Exception as e:
         print(f"[数据库管理] sqlite-web 启动失败: {e}")
         print(f"[数据库管理] 请先安装: pip install sqlite-web")
+        return
+
+    import time
+    time.sleep(1)
+
+    _start_db_auth_proxy(DB_PROXY_PORT, DB_BACKEND_PORT, web_password)
+
+    print(f"[数据库管理] 已启动: http://127.0.0.1:{DB_PROXY_PORT}")
+    print(f"[数据库管理] 使用管理员账号(admin)登录即可访问")
+    print(f"[数据库管理] 仅限本机访问，数据库文件: {DB_PATH}")
+
+
+def _start_db_auth_proxy(proxy_port: int, backend_port: int, password: str):
+    import http.server
+    import urllib.request
+    import urllib.error
+    import base64
+    import threading
+
+    password_file = os.path.join(os.path.dirname(DB_PATH), ".db_web_password")
+
+    class ProxyHandler(http.server.BaseHTTPRequestHandler):
+        def _check_auth(self):
+            try:
+                with open(password_file, "r") as f:
+                    current_pw = f.read().strip()
+            except Exception:
+                current_pw = password
+            expected = base64.b64encode(f"admin:{current_pw}".encode()).decode()
+            auth = self.headers.get("Authorization", "")
+            if auth.startswith("Basic ") and auth.split(" ", 1)[1] == expected:
+                return True
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="Database Management"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return False
+
+        def _proxy(self):
+            if not self._check_auth():
+                return
+            url = f"http://127.0.0.1:{backend_port}{self.path}"
+            body = None
+            content_length = self.headers.get("Content-Length")
+            if content_length:
+                body = self.rfile.read(int(content_length))
+            try:
+                req = urllib.request.Request(url, data=body, method=self.command)
+                skip_headers = {"host", "authorization", "content-length"}
+                for key, val in self.headers.items():
+                    if key.lower() not in skip_headers:
+                        req.add_header(key, val)
+                with urllib.request.urlopen(req) as resp:
+                    self.send_response(resp.status)
+                    for key, val in resp.headers.items():
+                        if key.lower() not in ("transfer-encoding", "connection", "set-cookie", "vary"):
+                            self.send_header(key, val)
+                    self.end_headers()
+                    self.wfile.write(resp.read())
+            except urllib.error.HTTPError as e:
+                self.send_response(e.code)
+                for key, val in e.headers.items():
+                    if key.lower() not in ("transfer-encoding", "connection", "set-cookie", "vary"):
+                        self.send_header(key, val)
+                self.end_headers()
+                self.wfile.write(e.read())
+            except Exception:
+                self.send_response(502)
+                self.end_headers()
+
+        do_GET = _proxy
+        do_POST = _proxy
+        do_PUT = _proxy
+        do_DELETE = _proxy
+        do_HEAD = _proxy
+        do_OPTIONS = _proxy
+        do_PATCH = _proxy
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", proxy_port), ProxyHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
 
 
 if __name__ == "__main__":

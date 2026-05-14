@@ -1,0 +1,34 @@
+{
+  "name": "qweather_forecast",
+  "description": "通过和风天气每日天气预报API查询指定城市未来3-30天天气预报。返回每日最高最低温度、白天/夜间天气状况、风力风向、日出日落、月升月落、月相、湿度、气压、降水量、紫外线强度、能见度等数据。需要先通过qweather_geo_lookup工具获取城市的LocationID",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "days": {
+        "type": "string",
+        "description": "【必选】预报天数。可选值：3d（3天）、7d（7天）、10d（10天）、15d（15天）、30d（30天）"
+      },
+      "location": {
+        "type": "string",
+        "description": "【必选】需要查询地区的LocationID或以英文逗号分隔的经度,纬度坐标（十进制，最多支持小数点后两位）。LocationID可通过qweather_geo_lookup工具获取。例如 location=101010100 或 location=116.41,39.92"
+      },
+      "lang": {
+        "type": "string",
+        "description": "【可选】多语言设置，设置返回结果的语言。支持ISO 639-1语言代码，例如'zh'表示中文、'en'表示英文。默认与查询语言一致"
+      },
+      "unit": {
+        "type": "string",
+        "description": "【可选】数据单位设置。可选值：m（公制单位，温度℃、风速km/h、气压hPa、能见度km）、i（英制单位，温度℉、风速mph、气压inHg、能见度mile）。默认值为m"
+      }
+    },
+    "required": ["days", "location"]
+  },
+  "execution_mode": "http_request",
+  "execution_prompt": "将以下天气API数据格式化为Markdown表格。只输出表格和一行总结，不要加任何前缀、解释或额外文字。\n\nAPI数据：{api_response}\n参数：{params}\n\n输出模板（严格照此格式）：\n\n## {城市}未来{N}天天气预报\n\n| 日期 | 白天 | 夜间 | 高温/低温 | 风力风向 | 湿度 | 紫外线 | 降水 | 日出/日落 |\n|:-----|:-----|:-----|:----------|:---------|:-----|:-------|:-----|:----------|\n| 5月14日 周四 | ☀️晴 32° | 🌙多云 19° | 32°/19°C | 南风1-3级 | 54% | 很强(8) | 无 | 05:02/19:21 |\n\n> 总结：一句话概括未来天气趋势\n> ⚠️ 温馨提示（如有降雨/高温/强紫外线等特殊情况）\n\n规则：\n- 天气emoji：晴☀️ 多云⛅ 阴☁️ 小雨🌧️ 中雨🌧️ 大雨⛈️ 雪❄️ 雾🌫️ 沙尘💨\n- 白天/夜间列分别写天气+温度\n- 紫外线：0-2弱 3-5中等 6-7强 8-10很强 11+极强\n- 降水0.0mm写\"无\"",
+  "response_formatter": "data = json.loads(raw_data)\nif data.get('code') != '200':\n    result = f\"查询失败，错误码：{data.get('code')}\"\nelse:\n    daily = data.get('daily', [])\n    days_map = {'3d':'3','7d':'7','10d':'10','15d':'15','30d':'30'}\n    n = days_map.get(kwargs.get('days','3d'), '3')\n    loc = kwargs.get('location', '')\n    unit = kwargs.get('unit', 'm')\n    temp_unit = '°F' if unit == 'i' else '°C'\n    lines = [f'## {loc} 未来{n}天天气预报\\n']\n    lines.append('| 日期 | 白天 | 夜间 | 温度(高/低) | 风力风向 | 湿度 | 紫外线 | 降水 | 日出/日落 |')\n    lines.append('|:-----|:-----|:-----|:------------|:---------|:-----|:-------|:-----|:----------|')\n    weather_emoji = {'晴':'☀️','多云':'⛅','阴':'☁️','雨':'🌧️','小雨':'🌧️','中雨':'🌧️','大雨':'⛈️','暴雨':'⛈️','雪':'❄️','小雪':'❄️','中雪':'❄️','大雪':'❄️','雾':'🌫️','沙尘':'💨','霾':'😷'}\n    uv_levels = [(0,'弱'),(3,'中等'),(6,'强'),(8,'很强'),(11,'极强')]\n    def get_uv(uv):\n        try:\n            u = int(uv)\n            for th, label in reversed(uv_levels):\n                if u >= th:\n                    return f'{label}({u})'\n        except:\n            return uv\n        return uv\n    def get_emoji(text):\n        for k, e in weather_emoji.items():\n            if k in text:\n                return e\n        return '🌤️'\n    weekdays = ['周一','周二','周三','周四','周五','周六','周日']\n    has_rain = False\n    has_high_uv = False\n    for d in daily:\n        date_str = d.get('fxDate', '')\n        try:\n            parts = date_str.split('-')\n            from datetime import date\n            dt = date(int(parts[0]), int(parts[1]), int(parts[2]))\n            wd = weekdays[dt.weekday()]\n            date_show = f'{dt.month}月{dt.day}日 {wd}'\n        except:\n            date_show = date_str\n        text_day = d.get('textDay', '')\n        text_night = d.get('textNight', '')\n        temp_max = d.get('tempMax', '')\n        temp_min = d.get('tempMin', '')\n        wind_dir = d.get('windDirDay', '')\n        wind_scale = d.get('windScaleDay', '')\n        wind = f'{wind_dir}{wind_scale}级' if wind_dir else ''\n        humidity = d.get('humidity', '')\n        uv = d.get('uvIndex', '')\n        precip = d.get('precip', '')\n        sunrise = d.get('sunrise', '')\n        sunset = d.get('sunset', '')\n        day_icon = get_emoji(text_day)\n        night_icon = get_emoji(text_night)\n        day_cell = f'{day_icon}{text_day} {temp_max}{temp_unit}'\n        night_cell = f'{night_icon}{text_night} {temp_min}{temp_unit}'\n        temp_cell = f'{temp_max}/{temp_min}{temp_unit}'\n        uv_cell = get_uv(uv)\n        try:\n            p = float(precip)\n            precip_cell = '无' if p == 0 else f'{p}mm'\n            if p > 0:\n                has_rain = True\n        except:\n            precip_cell = precip\n        try:\n            if int(uv) >= 6:\n                has_high_uv = True\n        except:\n            pass\n        sr_ss = f'{sunrise}/{sunset}' if sunrise else ''\n        lines.append(f'| {date_show} | {day_cell} | {night_cell} | {temp_cell} | {wind} | {humidity}% | {uv_cell} | {precip_cell} | {sr_ss} |')\n    lines.append('')\n    tips = []\n    if has_rain:\n        tips.append('有降雨，出门请带伞')\n    if has_high_uv:\n        tips.append('紫外线较强，注意防晒')\n    if tips:\n        lines.append('> ⚠️ ' + '；'.join(tips))\n    result = '\\n'.join(lines)",
+  "http_config": {
+    "url": "https://np6heyjn2u.re.qweatherapi.com/v7/weather/{days}?location={location}&key=648db7fc31cc4eca9c3fdfa9d17a3389&lang={lang}&unit={unit}",
+    "method": "GET",
+    "headers": {}
+  }
+}

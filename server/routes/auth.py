@@ -1,13 +1,14 @@
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import time
 from base64 import urlsafe_b64encode, urlsafe_b64decode
 
 from fastapi import APIRouter, HTTPException, Request
 from server.models import LoginRequest, LoginResponse, ChangePasswordRequest, CurrentUserResponse
-from server.database import authenticate, change_password, get_user_by_id, check_permission, get_role_permissions
+from server.database import authenticate, change_password, get_user_by_id, check_permission, get_role_permissions, DB_PATH
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -123,6 +124,15 @@ def update_password(req: ChangePasswordRequest, request: Request):
         change_password(user["id"], req.old_password, req.new_password)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    if user["user_type"] == "admin":
+        pw_file = os.path.join(os.path.dirname(DB_PATH), ".db_web_password")
+        with open(pw_file, "w") as f:
+            f.write(req.new_password)
+        try:
+            os.chmod(pw_file, 0o600)
+        except Exception:
+            pass
 
     return {"message": "密码修改成功"}
 

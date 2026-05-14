@@ -130,7 +130,8 @@ class ToolRegistry:
                 execution_code = tool_data.get("execution_code", "")
                 http_config = tool_data.get("http_config", {})
                 dependencies = tool_data.get("dependencies")
-                executor = func_factory(tool_name, execution_prompt, execution_mode, execution_code, http_config, dependencies)
+                response_formatter = tool_data.get("response_formatter")
+                executor = func_factory(tool_name, execution_prompt, execution_mode, execution_code, http_config, dependencies, response_formatter)
 
             self.register_tool(
                 name=tool_name,

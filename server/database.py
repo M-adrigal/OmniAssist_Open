@@ -523,9 +523,8 @@ def save_model_config(user_id: int = None, **kwargs) -> dict:
 
     if existing:
         set_clause = ", ".join(f"{k} = ?" for k in updates)
-        values = list(updates.values()) + [existing["id"]]
         conn.execute(f"UPDATE model_configs SET {set_clause}, updated_at = ? WHERE id = ?",
-                     values + [now])
+                     list(updates.values()) + [now, existing["id"]])
     else:
         fields = ["user_id"] + list(updates.keys()) + ["created_at", "updated_at"]
         placeholders = ", ".join("?" for _ in fields)

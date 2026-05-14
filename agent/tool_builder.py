@@ -787,7 +787,8 @@ def _validate_url(url: str) -> tuple:
 
 
 def create_http_executor(tool_name: str, http_config: dict,
-                         execution_prompt: str, llm_client: LLMClient):
+                         execution_prompt: str, llm_client: LLMClient,
+                         response_formatter: str = None):
     """创建一个用于发起 HTTP 请求并解析结果的执行函数
 
     Args:
@@ -795,6 +796,7 @@ def create_http_executor(tool_name: str, http_config: dict,
         http_config: HTTP 配置，包含 url、method、headers
         execution_prompt: 执行提示词模板，用于指导 LLM 解析 API 返回数据
         llm_client: LLMClient 实例，用于解析 API 返回数据
+        response_formatter: 可选的 Python 格式化函数代码，直接格式化 API 响应，绕过 LLM
 
     Returns:
         callable: 一个可调用的函数，接收 **kwargs 参数，返回字符串结果
@@ -802,6 +804,8 @@ def create_http_executor(tool_name: str, http_config: dict,
     import urllib.request
     import urllib.error
     import urllib.parse
+    import gzip
+    import re
 
     def executor(**kwargs) -> str:
         url = http_config.get("url", "")
@@ -817,6 +821,9 @@ def create_http_executor(tool_name: str, http_config: dict,
                 for k, v in headers.items()
             }
 
+        url = re.sub(r'&[^&=?]*\{[^}]*\}', '', url)
+        url = re.sub(r'\{[^}]*\}', '', url)
+
         valid, err_msg = _validate_url(url)
         if not valid:
             return f"[工具 '{tool_name}' SSRF防护] {err_msg}"
@@ -827,11 +834,23 @@ def create_http_executor(tool_name: str, http_config: dict,
                 req.add_header(k, v)
 
             with urllib.request.urlopen(req, timeout=10) as resp:
-                raw_data = resp.read().decode('utf-8')
+                raw_bytes = resp.read()
+                try:
+                    raw_data = gzip.decompress(raw_bytes).decode('utf-8')
+                except (gzip.BadGzipFile, OSError):
+                    raw_data = raw_bytes.decode('utf-8')
         except urllib.error.HTTPError as e:
             return f"[工具 '{tool_name}' HTTP请求失败] HTTP {e.code}: {e.reason}"
         except Exception as e:
             return f"[工具 '{tool_name}' HTTP请求失败] 错误信息：{str(e)}"
+
+        if response_formatter:
+            try:
+                local_vars = {"raw_data": raw_data, "kwargs": kwargs, "json": __import__("json")}
+                exec(response_formatter, {"__builtins__": {}}, local_vars)
+                return local_vars.get("result", raw_data)
+            except Exception as e:
+                pass
 
         prompt = execution_prompt
         prompt = prompt.replace("{api_response}", raw_data)

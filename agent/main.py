@@ -69,7 +69,8 @@ def _parse_tool_command(user_input: str) -> tuple:
 def _create_executor(tool_name: str, execution_prompt: str,
                      execution_mode: str, execution_code: str,
                      http_config: dict, llm_client: LLMClient,
-                     dependencies: list = None):
+                     dependencies: list = None,
+                     response_formatter: str = None):
     """根据 execution_mode 创建对应的执行器
 
     Args:
@@ -80,6 +81,7 @@ def _create_executor(tool_name: str, execution_prompt: str,
         http_config: HTTP 请求配置（仅 http_request 使用）
         llm_client: LLMClient 实例
         dependencies: pip 依赖包列表（仅 local_execution 使用）
+        response_formatter: 可选的 Python 格式化代码（仅 http_request 使用）
 
     Returns:
         callable: 执行函数
@@ -87,7 +89,8 @@ def _create_executor(tool_name: str, execution_prompt: str,
     if execution_mode == "local_execution":
         return create_local_executor(tool_name, execution_code, dependencies)
     if execution_mode == "http_request":
-        return create_http_executor(tool_name, http_config, execution_prompt, llm_client)
+        return create_http_executor(tool_name, http_config, execution_prompt, llm_client,
+                                    response_formatter=response_formatter)
     return create_simulated_executor(tool_name, execution_prompt, llm_client)
 
 
@@ -377,7 +380,8 @@ def _handle_tool_add(builder: ToolBuilder, registry: ToolRegistry,
         tool_json.get("execution_code", ""),
         tool_json.get("http_config", {}),
         llm_client,
-        tool_json.get("dependencies")
+        tool_json.get("dependencies"),
+        tool_json.get("response_formatter")
     )
     registry.register_tool(
         name=tool_json["name"],
@@ -487,7 +491,8 @@ def _handle_tool_update(builder: ToolBuilder, registry: ToolRegistry,
         tool_json.get("execution_code", ""),
         tool_json.get("http_config", {}),
         llm_client,
-        tool_json.get("dependencies")
+        tool_json.get("dependencies"),
+        tool_json.get("response_formatter")
     )
     registry.register_tool(
         name=tool_name,
@@ -943,7 +948,7 @@ def main():
     tool_registry.load_tools_from_dir(
         tools_dir=tools_dir,
         tool_names=tool_names,
-        func_factory=lambda name, prompt, mode, code, http_cfg, deps=None: _create_executor(name, prompt, mode, code, http_cfg, llm_client, deps)
+        func_factory=lambda name, prompt, mode, code, http_cfg, deps=None, fmt=None: _create_executor(name, prompt, mode, code, http_cfg, llm_client, deps, fmt)
     )
 
     agent = SimpleAgent(llm_client, tool_registry, context_limit=context_limit,
