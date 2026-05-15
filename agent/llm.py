@@ -38,10 +38,13 @@ class LLMClient:
         if model is not None:
             model_name = model
 
-        self.client = OpenAI(
-            api_key=_api_key,
-            base_url=_base_url
-        )
+        if _api_key:
+            self.client = OpenAI(
+                api_key=_api_key,
+                base_url=_base_url
+            )
+        else:
+            self.client = None
         self.model = model_name
 
     def refresh(self):
@@ -61,10 +64,13 @@ class LLMClient:
             if cfg_model and cfg_model != '(未设置)':
                 model_name = cfg_model
 
-        self.client = OpenAI(
-            api_key=_api_key,
-            base_url=_base_url
-        )
+        if _api_key:
+            self.client = OpenAI(
+                api_key=_api_key,
+                base_url=_base_url
+            )
+        else:
+            self.client = None
         self.model = model_name
 
     def chat(self, messages, tools=None, tool_choice="auto", temperature=0):
@@ -79,6 +85,9 @@ class LLMClient:
         Returns:
             dict: 标准化的响应消息
         """
+        if self.client is None:
+            raise RuntimeError("LLM 客户端未配置 API Key，请先在设置中配置模型参数")
+
         response = self.client.chat.completions.create(
             model=self.model,
             messages=messages,

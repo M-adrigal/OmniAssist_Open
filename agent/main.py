@@ -70,7 +70,8 @@ def _create_executor(tool_name: str, execution_prompt: str,
                      execution_mode: str, execution_code: str,
                      http_config: dict, llm_client: LLMClient,
                      dependencies: list = None,
-                     response_formatter: str = None):
+                     response_formatter: str = None,
+                     sandbox=None):
     """根据 execution_mode 创建对应的执行器
 
     Args:
@@ -82,12 +83,13 @@ def _create_executor(tool_name: str, execution_prompt: str,
         llm_client: LLMClient 实例
         dependencies: pip 依赖包列表（仅 local_execution 使用）
         response_formatter: 可选的 Python 格式化代码（仅 http_request 使用）
+        sandbox: 可选的共享 ToolSandbox 实例
 
     Returns:
         callable: 执行函数
     """
     if execution_mode == "local_execution":
-        return create_local_executor(tool_name, execution_code, dependencies)
+        return create_local_executor(tool_name, execution_code, dependencies, sandbox=sandbox)
     if execution_mode == "http_request":
         return create_http_executor(tool_name, http_config, execution_prompt, llm_client,
                                     response_formatter=response_formatter)
@@ -615,11 +617,13 @@ def _self_test_tool(tool_json: dict, executor):
             try:
                 from sandbox import ToolSandbox
                 _sb = ToolSandbox()
-                _sb.install([missing_module])
-                print(f"[自测] 依赖 '{missing_module}' 安装完成，正在重试自测...")
-                result = executor(**sample_params)
-                result_stripped = result.strip()
-                has_issue = any(kw in result for kw in failure_keywords)
+                if _sb.install([missing_module]):
+                    print(f"[自测] 依赖 '{missing_module}' 安装完成，正在重试自测...")
+                    result = executor(**sample_params)
+                    result_stripped = result.strip()
+                    has_issue = any(kw in result for kw in failure_keywords)
+                else:
+                    print(f"[自测] 自动安装依赖失败")
             except Exception as install_err:
                 print(f"[自测] 自动安装依赖失败：{install_err}")
 

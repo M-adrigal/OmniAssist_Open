@@ -13,7 +13,7 @@ from server.database import authenticate, change_password, get_user_by_id, check
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 TOKEN_SECRET = secrets.token_hex(32)
-TOKEN_TTL = 86400
+TOKEN_TTL = 1800
 
 _active_tokens: dict[str, float] = {}
 

@@ -1,6 +1,8 @@
 import os
 import sys
 import subprocess
+import signal
+import atexit
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -16,6 +18,7 @@ from agent.tools import ToolRegistry
 from agent.tool_builder import ToolBuilder
 from agent.agent import SimpleAgent
 from agent.main import _create_executor
+from agent.sandbox import ToolSandbox
 
 from server.routes import routers
 from server.database import init_db, DB_PATH, _generate_random_password
@@ -25,13 +28,79 @@ _llm_client: LLMClient = None
 _tool_registry: ToolRegistry = None
 _tool_builder: ToolBuilder = None
 _agent: SimpleAgent = None
+_sandbox: ToolSandbox = None
 _session_store: dict = {}
 _db_process: subprocess.Popen = None
 _db_user = "root"
 
 
+def _cleanup():
+    global _db_process
+    if _db_process is not None and _db_process.poll() is None:
+        try:
+            _db_process.terminate()
+            try:
+                _db_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _db_process.kill()
+                _db_process.wait()
+            print("[清理] sqlite-web 子进程已终止")
+        except Exception as e:
+            print(f"[清理] 终止 sqlite-web 子进程失败: {e}")
+
+
+def _signal_handler(signum, frame):
+    print(f"\n[信号] 收到信号 {signum}，正在优雅关闭...")
+    _cleanup()
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGINT, _signal_handler)
+atexit.register(_cleanup)
+
+
+def _prewarm_sandbox(tools_dir: str):
+    """扫描所有工具定义，预热沙箱依赖
+
+    在服务启动时一次性安装所有工具的依赖包，
+    避免首次调用工具时的冷启动延迟。
+    """
+    import json
+
+    if not os.path.isdir(tools_dir):
+        return
+
+    all_deps = set()
+    for fname in sorted(os.listdir(tools_dir)):
+        if not fname.endswith(".json"):
+            continue
+        fpath = os.path.join(tools_dir, fname)
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                tool_def = json.load(f)
+            deps = tool_def.get("dependencies", [])
+            if deps:
+                for d in deps:
+                    all_deps.add(d)
+        except Exception:
+            pass
+
+    if not all_deps:
+        print("[沙箱预热] 没有需要安装的依赖")
+        return
+
+    print(f"[沙箱预热] 检测到 {len(all_deps)} 个依赖: {sorted(all_deps)}")
+    try:
+        _sandbox.install(sorted(all_deps))
+        print("[沙箱预热] 依赖安装完成")
+    except Exception as e:
+        print(f"[沙箱预热] 部分依赖安装失败: {e}")
+        print("[沙箱预热] 工具首次调用时将自动重试安装")
+
+
 def init_services():
-    global _config, _llm_client, _tool_registry, _tool_builder, _agent
+    global _config, _llm_client, _tool_registry, _tool_builder, _agent, _sandbox
 
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     config_path = os.path.join(base_dir, "agent", ".agent_config")
@@ -74,14 +143,18 @@ def init_services():
 
         _llm_client = LLMClient(config=_config)
 
+    _sandbox = ToolSandbox()
+
     _tool_registry = ToolRegistry()
     _tool_builder = ToolBuilder(_llm_client)
 
     _tool_registry.load_tools_from_dir(
         tools_dir,
         func_factory=lambda name, prompt, mode, code, http_cfg, deps, fmt=None:
-            _create_executor(name, prompt, mode, code, http_cfg, _llm_client, deps, fmt)
+            _create_executor(name, prompt, mode, code, http_cfg, _llm_client, deps, fmt, sandbox=_sandbox)
     )
+
+    _prewarm_sandbox(tools_dir)
 
     show_thought = False
     context_limit = ""
@@ -132,10 +205,15 @@ def refresh_global_llm():
     global _llm_client, _agent
     from server.database import get_model_config
 
+    if _llm_client is None:
+        return
+
     cfg = get_model_config(None)
     if not cfg or not cfg.get("api_key"):
         return
 
+    _llm_client._api_key = cfg["api_key"]
+    _llm_client._base_url = cfg.get("base_url", "")
     _llm_client.client = __import__("openai").OpenAI(
         api_key=cfg["api_key"],
         base_url=cfg.get("base_url", "")
@@ -184,6 +262,20 @@ async def auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def global_exception_handler(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as e:
+        import traceback
+        print(f"[错误] 未捕获的异常: {e}")
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"服务内部错误: {str(e)}"}
+        )
+
+
 for router in routers:
     app.include_router(router)
 
@@ -222,6 +314,12 @@ def startup():
         except Exception:
             pass
 
+    try:
+        init_services()
+    except Exception as e:
+        print(f"[启动] 服务初始化失败: {e}")
+        print("[启动] 请检查模型配置和工具定义，服务将继续启动但部分功能可能不可用")
+
     refresh_global_llm()
 
     _start_sqlite_web()
@@ -234,38 +332,78 @@ def health():
 app.mount("/static", StaticFiles(directory=static_dir, html=False), name="static")
 
 
-init_services()
-
-
 def _check_and_free_port(port: int):
-    import subprocess
     import signal
 
-    try:
-        result = subprocess.run(
-            ["lsof", "-ti", f":{port}"],
-            capture_output=True, text=True, timeout=5
-        )
-        pids = [pid for pid in result.stdout.strip().split("\n") if pid]
-        if not pids:
-            return
+    pids = _find_port_pids(port)
+    if not pids:
+        return
 
-        for pid_str in pids:
-            pid = int(pid_str)
-            if pid == os.getpid():
+    for pid in pids:
+        if pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+            print(f"[启动] 已终止占用端口 {port} 的进程 (PID: {pid})")
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            print(f"[启动] 警告：无权限终止进程 (PID: {pid})，端口 {port} 可能仍被占用")
+
+    import time
+    time.sleep(0.5)
+
+
+def _find_port_pids(port: int) -> list:
+    methods = [
+        ["lsof", "-ti", f":{port}"],
+        ["fuser", f"{port}/tcp"],
+        ["ss", "-tlnp"],
+    ]
+
+    for cmd in methods:
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=5
+            )
+            if result.returncode != 0:
                 continue
-            try:
-                os.kill(pid, signal.SIGTERM)
-                print(f"[启动] 已终止占用端口 {port} 的进程 (PID: {pid})")
-            except ProcessLookupError:
-                pass
-            except PermissionError:
-                print(f"[启动] 警告：无权限终止进程 (PID: {pid})，端口 {port} 可能仍被占用")
 
-        import time
-        time.sleep(0.5)
-    except Exception as e:
-        print(f"[启动] 端口检测异常: {e}")
+            if cmd[0] == "ss":
+                pids = _parse_ss_output(result.stdout, port)
+            elif cmd[0] == "fuser":
+                pids = _parse_fuser_output(result.stdout)
+            else:
+                pids = [int(p) for p in result.stdout.strip().split("\n") if p.strip().isdigit()]
+
+            if pids:
+                return pids
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+            continue
+
+    return []
+
+
+def _parse_fuser_output(output: str) -> list:
+    pids = []
+    for part in output.strip().split():
+        pid_str = part.rstrip("km")
+        if pid_str.isdigit():
+            pids.append(int(pid_str))
+    return pids
+
+
+def _parse_ss_output(output: str, target_port: int) -> list:
+    import re
+    pids = []
+    port_pattern = re.compile(rf":{target_port}\b")
+    pid_pattern = re.compile(r"pid=(\d+)")
+    for line in output.split("\n"):
+        if port_pattern.search(line):
+            match = pid_pattern.search(line)
+            if match:
+                pids.append(int(match.group(1)))
+    return pids
 
 
 def _start_sqlite_web():
@@ -312,9 +450,9 @@ def _start_sqlite_web():
 
     _start_db_auth_proxy(DB_PROXY_PORT, DB_BACKEND_PORT, web_password)
 
-    print(f"[数据库管理] 已启动: http://127.0.0.1:{DB_PROXY_PORT}")
+    print(f"[数据库管理] 已启动: http://0.0.0.0:{DB_PROXY_PORT}")
     print(f"[数据库管理] 使用管理员账号(admin)登录即可访问")
-    print(f"[数据库管理] 仅限本机访问，数据库文件: {DB_PATH}")
+    print(f"[数据库管理] 数据库文件: {DB_PATH}")
 
 
 def _start_db_auth_proxy(proxy_port: int, backend_port: int, password: str):
@@ -386,8 +524,19 @@ def _start_db_auth_proxy(proxy_port: int, backend_port: int, password: str):
         def log_message(self, format, *args):
             pass
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", proxy_port), ProxyHandler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        server = http.server.ThreadingHTTPServer(("0.0.0.0", proxy_port), ProxyHandler)
+    except OSError as e:
+        print(f"[数据库管理] 代理端口 {proxy_port} 绑定失败: {e}")
+        return
+
+    def _run_proxy():
+        try:
+            server.serve_forever()
+        except Exception as e:
+            print(f"[数据库管理] 代理服务异常退出: {e}")
+
+    threading.Thread(target=_run_proxy, daemon=True).start()
 
 
 if __name__ == "__main__":

@@ -266,6 +266,53 @@ top -o %MEM
 # MemoryMax=2G
 ```
 
+### 沙箱依赖安装问题
+
+工具的 Python 依赖（如 `python-docx`、`openpyxl`、`reportlab` 等）运行在独立的沙箱虚拟环境中，与主服务隔离。
+
+**工作原理**：
+- 沙箱 venv 位于 `tool_sandbox/venv/`，首次启动时自动创建
+- 服务启动时会扫描所有工具定义，预热安装依赖（`_prewarm_sandbox`）
+- 工具首次调用时若检测到 `ModuleNotFoundError`，会自动重试安装缺失的包
+
+**常见问题**：
+
+```bash
+# 1. 确保 python3-venv 已安装（沙箱需要创建虚拟环境）
+sudo apt install -y python3-venv
+
+# 2. 手动检查沙箱 venv 是否正常
+cd /home/agent/Lightweight_agent_service
+python3 -c "from agent.sandbox import ToolSandbox; s = ToolSandbox(); print('沙箱 OK:', s.venv_python)"
+
+# 3. 手动预热沙箱依赖（如果自动预热失败）
+python3 -c "
+from agent.sandbox import ToolSandbox
+import json, os
+s = ToolSandbox()
+tools_dir = 'agent/agent_tools'
+all_deps = set()
+for f in os.listdir(tools_dir):
+    if f.endswith('.json'):
+        with open(os.path.join(tools_dir, f)) as fp:
+            deps = json.load(fp).get('dependencies', [])
+            all_deps.update(deps)
+if all_deps:
+    print(f'安装依赖: {sorted(all_deps)}')
+    s.install_verbose(sorted(all_deps))
+else:
+    print('没有需要安装的依赖')
+"
+
+# 4. 如果 pip 安装超时（网络慢），可配置国内镜像
+# 在沙箱 venv 中设置 pip 镜像：
+tool_sandbox/venv/bin/pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 5. 清理并重建沙箱环境
+rm -rf tool_sandbox/venv
+sudo systemctl restart agent
+```
+
 ## 13. 性能优化
 
 ### 使用 Gunicorn（生产环境推荐）

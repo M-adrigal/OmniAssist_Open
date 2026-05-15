@@ -14,6 +14,7 @@ venv.bak/
 agent/.agent_config
 agent/.agent_salt
 agent/tool_sandbox/
+tool_sandbox/
 
 # Database files (generated at runtime)
 *.db

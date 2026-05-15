@@ -688,7 +688,7 @@ def create_simulated_executor(tool_name: str, execution_prompt: str, llm_client:
     return executor
 
 
-def create_local_executor(tool_name: str, execution_code: str, dependencies: list = None):
+def create_local_executor(tool_name: str, execution_code: str, dependencies: list = None, sandbox=None):
     """创建一个用于本地执行 Python 代码的函数
 
     工具代码在沙箱子进程中执行，与主服务完全隔离：
@@ -700,13 +700,16 @@ def create_local_executor(tool_name: str, execution_code: str, dependencies: lis
         tool_name: 工具名称，用于错误信息标识
         execution_code: 预生成的 Python 代码，可直接使用参数名作为变量
         dependencies: 需要安装的 pip 包列表，如 ["python-docx", "openpyxl"]
+        sandbox: 可选的共享 ToolSandbox 实例，为 None 时自动创建
 
     Returns:
         callable: 一个可调用的函数，接收 **kwargs 参数，返回字符串结果
     """
     from sandbox import ToolSandbox
 
-    _sandbox = ToolSandbox()
+    if sandbox is None:
+        sandbox = ToolSandbox()
+    _sandbox = sandbox
 
     if dependencies:
         try:
@@ -730,12 +733,11 @@ def create_local_executor(tool_name: str, execution_code: str, dependencies: lis
             if match:
                 missing = match.group(1)
                 print(f"[工具 '{tool_name}'] 检测到缺失依赖 '{missing}'，正在自动安装...")
-                try:
-                    _sandbox.install([missing])
+                if _sandbox.install([missing]):
                     print(f"[工具 '{tool_name}'] 依赖安装完成，重试执行...")
                     return executor(**kwargs)
-                except Exception as install_err:
-                    print(f"[工具 '{tool_name}'] 自动安装失败: {install_err}")
+                else:
+                    print(f"[工具 '{tool_name}'] 自动安装失败")
         return result
 
     return _wrapped_executor

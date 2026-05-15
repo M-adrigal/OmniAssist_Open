@@ -28,12 +28,11 @@ def _resolve_llm_client(user_id: int):
     cfg = resolve_model_config(user_id)
     if not cfg.get("api_key"):
         return None, cfg
-    llm = LLMClient()
-    llm.client = __import__("openai").OpenAI(
+    llm = LLMClient(
         api_key=cfg["api_key"],
-        base_url=cfg.get("base_url", "")
+        base_url=cfg.get("base_url", ""),
+        model=cfg.get("model_name", ""),
     )
-    llm.model = cfg.get("model_name", "")
     return llm, cfg
 
 
@@ -276,6 +275,11 @@ def _do_web_search(query: str, api_key: str, scenario: str = "general") -> str:
 async def _handle_command(message: str, session_id: str, user_id: int):
     agent, llm, registry, builder, config = get_dependencies()
     store = get_session_store()
+
+    if agent is None:
+        yield f"data: {json.dumps({'type': 'error', 'content': '服务未完全初始化，请检查模型配置和工具定义'})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        return
 
     msg = message.strip()
 
@@ -615,6 +619,10 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
     if user_id is None:
         yield f"data: {json.dumps({'type': 'error', 'content': '用户未登录'})}\n\n"
+        return
+
+    if agent is None or registry is None:
+        yield f"data: {json.dumps({'type': 'error', 'content': '服务未完全初始化，请检查模型配置和工具定义'})}\n\n"
         return
 
     if message.strip().startswith("/"):

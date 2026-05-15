@@ -104,7 +104,11 @@ def update_global_config(body: ModelConfigUpdate, request: Request):
     from server.main import update_agent_context_limit, refresh_global_llm, update_agent_show_thought
     update_agent_context_limit(cfg.get("context_limit", ""))
     update_agent_show_thought(cfg.get("show_thought", False))
-    refresh_global_llm()
+    try:
+        refresh_global_llm()
+    except Exception as e:
+        import logging
+        logging.getLogger("server").warning(f"刷新全局 LLM 客户端失败: {e}")
 
     return ModelConfigResponse(
         model_name=cfg.get("model_name", ""),

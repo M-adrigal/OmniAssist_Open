@@ -548,6 +548,8 @@ def save_model_config(user_id: int = None, **kwargs) -> dict:
         existing = conn.execute("SELECT id FROM model_configs WHERE user_id IS NULL").fetchone()
 
     if existing:
+        if not updates:
+            return get_model_config(user_id)
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         conn.execute(f"UPDATE model_configs SET {set_clause}, updated_at = ? WHERE id = ?",
                      list(updates.values()) + [now, existing["id"]])

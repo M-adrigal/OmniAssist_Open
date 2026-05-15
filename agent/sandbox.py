@@ -29,20 +29,31 @@ class ToolSandbox:
         os.makedirs(self.sandbox_dir, exist_ok=True)
         if os.path.exists(self.venv_python):
             return
-        subprocess.check_call(
-            [sys.executable, "-m", "venv", self.venv_dir],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=60
-        )
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "venv", self.venv_dir],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=60
+            )
+        except subprocess.TimeoutExpired:
+            print(f"[沙箱] 创建虚拟环境超时，请检查系统资源")
+            raise RuntimeError("沙箱虚拟环境创建超时")
+        except Exception as e:
+            print(f"[沙箱] 创建虚拟环境失败: {e}")
+            raise RuntimeError(f"沙箱虚拟环境创建失败: {e}")
 
     def install(self, packages: list):
         if not packages:
-            return
+            return True
         to_install = [p for p in packages if p not in self._deps_installed]
         if not to_install:
-            return
+            return True
         if not os.path.exists(self.venv_python):
-            self._ensure_venv()
+            try:
+                self._ensure_venv()
+            except Exception as e:
+                print(f"[沙箱] 虚拟环境不可用，无法安装依赖: {e}")
+                return False
         try:
             subprocess.check_call(
                 [self.venv_python, "-m", "pip", "install", "--no-cache-dir", "-q"] + to_install,
@@ -51,12 +62,13 @@ class ToolSandbox:
             )
         except subprocess.TimeoutExpired:
             print(f"[沙箱] pip install 超时: {to_install}")
-            raise
+            return False
         except Exception as e:
             print(f"[沙箱] pip install 失败: {e}")
-            raise
+            return False
         for p in to_install:
             self._deps_installed.add(p)
+        return True
 
     def install_verbose(self, packages: list):
         if not packages:
@@ -127,17 +139,26 @@ class ToolSandbox:
         wrapper = self._build_wrapper(code, params)
         base_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(base_dir)
+
+        subprocess_env = {
+            "PATH": os.path.dirname(self.venv_python) + ":" + os.environ.get("PATH", ""),
+            "HOME": os.environ.get("HOME", tempfile.gettempdir()),
+            "TMPDIR": tempfile.gettempdir(),
+            "TEMP": tempfile.gettempdir(),
+            "TMP": tempfile.gettempdir(),
+            "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+            "LC_ALL": os.environ.get("LC_ALL", "en_US.UTF-8"),
+        }
+        for key in ("USER", "LOGNAME", "SHELL"):
+            if key in os.environ:
+                subprocess_env[key] = os.environ[key]
+
         try:
             proc = subprocess.run(
                 [self.venv_python, "-c", wrapper],
                 capture_output=True, text=True, timeout=timeout,
                 cwd=project_root,
-                env={
-                    "PATH": os.path.dirname(self.venv_python) + ":" + os.environ.get("PATH", ""),
-                    "HOME": os.environ.get("HOME", tempfile.gettempdir()),
-                    "TMPDIR": tempfile.gettempdir(),
-                    "LANG": "en_US.UTF-8",
-                }
+                env=subprocess_env,
             )
             if proc.returncode != 0:
                 stderr = proc.stderr.strip()
