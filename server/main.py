@@ -379,9 +379,14 @@ app.mount("/static", StaticFiles(directory=static_dir, html=False), name="static
 
 def _check_and_free_port(port: int):
     import signal
+    import socket
+
+    if _is_port_available(port):
+        return
 
     pids = _find_port_pids(port)
     if not pids:
+        print(f"[启动] 警告：端口 {port} 被占用，但无法确定占用进程（可能在容器外），将继续尝试启动")
         return
 
     for pid in pids:
@@ -399,6 +404,17 @@ def _check_and_free_port(port: int):
     time.sleep(0.5)
 
 
+def _is_port_available(port: int) -> bool:
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", port))
+            return True
+    except OSError:
+        return False
+
+
 def _find_port_pids(port: int) -> list:
     methods = [
         ["lsof", "-ti", f":{port}"],
@@ -409,7 +425,7 @@ def _find_port_pids(port: int) -> list:
     for cmd in methods:
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=5
+                cmd, capture_output=True, text=True, timeout=3
             )
             if result.returncode != 0:
                 continue
@@ -423,7 +439,13 @@ def _find_port_pids(port: int) -> list:
 
             if pids:
                 return pids
-        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+        except FileNotFoundError:
+            continue
+        except subprocess.TimeoutExpired:
+            continue
+        except ValueError:
+            continue
+        except Exception:
             continue
 
     return []
