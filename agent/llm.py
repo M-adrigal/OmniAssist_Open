@@ -74,7 +74,7 @@ class LLMClient:
         self.model = model_name
 
     def chat(self, messages, tools=None, tool_choice="auto", temperature=0):
-        """调用大模型聊天接口
+        """调用大模型聊天接口（非流式）
 
         Args:
             messages (list): 消息列表
@@ -118,6 +118,71 @@ class LLMClient:
                 "role": "assistant",
                 "content": msg.content
             }
+
+    def chat_stream(self, messages, tools=None, tool_choice="auto", temperature=0):
+        """调用大模型聊天接口（流式），逐块返回内容，同时累积工具调用
+
+        Args:
+            messages (list): 消息列表
+            tools (list, optional): 工具列表
+            tool_choice (str, optional): 工具选择策略，默认为 "auto"
+            temperature (float, optional): 温度参数，默认为 0
+
+        Yields:
+            dict: {"content": "文本块"} 流式内容，
+                  流结束时 yield {"content": None, "finish_reason": str, "tool_calls": list}
+        """
+        if self.client is None:
+            raise RuntimeError("LLM 客户端未配置 API Key，请先在设置中配置模型参数")
+
+        stream = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            temperature=temperature,
+            stream=True
+        )
+
+        content = ""
+        tool_calls = []
+        finish_reason = None
+
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            finish_reason = chunk.choices[0].finish_reason
+
+            if delta.content:
+                content += delta.content
+                yield {"content": delta.content}
+
+            if delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    while len(tool_calls) <= idx:
+                        tool_calls.append({
+                            "id": "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""}
+                        })
+                    if tc_delta.id:
+                        tool_calls[idx]["id"] = tc_delta.id
+                    if tc_delta.function:
+                        if tc_delta.function.name:
+                            tool_calls[idx]["function"]["name"] = tc_delta.function.name
+                        if tc_delta.function.arguments:
+                            tool_calls[idx]["function"]["arguments"] += tc_delta.function.arguments
+
+            if finish_reason:
+                yield {
+                    "content": None,
+                    "finish_reason": finish_reason,
+                    "tool_calls": tool_calls if tool_calls else None,
+                    "full_content": content
+                }
+                return
 
 
 if __name__ == "__main__":

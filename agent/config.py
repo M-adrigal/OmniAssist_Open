@@ -51,7 +51,9 @@ class AgentConfig:
     def __init__(self, config_path: str = None):
         if config_path is None:
             base_dir = os.path.dirname(os.path.abspath(__file__))
-            config_path = os.path.join(base_dir, ".agent_config")
+            data_dir = os.path.join(os.path.dirname(base_dir), "data")
+            os.makedirs(data_dir, exist_ok=True)
+            config_path = os.path.join(data_dir, ".agent_config")
         self.config_path = config_path
         self.config_dir = os.path.dirname(os.path.abspath(config_path))
         self._data = {}

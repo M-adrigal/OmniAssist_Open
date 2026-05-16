@@ -708,26 +708,25 @@ def create_local_executor(tool_name: str, execution_code: str, dependencies: lis
     from sandbox import ToolSandbox
 
     if sandbox is None:
-        sandbox = ToolSandbox()
+        try:
+            sandbox = ToolSandbox()
+        except Exception as e:
+            print(f"[警告] 工具 '{tool_name}' 沙箱创建失败: {e}")
+            sandbox = None
     _sandbox = sandbox
 
-    if dependencies:
-        try:
-            _sandbox.install(dependencies)
-        except Exception as e:
-            print(f"[警告] 工具 '{tool_name}' 依赖安装失败: {e}")
-            print(f"[警告] 工具仍会注册，首次调用时将自动重试安装")
-
     def executor(**kwargs) -> str:
+        if _sandbox is None:
+            return f"[工具 '{tool_name}' 执行失败] 沙箱环境不可用，工具执行功能暂不可用"
         user_id = kwargs.pop('_user_id', None)
         try:
             return _sandbox.execute(execution_code, kwargs, user_id=user_id)
         except Exception as e:
-            return f"[工具 '{tool_name}' 执行失败] 错误信息：{str(e)}"
+            return f"[工具 '{tool_name}' 执行异常] {type(e).__name__}: {str(e)}"
 
     def _wrapped_executor(**kwargs) -> str:
         result = executor(**kwargs)
-        if "ModuleNotFoundError" in result and dependencies:
+        if _sandbox is not None and "ModuleNotFoundError" in result and dependencies:
             import re as _re
             match = _re.search(r"No module named '(\w+)'", result)
             if match:
@@ -738,6 +737,8 @@ def create_local_executor(tool_name: str, execution_code: str, dependencies: lis
                     return executor(**kwargs)
                 else:
                     print(f"[工具 '{tool_name}'] 自动安装失败")
+        if result.startswith("[沙箱执行失败]") or result.startswith("[沙箱执行超时]") or result.startswith("[沙箱异常]"):
+            return result
         return result
 
     return _wrapped_executor

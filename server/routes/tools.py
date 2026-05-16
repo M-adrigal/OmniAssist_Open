@@ -13,7 +13,10 @@ def get_tools_dir():
 
 
 def get_dependencies():
-    from server.main import get_tool_registry, get_tool_builder, get_llm_client, get_config, get_agent
+    try:
+        from __main__ import get_tool_registry, get_tool_builder, get_llm_client, get_config, get_agent
+    except ImportError:
+        from server.main import get_tool_registry, get_tool_builder, get_llm_client, get_config, get_agent
     return get_tool_registry(), get_tool_builder(), get_llm_client(), get_config(), get_agent()
 
 

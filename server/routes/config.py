@@ -47,7 +47,10 @@ def update_config(body: ModelConfigUpdate, request: Request):
 
     cfg = save_model_config(user["id"], **kwargs)
 
-    from server.main import update_agent_context_limit, update_agent_show_thought
+    try:
+        from __main__ import update_agent_context_limit, update_agent_show_thought
+    except ImportError:
+        from server.main import update_agent_context_limit, update_agent_show_thought
     update_agent_context_limit(cfg.get("context_limit", ""))
     update_agent_show_thought(cfg.get("show_thought", False))
 
@@ -101,7 +104,10 @@ def update_global_config(body: ModelConfigUpdate, request: Request):
 
     cfg = save_model_config(None, **kwargs)
 
-    from server.main import update_agent_context_limit, refresh_global_llm, update_agent_show_thought
+    try:
+        from __main__ import update_agent_context_limit, refresh_global_llm, update_agent_show_thought
+    except ImportError:
+        from server.main import update_agent_context_limit, refresh_global_llm, update_agent_show_thought
     update_agent_context_limit(cfg.get("context_limit", ""))
     update_agent_show_thought(cfg.get("show_thought", False))
     try:

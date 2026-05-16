@@ -79,6 +79,7 @@ class LoginResponse(BaseModel):
     message: str
     user_type: str
     username: str
+    must_change_password: bool = False
 
 
 class ChangePasswordRequest(BaseModel):

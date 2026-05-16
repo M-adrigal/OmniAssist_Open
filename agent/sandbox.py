@@ -23,24 +23,71 @@ class ToolSandbox:
         self.venv_dir = os.path.join(sandbox_dir, "venv")
         self.venv_python = os.path.join(self.venv_dir, "bin", "python3")
         self._deps_installed = set()
+        self._deps_file = os.path.join(sandbox_dir, ".installed_deps")
         self._ensure_venv()
+        self._load_installed_deps()
 
     def _ensure_venv(self):
         os.makedirs(self.sandbox_dir, exist_ok=True)
         if os.path.exists(self.venv_python):
-            return
+            return True
         try:
             subprocess.check_call(
                 [sys.executable, "-m", "venv", self.venv_dir],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 timeout=60
             )
+            return True
         except subprocess.TimeoutExpired:
             print(f"[沙箱] 创建虚拟环境超时，请检查系统资源")
-            raise RuntimeError("沙箱虚拟环境创建超时")
+            print(f"[沙箱] 工具执行功能将不可用，但对话功能不受影响")
+            return False
         except Exception as e:
             print(f"[沙箱] 创建虚拟环境失败: {e}")
-            raise RuntimeError(f"沙箱虚拟环境创建失败: {e}")
+            print(f"[沙箱] 提示：请确保 Python 已安装 venv 模块（python3 -m venv）")
+            print(f"[沙箱] 工具执行功能将不可用，但对话功能不受影响")
+            return False
+
+    def _load_installed_deps(self):
+        if os.path.isfile(self._deps_file):
+            try:
+                with open(self._deps_file, "r") as f:
+                    for line in f:
+                        pkg = line.strip()
+                        if pkg:
+                            self._deps_installed.add(pkg)
+            except Exception:
+                pass
+
+    def _save_installed_deps(self):
+        try:
+            with open(self._deps_file, "w") as f:
+                for pkg in sorted(self._deps_installed):
+                    f.write(pkg + "\n")
+        except Exception:
+            pass
+
+    def _get_venv_installed_packages(self):
+        if not os.path.exists(self.venv_python):
+            return set()
+        try:
+            result = subprocess.run(
+                [self.venv_python, "-m", "pip", "list", "--format", "freeze"],
+                capture_output=True, text=True, timeout=15
+            )
+            if result.returncode != 0:
+                return set()
+            packages = set()
+            for line in result.stdout.strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                pkg_name = line.split("==")[0].split(">=")[0].split("<=")[0].split("~=")[0].split("!=")[0].strip().lower()
+                if pkg_name:
+                    packages.add(pkg_name)
+            return packages
+        except Exception:
+            return set()
 
     def install(self, packages: list):
         if not packages:
@@ -48,17 +95,27 @@ class ToolSandbox:
         to_install = [p for p in packages if p not in self._deps_installed]
         if not to_install:
             return True
+
+        venv_packages = self._get_venv_installed_packages()
+        if venv_packages:
+            for pkg in list(to_install):
+                if pkg.lower() in venv_packages:
+                    self._deps_installed.add(pkg)
+                    to_install.remove(pkg)
+            self._save_installed_deps()
+
+        if not to_install:
+            return True
+
         if not os.path.exists(self.venv_python):
-            try:
-                self._ensure_venv()
-            except Exception as e:
-                print(f"[沙箱] 虚拟环境不可用，无法安装依赖: {e}")
+            if not self._ensure_venv():
+                print(f"[沙箱] 虚拟环境不可用，无法安装依赖")
                 return False
         try:
             subprocess.check_call(
                 [self.venv_python, "-m", "pip", "install", "--no-cache-dir", "-q"] + to_install,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=30
+                timeout=120
             )
         except subprocess.TimeoutExpired:
             print(f"[沙箱] pip install 超时: {to_install}")
@@ -68,6 +125,7 @@ class ToolSandbox:
             return False
         for p in to_install:
             self._deps_installed.add(p)
+        self._save_installed_deps()
         return True
 
     def install_verbose(self, packages: list):
@@ -77,8 +135,25 @@ class ToolSandbox:
         if not to_install:
             print("所有依赖已安装，无需重复安装。")
             return
+
+        venv_packages = self._get_venv_installed_packages()
+        pre_existing = set()
+        if venv_packages:
+            for pkg in list(to_install):
+                if pkg.lower() in venv_packages:
+                    self._deps_installed.add(pkg)
+                    pre_existing.add(pkg)
+                    to_install.remove(pkg)
+            self._save_installed_deps()
+
+        if not to_install:
+            print("所有依赖已安装，无需重复安装。")
+            return
+
         if not os.path.exists(self.venv_python):
-            self._ensure_venv()
+            if not self._ensure_venv():
+                print("[沙箱] 虚拟环境不可用，无法安装依赖")
+                return
         print(f"正在安装依赖: {', '.join(to_install)}")
         print("-" * 40)
         try:
@@ -89,17 +164,18 @@ class ToolSandbox:
         except subprocess.TimeoutExpired:
             print("-" * 40)
             print(f"[沙箱] pip install 超时: {to_install}")
-            self._cleanup_failed_install(to_install)
+            self._cleanup_failed_install(to_install, pre_existing)
             raise
         except Exception as e:
             print("-" * 40)
             print(f"[沙箱] pip install 失败: {e}")
-            self._cleanup_failed_install(to_install)
+            self._cleanup_failed_install(to_install, pre_existing)
             raise
         print("-" * 40)
         print("依赖安装完成。")
         for p in to_install:
             self._deps_installed.add(p)
+        self._save_installed_deps()
 
     def uninstall(self, packages: list):
         if not packages:
@@ -117,8 +193,13 @@ class ToolSandbox:
             pass
         for p in to_remove:
             self._deps_installed.discard(p)
+        self._save_installed_deps()
 
-    def _cleanup_failed_install(self, packages: list):
+    def _cleanup_failed_install(self, packages: list, pre_existing: set = None):
+        if pre_existing:
+            packages = [p for p in packages if p not in pre_existing]
+        if not packages:
+            return
         print(f"正在清理安装失败的依赖: {', '.join(packages)}")
         try:
             subprocess.check_call(
@@ -161,10 +242,16 @@ class ToolSandbox:
                 env=subprocess_env,
             )
             if proc.returncode != 0:
+                stdout = proc.stdout.strip()
                 stderr = proc.stderr.strip()
+                parts = []
+                if stdout:
+                    parts.append(stdout[:800])
                 if stderr:
-                    return f"[沙箱执行失败] {stderr[:500]}"
-                return f"[沙箱执行失败] 退出码: {proc.returncode}"
+                    parts.append(f"[系统错误] {stderr[:300]}")
+                if not parts:
+                    parts.append(f"退出码: {proc.returncode}")
+                return f"[沙箱执行失败] {' | '.join(parts)}"
             return proc.stdout.strip()
         except subprocess.TimeoutExpired:
             return f"[沙箱执行超时] 工具执行超过 {timeout} 秒，已强制终止"
@@ -303,7 +390,10 @@ class ToolSandbox:
             f"{indented_code}\n"
             "    _out = str(locals().get('result', '代码执行完成但未找到 result 变量'))\n"
             "except Exception as _e:\n"
-            "    _out = f'[工具执行异常] {type(_e).__name__}: {str(_e)}'\n"
+            "    import traceback as _tb\n"
+            "    _tb_str = _tb.format_exc()\n"
+            "    _tb_lines = _tb_str.strip().split('\\n')\n"
+            "    _out = f'[工具执行异常] {type(_e).__name__}: {str(_e)}\\n\\n详细追踪:\\n' + '\\n'.join(_tb_lines[-6:])\n"
             "print(_out)\n"
         )
         return wrapper

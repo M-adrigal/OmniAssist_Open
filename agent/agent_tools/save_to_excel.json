@@ -37,7 +37,7 @@
   },
   "execution_mode": "local_execution",
   "execution_prompt": "请编写Python代码，使用openpyxl库将表格数据保存为Excel文件。参数为：{params}。确保将文档保存到项目根目录下的'document_output/excel_output'文件夹中。如果文件夹不存在，请创建它。将生成的文档的完整文件路径赋值给变量result。只输出纯Python代码。",
-  "execution_code": "import sys\nimport os\nimport json\nsys.path.insert(0, os.getcwd())\nfrom agent.excel_formatter import create_excel_workbook\n\noutput_dir = os.path.join('document_output', 'excel_output')\n\nfmt = None\nif formatting and isinstance(formatting, str):\n    try:\n        fmt = json.loads(formatting)\n    except:\n        pass\nelif formatting and isinstance(formatting, dict):\n    fmt = formatting\n\nresult = create_excel_workbook(filename, headers=headers or '', rows=rows or '', formatting=fmt, output_dir=output_dir)",
+  "execution_code": "import sys\nimport os\nimport json\nsys.path.insert(0, os.getcwd())\nfrom agent.excel_formatter import create_excel_workbook\n\noutput_dir = os.path.join('document_output', 'excel_output')\n\ntry:\n    formatting\nexcept NameError:\n    formatting = None\n\nfmt = None\nif formatting and isinstance(formatting, str):\n    try:\n        fmt = json.loads(formatting)\n    except:\n        pass\nelif formatting and isinstance(formatting, dict):\n    fmt = formatting\n\nresult = create_excel_workbook(filename, headers=headers or '', rows=rows or '', formatting=fmt, output_dir=output_dir)",
   "dependencies": [
     "openpyxl"
   ],

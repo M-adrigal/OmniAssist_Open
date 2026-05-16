@@ -68,6 +68,8 @@ def _prewarm_sandbox(tools_dir: str):
     """
     import json
 
+    if _sandbox is None:
+        return
     if not os.path.isdir(tools_dir):
         return
 
@@ -92,7 +94,7 @@ def _prewarm_sandbox(tools_dir: str):
 
     print(f"[沙箱预热] 检测到 {len(all_deps)} 个依赖: {sorted(all_deps)}")
     try:
-        _sandbox.install(sorted(all_deps))
+        _sandbox.install_verbose(sorted(all_deps))
         print("[沙箱预热] 依赖安装完成")
     except Exception as e:
         print(f"[沙箱预热] 部分依赖安装失败: {e}")
@@ -103,7 +105,7 @@ def init_services():
     global _config, _llm_client, _tool_registry, _tool_builder, _agent, _sandbox
 
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    config_path = os.path.join(base_dir, "agent", ".agent_config")
+    config_path = os.path.join(base_dir, "data", ".agent_config")
     tools_dir = os.path.join(base_dir, "agent", "agent_tools")
 
     _config = AgentConfig(config_path)
@@ -143,7 +145,12 @@ def init_services():
 
         _llm_client = LLMClient(config=_config)
 
-    _sandbox = ToolSandbox()
+    try:
+        _sandbox = ToolSandbox()
+    except Exception as e:
+        print(f"[启动] 沙箱初始化失败: {e}")
+        print("[启动] 工具执行功能将不可用，但对话功能不受影响")
+        _sandbox = None
 
     _tool_registry = ToolRegistry()
     _tool_builder = ToolBuilder(_llm_client)
@@ -154,7 +161,11 @@ def init_services():
             _create_executor(name, prompt, mode, code, http_cfg, _llm_client, deps, fmt, sandbox=_sandbox)
     )
 
-    _prewarm_sandbox(tools_dir)
+    if _sandbox is not None:
+        import threading
+        threading.Thread(target=_prewarm_sandbox, args=(tools_dir,), daemon=True).start()
+    else:
+        print("[沙箱预热] 沙箱不可用，跳过依赖预热")
 
     show_thought = False
     context_limit = ""
@@ -300,24 +311,58 @@ def serve_favicon():
 @app.on_event("startup")
 def startup():
     admin_pw = init_db()
-    if admin_pw:
-        print(f"\n[用户体系] 数据库已初始化")
-        print(f"[用户体系] 默认管理员账号: admin")
-        print(f"[用户体系] 默认管理员密码: {admin_pw}")
-        print(f"[用户体系] 请登录后及时修改密码！\n")
+    pw_file = os.path.join(os.path.dirname(DB_PATH), ".db_web_password")
 
-        pw_file = os.path.join(os.path.dirname(DB_PATH), ".db_web_password")
+    if admin_pw:
+        print(f"\n{'='*60}")
+        print(f"  OmniAssist 已启动")
+        print(f"  访问地址: http://localhost:17520")
+        print(f"{'='*60}")
+        print(f"  默认管理员账号: admin")
+        print(f"  默认管理员密码: admin123")
+        print(f"  ⚠️  首次登录需修改密码后方可使用！")
+        print(f"{'='*60}\n")
+
+        from server.database import _hash_password
         with open(pw_file, "w") as f:
-            f.write(admin_pw)
+            f.write(_hash_password(admin_pw))
         try:
             os.chmod(pw_file, 0o600)
         except Exception:
             pass
+    else:
+        print(f"\n{'='*60}")
+        print(f"  OmniAssist 已启动")
+        print(f"  访问地址: http://localhost:17520")
+        print(f"{'='*60}\n")
+
+        if not os.path.isfile(pw_file):
+            new_pw = _generate_random_password(8)
+            from server.database import _hash_password, _get_connection
+            conn = _get_connection()
+            now = __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute(
+                "UPDATE users SET password_hash = ?, must_change_password = 1, updated_at = ? WHERE username = 'admin'",
+                (_hash_password(new_pw), now)
+            )
+            conn.commit()
+            with open(pw_file, "w") as f:
+                f.write(_hash_password(new_pw))
+            try:
+                os.chmod(pw_file, 0o600)
+            except Exception:
+                pass
+            print(f"[启动] 密码文件丢失，已重置管理员密码")
+            print(f"  新密码: {new_pw}")
+            print(f"  ⚠️  请使用新密码登录并及时修改！")
 
     try:
         init_services()
+        print("[启动] 服务初始化完成")
     except Exception as e:
         print(f"[启动] 服务初始化失败: {e}")
+        import traceback
+        traceback.print_exc()
         print("[启动] 请检查模型配置和工具定义，服务将继续启动但部分功能可能不可用")
 
     refresh_global_llm()
@@ -417,16 +462,25 @@ def _start_sqlite_web():
     password_file = os.path.join(os.path.dirname(DB_PATH), ".db_web_password")
     if os.path.isfile(password_file):
         with open(password_file, "r") as f:
-            web_password = f.read().strip()
+            web_password_hash = f.read().strip()
     else:
-        web_password = _generate_random_password(12)
+        from server.database import _hash_password, _get_connection
+        web_password = _generate_random_password(8)
+        web_password_hash = _hash_password(web_password)
+        conn = _get_connection()
+        now = __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "UPDATE users SET password_hash = ?, must_change_password = 1, updated_at = ? WHERE username = 'admin'",
+            (_hash_password(web_password), now)
+        )
+        conn.commit()
         with open(password_file, "w") as f:
-            f.write(web_password)
+            f.write(web_password_hash)
         try:
             os.chmod(password_file, 0o600)
         except Exception:
             pass
-        print(f"[数据库管理] 未找到密码文件，已生成临时密码，请通过平台修改管理员密码以同步")
+        print(f"[数据库管理] 密码文件丢失，已重置管理员密码: {web_password}")
 
     try:
         _db_process = subprocess.Popen(
@@ -448,14 +502,14 @@ def _start_sqlite_web():
     import time
     time.sleep(1)
 
-    _start_db_auth_proxy(DB_PROXY_PORT, DB_BACKEND_PORT, web_password)
+    _start_db_auth_proxy(DB_PROXY_PORT, DB_BACKEND_PORT, web_password_hash)
 
     print(f"[数据库管理] 已启动: http://0.0.0.0:{DB_PROXY_PORT}")
     print(f"[数据库管理] 使用管理员账号(admin)登录即可访问")
     print(f"[数据库管理] 数据库文件: {DB_PATH}")
 
 
-def _start_db_auth_proxy(proxy_port: int, backend_port: int, password: str):
+def _start_db_auth_proxy(proxy_port: int, backend_port: int, password_hash: str):
     import http.server
     import urllib.request
     import urllib.error
@@ -466,15 +520,25 @@ def _start_db_auth_proxy(proxy_port: int, backend_port: int, password: str):
 
     class ProxyHandler(http.server.BaseHTTPRequestHandler):
         def _check_auth(self):
+            from server.database import verify_password
             try:
                 with open(password_file, "r") as f:
-                    current_pw = f.read().strip()
+                    stored = f.read().strip()
             except Exception:
-                current_pw = password
-            expected = base64.b64encode(f"admin:{current_pw}".encode()).decode()
+                stored = password_hash
             auth = self.headers.get("Authorization", "")
-            if auth.startswith("Basic ") and auth.split(" ", 1)[1] == expected:
-                return True
+            if auth.startswith("Basic "):
+                try:
+                    credentials = base64.b64decode(auth.split(" ", 1)[1]).decode()
+                    username, _, password = credentials.partition(":")
+                    if username == "admin":
+                        if ":" in stored:
+                            if verify_password(password, stored):
+                                return True
+                        elif password == stored:
+                            return True
+                except Exception:
+                    pass
             self.send_response(401)
             self.send_header("WWW-Authenticate", 'Basic realm="Database Management"')
             self.send_header("Content-Length", "0")

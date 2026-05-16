@@ -9,12 +9,18 @@ env/
 ENV/
 env.bak/
 venv.bak/
+dist/
+build/
+*.egg-info/
 
 # Agent config (contains encrypted API key)
 agent/.agent_config
 agent/.agent_salt
 agent/tool_sandbox/
 tool_sandbox/
+
+# Data directory (runtime data, never commit)
+data/
 
 # Database files (generated at runtime)
 *.db
@@ -29,10 +35,13 @@ Document_output/
 *.docx
 *.pdf
 *.xlsx
+*.pptx
+*.csv
 
 # IDE
 .vscode/
 .idea/
+.trae/
 *.swp
 *.swo
 *~
@@ -44,6 +53,12 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Test
+.pytest_cache/
+coverage/
+.coverage
+htmlcov/
 
 # Temporary
 tmp/

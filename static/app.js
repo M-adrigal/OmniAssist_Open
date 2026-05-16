@@ -196,7 +196,7 @@ async function switchSession(id) {
   try {
     const s = await API.get(`/api/sessions/${id}`);
     if (s.messages && s.messages.length > 0) {
-      s.messages.forEach(m => appendMessage(m.role, m.content));
+      s.messages.forEach(m => renderHistoryMessage(m));
     }
   } catch (e) {
     console.error('加载会话消息失败:', e);
@@ -223,10 +223,162 @@ function appendMessage(role, content) {
   div.className = `message ${role}`;
   div.innerHTML = `
     <div class="avatar">${role === 'user' ? 'U' : 'AI'}</div>
-    <div class="content">${renderContent(content)}</div>
+    <div class="message-body"><div class="answer-area">${renderContent(content)}</div></div>
   `;
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
+  return div;
+}
+
+function renderHistoryMessage(m) {
+  const role = typeof m === 'string' ? 'user' : (m.role || 'user');
+  const content = typeof m === 'string' ? m : (m.content || '');
+  const thought = (m && m.thought) || '';
+  const showThought = !!thought;
+  const tools = (m && m.tools) || null;
+  const search = (m && m.search) || null;
+  const hasMeta = showThought || (tools && tools.length > 0) || search;
+
+  if (role === 'user' || !hasMeta) {
+    appendMessage(role, content);
+    return;
+  }
+
+  const container = $('#chat-messages');
+  const welcome = container.querySelector('.welcome-message');
+  if (welcome) welcome.remove();
+
+  const div = document.createElement('div');
+  div.className = 'message assistant';
+  div.innerHTML = `
+    <div class="avatar">AI</div>
+    <div class="message-body">
+      ${showThought ? `
+        <div class="think-area">
+          <div class="think-header">
+            <span class="think-status">思考过程</span>
+            <span class="think-time"></span>
+            <span class="think-toggle">▸</span>
+          </div>
+          <div class="think-content collapsed">
+            ${thought.split('\n').filter(l => l.trim()).map(l => `<div class="think-line">${escapeHtml(l)}</div>`).join('')}
+          </div>
+        </div>
+      ` : ''}
+      ${search ? `
+        <div class="search-area">
+          <div class="search-header">
+            <span class="search-status">联网搜索</span>
+            <span class="search-toggle">▸</span>
+          </div>
+          <div class="search-content collapsed">
+            <div class="search-info">
+              <div class="search-info-item"><span class="search-label">场景：</span>${escapeHtml(search.scenario || '通用搜索')}</div>
+              <div class="search-info-item"><span class="search-label">关键词：</span>${escapeHtml(search.query || '')}</div>
+            </div>
+            <div class="search-results">${escapeHtml((search.results || '').length > 300 ? (search.results || '').substring(0, 300) + '...' : (search.results || ''))}</div>
+            ${(search.results || '').length > 300 ? `<button class="search-result-expand" data-full="${escapeHtml(search.results)}">展开全部</button>` : ''}
+          </div>
+        </div>
+      ` : ''}
+      ${tools && tools.length > 0 ? `
+        <div class="tool-summary">
+          <div class="tool-summary-header">
+            <span class="tool-summary-title">工具调用 (${tools.length} 个)${tools.filter(t => t.error).length > 0 ? ` <span class="tool-error-badge">${tools.filter(t => t.error).length} 个错误</span>` : ''}</span>
+            <span class="tool-summary-toggle">▸</span>
+          </div>
+          <div class="tool-summary-body collapsed">
+            ${tools.map((t, i) => `
+              <div class="tool-item${t.error ? ' error' : ''}">
+                <div class="tool-item-header">
+                  <span class="tool-item-name">${escapeHtml(t.name)}</span>
+                  <span class="tool-item-index">#${i + 1}</span>
+                </div>
+                <div class="tool-item-args">
+                  <span class="tool-item-label">参数：</span>
+                  <code>${escapeHtml(JSON.stringify(t.arguments, null, 2))}</code>
+                </div>
+                <div class="tool-item-result">
+                  <span class="tool-item-label">结果：</span>
+                  <span class="tool-result-text${t.error ? ' error' : ''}">${escapeHtml((t.result || '').length > 200 ? (t.result || '').substring(0, 200) + '...' : (t.result || ''))}</span>
+                  ${(t.result || '').length > 200 ? `<button class="tool-result-expand" data-full="${escapeHtml(t.result)}">展开全部</button>` : ''}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+      <div class="answer-area">${renderContent(content)}</div>
+    </div>
+  `;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+
+  if (search) {
+    const searchHeader = div.querySelector('.search-header');
+    const searchContent = div.querySelector('.search-content');
+    const searchToggle = div.querySelector('.search-toggle');
+    if (searchHeader && searchContent && searchToggle) {
+      searchHeader.addEventListener('click', () => {
+        const isCollapsed = searchContent.classList.toggle('collapsed');
+        searchToggle.textContent = isCollapsed ? '▸' : '▾';
+      });
+    }
+    const expandBtn = div.querySelector('.search-result-expand');
+    if (expandBtn) {
+      expandBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const full = expandBtn.dataset.full;
+        const resultsEl = div.querySelector('.search-results');
+        if (expandBtn.textContent === '展开全部') {
+          resultsEl.textContent = full;
+          expandBtn.textContent = '收起';
+        } else {
+          resultsEl.textContent = full.substring(0, 300) + '...';
+          expandBtn.textContent = '展开全部';
+        }
+      });
+    }
+  }
+
+  if (tools && tools.length > 0) {
+    const header = div.querySelector('.tool-summary-header');
+    const body = div.querySelector('.tool-summary-body');
+    const toggle = div.querySelector('.tool-summary-toggle');
+    if (header && body && toggle) {
+      header.addEventListener('click', () => {
+        const isCollapsed = body.classList.toggle('collapsed');
+        toggle.textContent = isCollapsed ? '▸' : '▾';
+      });
+    }
+    div.querySelectorAll('.tool-result-expand').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const full = btn.dataset.full;
+        const textEl = btn.previousElementSibling;
+        if (btn.textContent === '展开全部') {
+          textEl.textContent = full;
+          btn.textContent = '收起';
+        } else {
+          textEl.textContent = full.substring(0, 200) + '...';
+          btn.textContent = '展开全部';
+        }
+      });
+    });
+  }
+
+  if (showThought) {
+    const thinkHeader = div.querySelector('.think-header');
+    const thinkContent = div.querySelector('.think-content');
+    const thinkToggle = div.querySelector('.think-toggle');
+    if (thinkHeader && thinkContent && thinkToggle) {
+      thinkHeader.addEventListener('click', () => {
+        const isCollapsed = thinkContent.classList.toggle('collapsed');
+        thinkToggle.textContent = isCollapsed ? '▸' : '▾';
+      });
+    }
+  }
+
   return div;
 }
 
@@ -247,14 +399,130 @@ function createStreamingMessage() {
 }
 
 function renderContent(text) {
+  if (!text) return '';
+
+  const codeBlocks = [];
   let html = escapeHtml(text);
+
   html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-    return `<pre><code class="language-${lang}">${escapeHtml(code.trim())}</code></pre>`;
+    const idx = codeBlocks.length;
+    codeBlocks.push({ lang: lang || 'text', code: code.trim() });
+    return `\x00CB${idx}\x00`;
   });
+
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/\n{2,}/g, '\n');
-  html = html.replace(/\n/g, '<br>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+  const lines = html.split('\n');
+  const result = [];
+  let inList = false;
+  let listType = '';
+  let inTable = false;
+  let inBlockquote = false;
+  let i = 0;
+
+  while (i < lines.length) {
+    let line = lines[i];
+
+    if (/^\|.*\|$/.test(line.trim()) && (line.includes('|') && line.trim().split('|').length >= 2)) {
+      if (!inTable) {
+        if (inList) { result.push('</ul>'); inList = false; }
+        if (inBlockquote) { result.push('</blockquote>'); inBlockquote = false; }
+        result.push('<table>');
+        inTable = true;
+      }
+      const cells = line.trim().replace(/^\||\|$/g, '').split('|');
+      const isHeader = i + 1 < lines.length && /^\|[\s\-:]+\|$/.test(lines[i + 1].trim());
+      const tag = isHeader ? 'th' : 'td';
+      result.push('<tr>' + cells.map(c => `<${tag}>${c.trim()}</${tag}>`).join('') + '</tr>');
+      if (isHeader) { i++; }
+      i++;
+      continue;
+    } else if (inTable) {
+      result.push('</table>');
+      inTable = false;
+    }
+
+    if (/^&gt;\s?/.test(line)) {
+      if (!inBlockquote) {
+        if (inList) { result.push('</ul>'); inList = false; }
+        result.push('<blockquote>');
+        inBlockquote = true;
+      }
+      result.push('<p>' + line.replace(/^&gt;\s?/, '') + '</p>');
+      i++;
+      continue;
+    } else if (inBlockquote) {
+      result.push('</blockquote>');
+      inBlockquote = false;
+    }
+
+    const hMatch = line.match(/^(#{1,3})\s+(.+)$/);
+    if (hMatch) {
+      if (inList) { result.push('</ul>'); inList = false; }
+      const level = hMatch[1].length;
+      result.push(`<h${level}>${hMatch[2]}</h${level}>`);
+      i++;
+      continue;
+    }
+
+    const ulMatch = line.match(/^[\-\*]\s+(.+)$/);
+    if (ulMatch) {
+      if (!inList || listType !== 'ul') {
+        if (inList) result.push(listType === 'ul' ? '</ul>' : '</ol>');
+        result.push('<ul>');
+        inList = true;
+        listType = 'ul';
+      }
+      result.push('<li>' + ulMatch[1] + '</li>');
+      i++;
+      continue;
+    }
+
+    const olMatch = line.match(/^\d+[\.\)]\s+(.+)$/);
+    if (olMatch) {
+      if (!inList || listType !== 'ol') {
+        if (inList) result.push(listType === 'ul' ? '</ul>' : '</ol>');
+        result.push('<ol>');
+        inList = true;
+        listType = 'ol';
+      }
+      result.push('<li>' + olMatch[1] + '</li>');
+      i++;
+      continue;
+    }
+
+    if (inList) {
+      result.push(listType === 'ul' ? '</ul>' : '</ol>');
+      inList = false;
+    }
+
+    if (line.trim() === '') {
+      i++;
+      continue;
+    }
+
+    result.push('<p>' + line + '</p>');
+    i++;
+  }
+
+  if (inList) result.push(listType === 'ul' ? '</ul>' : '</ol>');
+  if (inTable) result.push('</table>');
+  if (inBlockquote) result.push('</blockquote>');
+
+  html = result.join('\n');
+
+  html = html.replace(/<p>\s*<\/p>/g, '');
+  html = html.replace(/<p>\s*<p>/g, '<p>');
+
+  html = html.replace(/\x00CB(\d+)\x00/g, (_, idx) => {
+    const block = codeBlocks[parseInt(idx)];
+    const escapedCode = escapeHtml(block.code);
+    return `<div class="code-block"><div class="code-block-header"><span class="code-block-lang">${block.lang}</span><button class="code-block-copy" onclick="copyCodeBlock(this)">复制</button></div><pre><code class="language-${block.lang}">${escapedCode}</code></pre></div>`;
+  });
+
   return html;
 }
 
@@ -264,8 +532,241 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+function copyCodeBlock(btn) {
+  const codeBlock = btn.closest('.code-block');
+  const code = codeBlock.querySelector('code').textContent;
+  navigator.clipboard.writeText(code).then(() => {
+    btn.textContent = '已复制';
+    setTimeout(() => { btn.textContent = '复制'; }, 2000);
+  }).catch(() => {
+    btn.textContent = '失败';
+    setTimeout(() => { btn.textContent = '复制'; }, 2000);
+  });
+}
+
 // ===== 聊天 =====
 let abortController = null;
+
+function createAssistantContainer() {
+  const container = $('#chat-messages');
+  const welcome = container.querySelector('.welcome-message');
+  if (welcome) welcome.remove();
+
+  const div = document.createElement('div');
+  div.className = 'message assistant';
+  div.innerHTML = `
+    <div class="avatar">AI</div>
+    <div class="message-body">
+      <div class="think-area hidden">
+        <div class="think-header">
+          <span class="think-status">思考中</span>
+          <span class="think-time"></span>
+          <span class="think-toggle">▸</span>
+        </div>
+        <div class="think-content"></div>
+      </div>
+      <div class="search-area hidden">
+        <div class="search-header">
+          <span class="search-status">联网搜索</span>
+          <span class="search-toggle">▸</span>
+        </div>
+        <div class="search-content collapsed"></div>
+      </div>
+      <div class="tool-summary hidden"></div>
+      <div class="answer-area streaming-cursor">正在处理...</div>
+    </div>
+  `;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+
+  const stream = {
+    container: div,
+    searchEl: div.querySelector('.search-area'),
+    searchContentEl: div.querySelector('.search-content'),
+    searchHeaderEl: div.querySelector('.search-header'),
+    searchToggleEl: div.querySelector('.search-toggle'),
+    searchData: null,
+    thinkEl: div.querySelector('.think-area'),
+    thinkContentEl: div.querySelector('.think-content'),
+    thinkHeaderEl: div.querySelector('.think-header'),
+    thinkStatusEl: div.querySelector('.think-status'),
+    thinkTimeEl: div.querySelector('.think-time'),
+    thinkToggleEl: div.querySelector('.think-toggle'),
+    thinkContent: '',
+    thinkStartTime: null,
+    thinkDone: false,
+    toolSummaryEl: div.querySelector('.tool-summary'),
+    answerEl: div.querySelector('.answer-area'),
+    answerContent: '',
+    tools: [],
+    hasTools: false,
+  };
+
+  stream.thinkHeaderEl.addEventListener('click', () => {
+    const content = stream.thinkContentEl;
+    const isHidden = content.classList.toggle('collapsed');
+    stream.thinkToggleEl.textContent = isHidden ? '▸' : '▾';
+  });
+
+  stream.searchHeaderEl.addEventListener('click', () => {
+    const content = stream.searchContentEl;
+    const isHidden = content.classList.toggle('collapsed');
+    stream.searchToggleEl.textContent = isHidden ? '▸' : '▾';
+  });
+
+  if (state.showThought) {
+    stream.thinkEl.classList.remove('hidden');
+    stream.thinkStartTime = Date.now();
+  }
+
+  return stream;
+}
+
+function renderToolSummary(stream, tools) {
+  if (!tools || tools.length === 0) return;
+  stream.hasTools = true;
+  stream.tools = tools;
+
+  const errorCount = tools.filter(t => t.error).length;
+  const errorBadge = errorCount > 0 ? ` <span class="tool-error-badge">${errorCount} 个错误</span>` : '';
+
+  stream.toolSummaryEl.innerHTML = `
+    <div class="tool-summary-header">
+      <span class="tool-summary-title">工具调用 (${tools.length} 个)${errorBadge}</span>
+      <span class="tool-summary-toggle">▸</span>
+    </div>
+    <div class="tool-summary-body collapsed">
+      ${tools.map((t, i) => `
+        <div class="tool-item${t.error ? ' error' : ''}">
+          <div class="tool-item-header">
+            <span class="tool-item-name">${escapeHtml(t.name)}</span>
+            <span class="tool-item-index">#${i + 1}</span>
+          </div>
+          <div class="tool-item-args">
+            <span class="tool-item-label">参数：</span>
+            <code>${escapeHtml(JSON.stringify(t.arguments, null, 2))}</code>
+          </div>
+          <div class="tool-item-result">
+            <span class="tool-item-label">结果：</span>
+            <span class="tool-result-text${t.error ? ' error' : ''}">${escapeHtml(t.result.length > 200 ? t.result.substring(0, 200) + '...' : t.result)}</span>
+            ${t.result.length > 200 ? `<button class="tool-result-expand" data-full="${escapeHtml(t.result)}">展开全部</button>` : ''}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  stream.toolSummaryEl.classList.remove('hidden');
+
+  const header = stream.toolSummaryEl.querySelector('.tool-summary-header');
+  const body = stream.toolSummaryEl.querySelector('.tool-summary-body');
+  const toggle = stream.toolSummaryEl.querySelector('.tool-summary-toggle');
+
+  header.addEventListener('click', () => {
+    const isCollapsed = body.classList.toggle('collapsed');
+    toggle.textContent = isCollapsed ? '▸' : '▾';
+  });
+
+  stream.toolSummaryEl.querySelectorAll('.tool-result-expand').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const full = btn.dataset.full;
+      const textEl = btn.previousElementSibling;
+      if (btn.textContent === '展开全部') {
+        textEl.textContent = full;
+        btn.textContent = '收起';
+      } else {
+        textEl.textContent = full.substring(0, 200) + '...';
+        btn.textContent = '展开全部';
+      }
+    });
+  });
+}
+
+function renderSearchArea(stream) {
+  if (!stream.searchData) return;
+
+  const el = stream.searchEl;
+  if (el.classList.contains('hidden')) {
+    el.classList.remove('hidden');
+  }
+
+  const d = stream.searchData;
+  const resultsPreview = (d.results || '').length > 300
+    ? escapeHtml(d.results.substring(0, 300)) + '...'
+    : escapeHtml(d.results || '');
+
+  stream.searchContentEl.innerHTML = `
+    <div class="search-info">
+      <div class="search-info-item"><span class="search-label">场景：</span>${escapeHtml(d.scenario || '通用搜索')}</div>
+      <div class="search-info-item"><span class="search-label">关键词：</span>${escapeHtml(d.query || '')}</div>
+    </div>
+    <div class="search-results">${resultsPreview}</div>
+    ${(d.results || '').length > 300 ? `<button class="search-result-expand" data-full="${escapeHtml(d.results)}">展开全部</button>` : ''}
+  `;
+
+  const expandBtn = stream.searchContentEl.querySelector('.search-result-expand');
+  if (expandBtn) {
+    expandBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const full = expandBtn.dataset.full;
+      const resultsEl = stream.searchContentEl.querySelector('.search-results');
+      if (expandBtn.textContent === '展开全部') {
+        resultsEl.textContent = full;
+        expandBtn.textContent = '收起';
+      } else {
+        resultsEl.textContent = full.substring(0, 300) + '...';
+        expandBtn.textContent = '展开全部';
+      }
+    });
+  }
+
+  const container = $('#chat-messages');
+  container.scrollTop = container.scrollHeight;
+}
+
+function updateThinkArea(stream) {
+  if (!state.showThought) return;
+
+  if (stream.thinkEl.classList.contains('hidden')) {
+    stream.thinkEl.classList.remove('hidden');
+  }
+
+  let html = '';
+  const lines = stream.thinkContent.split('\n');
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    html += `<div class="think-line">${escapeHtml(line)}</div>`;
+  }
+  stream.thinkContentEl.innerHTML = html;
+  stream.thinkContentEl.scrollTop = stream.thinkContentEl.scrollHeight;
+
+  const container = $('#chat-messages');
+  container.scrollTop = container.scrollHeight;
+}
+
+function finalizeThinkArea(stream) {
+  if (!stream.thinkStartTime || stream.thinkDone) return;
+  stream.thinkDone = true;
+
+  const elapsed = ((Date.now() - stream.thinkStartTime) / 1000).toFixed(2);
+  stream.thinkStatusEl.textContent = `已思考（${elapsed}s）`;
+  stream.thinkTimeEl.textContent = '';
+
+  stream.thinkContentEl.classList.add('collapsed');
+  stream.thinkToggleEl.textContent = '▸';
+
+  if (stream.searchData) {
+    renderSearchArea(stream);
+  }
+}
+
+function updateAnswerArea(stream) {
+  stream.answerEl.innerHTML = renderContent(stream.answerContent);
+  stream.answerEl.classList.add('streaming-cursor');
+  const container = $('#chat-messages');
+  container.scrollTop = container.scrollHeight;
+}
 
 async function sendMessage() {
   const input = $('#chat-input');
@@ -294,7 +795,7 @@ async function sendMessage() {
 
   appendMessage('user', message);
 
-  const contentEl = createStreamingMessage();
+  const stream = createAssistantContainer();
   state.isStreaming = true;
   $('#btn-send').classList.add('streaming');
   $('#btn-send').title = '停止生成';
@@ -321,7 +822,6 @@ async function sendMessage() {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let fullContent = '';
 
     while (true) {
       const { done, value } = await reader.read();
@@ -338,35 +838,90 @@ async function sendMessage() {
 
         try {
           const parsed = JSON.parse(data);
+
           if (parsed.type === 'error') {
-            contentEl.textContent = '错误: ' + parsed.content;
-            contentEl.classList.remove('streaming-cursor');
+            stream.answerEl.textContent = '错误: ' + parsed.content;
+            stream.answerEl.classList.remove('streaming-cursor');
             showToast(parsed.content, 'error');
             return;
           }
+
+          if (parsed.type === 'web_search') {
+            stream.searchData = {
+              query: parsed.query,
+              scenario: parsed.scenario,
+              results: parsed.results,
+            };
+            if (!stream.thinkStartTime) {
+              stream.thinkStartTime = Date.now();
+            }
+            stream.thinkContent += `\n联网搜索: ${parsed.query}\n场景: ${parsed.scenario}\n`;
+            updateThinkArea(stream);
+            continue;
+          }
+
+          if (parsed.type === 'thought') {
+            if (!stream.thinkStartTime) {
+              stream.thinkStartTime = Date.now();
+            }
+            stream.thinkContent += parsed.content;
+            updateThinkArea(stream);
+            continue;
+          }
+
           if (parsed.type === 'tool_call') {
-            fullContent += `\n\n🔧 调用工具: **${parsed.name}**\n`;
-            contentEl.innerHTML = renderContent(fullContent);
-            contentEl.classList.add('streaming-cursor');
+            if (!stream.thinkStartTime) {
+              stream.thinkStartTime = Date.now();
+            }
+            stream.tools.push({
+              name: parsed.name,
+              arguments: parsed.arguments || {},
+              result: null,
+              error: false,
+            });
+            stream.hasTools = true;
+            stream.thinkContent += `\n调用工具: ${parsed.name}\n参数: ${JSON.stringify(parsed.arguments, null, 2)}\n`;
+            updateThinkArea(stream);
             continue;
           }
+
           if (parsed.type === 'tool_result') {
-            fullContent += `📋 工具结果: ${parsed.content}\n`;
-            contentEl.innerHTML = renderContent(fullContent);
-            contentEl.classList.add('streaming-cursor');
+            const tool = stream.tools.find(t => t.name === parsed.name && t.result === null);
+            if (tool) {
+              tool.result = parsed.content || '';
+              tool.error = tool.result.startsWith('[沙箱执行失败]') ||
+                           tool.result.startsWith('[沙箱执行超时]') ||
+                           tool.result.startsWith('[沙箱异常]') ||
+                           tool.result.startsWith('[工具执行异常]');
+            }
+            stream.thinkContent += `工具结果: ${parsed.content || '(空)'}\n`;
+            updateThinkArea(stream);
             continue;
           }
-          if ((parsed.type === 'content' || parsed.type === 'token') && parsed.content) {
-            fullContent += parsed.content;
-            contentEl.innerHTML = renderContent(fullContent);
-            contentEl.classList.add('streaming-cursor');
-            const container = $('#chat-messages');
-            container.scrollTop = container.scrollHeight;
+
+          if (parsed.type === 'tool_summary') {
+            renderToolSummary(stream, parsed.tools);
+            continue;
           }
+
+          if ((parsed.type === 'content' || parsed.type === 'token') && parsed.content) {
+            if (!stream.thinkDone && stream.thinkStartTime) {
+              finalizeThinkArea(stream);
+            }
+            stream.answerContent += parsed.content;
+            updateAnswerArea(stream);
+          }
+
           if (parsed.type === 'done') {
-            contentEl.classList.remove('streaming-cursor');
-            if (!fullContent) {
-              contentEl.textContent = parsed.content || '(无响应)';
+            stream.answerEl.classList.remove('streaming-cursor');
+            if (!stream.answerContent) {
+              stream.answerEl.textContent = parsed.content || '(无响应)';
+            }
+            if (stream.thinkStartTime && !stream.thinkDone) {
+              finalizeThinkArea(stream);
+            }
+            if (stream.searchData && stream.searchEl.classList.contains('hidden')) {
+              renderSearchArea(stream);
             }
           }
         } catch (e) {
@@ -375,9 +930,9 @@ async function sendMessage() {
       }
     }
 
-    contentEl.classList.remove('streaming-cursor');
-    if (!fullContent) {
-      contentEl.textContent = '(无响应)';
+    stream.answerEl.classList.remove('streaming-cursor');
+    if (!stream.answerContent) {
+      stream.answerEl.textContent = '(无响应)';
     }
 
     if (state.currentSessionId) {
@@ -385,14 +940,14 @@ async function sendMessage() {
     }
   } catch (e) {
     if (e.name === 'AbortError') {
-      contentEl.classList.remove('streaming-cursor');
-      if (!fullContent) {
-        contentEl.textContent = '(已停止生成)';
+      stream.answerEl.classList.remove('streaming-cursor');
+      if (!stream.answerContent) {
+        stream.answerEl.textContent = '(已停止生成)';
       }
       return;
     }
-    contentEl.textContent = '请求失败: ' + e.message;
-    contentEl.classList.remove('streaming-cursor');
+    stream.answerEl.textContent = '请求失败: ' + e.message;
+    stream.answerEl.classList.remove('streaming-cursor');
     showToast('发送失败: ' + e.message, 'error');
   } finally {
     state.isStreaming = false;
@@ -522,6 +1077,7 @@ function updateThoughtButton() {
     btn.classList.remove('active');
     btn.querySelector('span').textContent = '思考过程';
   }
+  localStorage.setItem('showThought', state.showThought ? '1' : '0');
 }
 
 async function loadConfig() {
@@ -539,7 +1095,11 @@ async function loadConfig() {
     if (modelNameEl) modelNameEl.value = config.model_name || '';
     if (contextLimitEl) contextLimitEl.value = config.context_limit || '';
 
-    state.showThought = config.show_thought || false;
+    if (localStorage.getItem('showThought') === null) {
+      state.showThought = config.show_thought || false;
+    } else {
+      state.showThought = localStorage.getItem('showThought') === '1';
+    }
     updateThoughtButton();
 
     if (hasPermission('model_config_global', 'read')) {
@@ -1034,23 +1594,70 @@ function initTheme() {
   if (saved === 'dark') {
     document.documentElement.classList.add('dark');
     $('#theme-toggle').textContent = '☀️';
-  } else {
+    $('#theme-toggle').title = '当前：暗色模式（点击切换）';
+  } else if (saved === 'light') {
     document.documentElement.classList.remove('dark');
     $('#theme-toggle').textContent = '🌙';
+    $('#theme-toggle').title = '当前：亮色模式（点击切换）';
+  } else {
+    applySystemTheme();
+    $('#theme-toggle').title = '当前：自动模式（点击切换）';
+  }
+}
+
+function applySystemTheme() {
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  if (prefersDark) {
+    document.documentElement.classList.add('dark');
+    $('#theme-toggle').textContent = '🌓';
+  } else {
+    document.documentElement.classList.remove('dark');
+    $('#theme-toggle').textContent = '🌓';
   }
 }
 
 function toggleTheme() {
-  const isDark = document.documentElement.classList.toggle('dark');
-  localStorage.setItem('theme', isDark ? 'dark' : 'light');
-  $('#theme-toggle').textContent = isDark ? '☀️' : '🌙';
+  const saved = localStorage.getItem('theme');
+  if (!saved || saved === 'auto') {
+    localStorage.setItem('theme', 'dark');
+    document.documentElement.classList.add('dark');
+    $('#theme-toggle').textContent = '☀️';
+    $('#theme-toggle').title = '当前：暗色模式（点击切换）';
+  } else if (saved === 'dark') {
+    localStorage.setItem('theme', 'light');
+    document.documentElement.classList.remove('dark');
+    $('#theme-toggle').textContent = '🌙';
+    $('#theme-toggle').title = '当前：亮色模式（点击切换）';
+  } else {
+    localStorage.removeItem('theme');
+    applySystemTheme();
+    $('#theme-toggle').title = '当前：自动模式（点击切换）';
+  }
 }
+
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+  const saved = localStorage.getItem('theme');
+  if (!saved || saved === 'auto') {
+    if (e.matches) {
+      document.documentElement.classList.add('dark');
+      $('#theme-toggle').textContent = '☀️';
+    } else {
+      document.documentElement.classList.remove('dark');
+      $('#theme-toggle').textContent = '🌙';
+    }
+  }
+});
 
 // ===== 事件绑定 =====
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
 
   $('#theme-toggle').addEventListener('click', toggleTheme);
+
+  if (localStorage.getItem('showThought') === '1') {
+    state.showThought = true;
+  }
+  updateThoughtButton();
 
   loadSessions();
 
@@ -1245,6 +1852,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 加载当前用户信息
   loadCurrentUser();
+
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('must_change_password') === '1') {
+    setTimeout(() => {
+      openChangePassword();
+      showToast('首次登录，请修改默认密码', 'info');
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState({}, '', '/');
+      }
+    }, 500);
+  }
 
   // 联网搜索三态切换: off -> auto -> on -> off
   const WEB_SEARCH_MODES = ['off', 'auto', 'on'];

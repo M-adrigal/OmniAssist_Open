@@ -13,12 +13,18 @@ from server.routes.auth import get_current_user
 
 
 def get_dependencies():
-    from server.main import get_agent, get_llm_client, get_tool_registry, get_tool_builder, get_config
+    try:
+        from __main__ import get_agent, get_llm_client, get_tool_registry, get_tool_builder, get_config
+    except ImportError:
+        from server.main import get_agent, get_llm_client, get_tool_registry, get_tool_builder, get_config
     return get_agent(), get_llm_client(), get_tool_registry(), get_tool_builder(), get_config()
 
 
 def get_session_store():
-    from server.main import get_session_store as gss
+    try:
+        from __main__ import get_session_store as gss
+    except ImportError:
+        from server.main import get_session_store as gss
     return gss()
 
 
@@ -79,7 +85,7 @@ SCENARIO_CONFIG = {
     "realtime": {
         "label": "实时信息",
         "search_depth": "advanced",
-        "max_results": 5,
+        "max_results": 3,
         "append_date": True,
         "instruction": (
             "用户正在查询实时信息（如天气、股价、新闻等），时效性至关重要。\n"
@@ -105,7 +111,7 @@ SCENARIO_CONFIG = {
     "latest": {
         "label": "最新动态",
         "search_depth": "advanced",
-        "max_results": 8,
+        "max_results": 5,
         "append_date": True,
         "instruction": (
             "用户正在查询最新动态、版本更新或近期发展。\n"
@@ -119,7 +125,7 @@ SCENARIO_CONFIG = {
     "howto": {
         "label": "教程指南",
         "search_depth": "basic",
-        "max_results": 5,
+        "max_results": 3,
         "append_date": False,
         "instruction": (
             "用户正在寻求操作指南或教程。\n"
@@ -132,7 +138,7 @@ SCENARIO_CONFIG = {
     "comparison": {
         "label": "对比分析",
         "search_depth": "advanced",
-        "max_results": 8,
+        "max_results": 5,
         "append_date": False,
         "instruction": (
             "用户正在对比多个事物。\n"
@@ -145,7 +151,7 @@ SCENARIO_CONFIG = {
     "local": {
         "label": "本地化信息",
         "search_depth": "basic",
-        "max_results": 5,
+        "max_results": 3,
         "append_date": True,
         "instruction": (
             "用户正在查询与特定地点相关的信息。\n"
@@ -158,7 +164,7 @@ SCENARIO_CONFIG = {
     "general": {
         "label": "通用搜索",
         "search_depth": "basic",
-        "max_results": 5,
+        "max_results": 3,
         "append_date": False,
         "instruction": (
             "以下是通过联网搜索获取的信息。\n"
@@ -263,6 +269,8 @@ def _do_web_search(query: str, api_key: str, scenario: str = "general") -> str:
             title = r.get("title", "无标题")
             url = r.get("url", "")
             content = r.get("content", "无内容")
+            if len(content) > 300:
+                content = content[:300] + "..."
             parts.append(f"{i}. {title}\n   来源: {url}\n   {content}")
 
         return "\n\n".join(parts)
@@ -277,7 +285,7 @@ async def _handle_command(message: str, session_id: str, user_id: int):
     store = get_session_store()
 
     if agent is None:
-        yield f"data: {json.dumps({'type': 'error', 'content': '服务未完全初始化，请检查模型配置和工具定义'})}\n\n"
+        yield f"data: {json.dumps({'type': 'error', 'content': '服务正在初始化中，请稍后再试'})}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
         return
 
@@ -579,8 +587,8 @@ async def _handle_command(message: str, session_id: str, user_id: int):
         return
 
     if msg.startswith("/agent thought"):
-        parts = msg.split(maxsplit=3)
-        arg = parts[3].lower() if len(parts) > 3 else ""
+        parts = msg.split(maxsplit=2)
+        arg = parts[2].strip().lower() if len(parts) > 2 else ""
         if arg in ("on", "off"):
             enabled = (arg == "on")
             agent.set_show_thought(enabled)
@@ -613,6 +621,27 @@ def _load_tool_json(tool_name: str) -> dict:
     return {}
 
 
+def _split_thinking(content: str):
+    """从内容中分离 <thinking> 标签内的思考过程和标签外的正式回答
+
+    Args:
+        content: 模型原始输出
+
+    Returns:
+        (thinking, answer): 思考内容（可为空）和正式回答
+    """
+    pattern = r'<thinking>\s*(.*?)\s*</thinking>'
+    match = re.search(pattern, content, re.DOTALL)
+    if not match:
+        return '', content.strip()
+
+    thinking = match.group(1).strip()
+    before = content[:match.start()].strip()
+    after = content[match.end():].strip()
+    answer = (before + '\n\n' + after).strip() if before and after else (before or after)
+    return thinking, answer
+
+
 async def _stream_chat(message: str, session_id: str = None, web_search: str = "off", user_id: int = None):
     agent, _, registry, _, _ = get_dependencies()
     store = get_session_store()
@@ -622,7 +651,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
         return
 
     if agent is None or registry is None:
-        yield f"data: {json.dumps({'type': 'error', 'content': '服务未完全初始化，请检查模型配置和工具定义'})}\n\n"
+        yield f"data: {json.dumps({'type': 'error', 'content': '服务正在初始化中，请稍后再试'})}\n\n"
         return
 
     if message.strip().startswith("/"):
@@ -636,7 +665,13 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
     llm, cfg = _resolve_llm_client(user_id)
     if llm is None:
-        yield f"data: {json.dumps({'type': 'error', 'content': '请先在设置中配置模型 API Key'})}\n\n"
+        from server.database import get_user_by_id
+        user = get_user_by_id(user_id)
+        is_admin = user and user.get("user_type") == "admin"
+        if is_admin:
+            yield f"data: {json.dumps({'type': 'error', 'content': '模型尚未配置，请到设置中配置模型 API Key'})}\n\n"
+        else:
+            yield f"data: {json.dumps({'type': 'error', 'content': '模型尚未配置，请联系管理员配置全局模型，或在设置中配置个人模型'})}\n\n"
         return
 
     if session_id:
@@ -655,16 +690,32 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
     search_context = ""
     search_scenario = "general"
+    search_info = None
     if web_search in ("auto", "on"):
-        from server.database import get_search_config
+        from server.database import get_search_config, get_user_by_id
         search_cfg = get_search_config()
         tavily_key = search_cfg.get("tavily_api_key", "")
+        if not tavily_key:
+            user = get_user_by_id(user_id)
+            is_admin = user and user.get("user_type") == "admin"
+            if is_admin:
+                yield f"data: {json.dumps({'type': 'error', 'content': '联网搜索功能尚未配置，请到设置中配置 Tavily API Key'})}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'error', 'content': '联网搜索功能尚未配置，请联系管理员进行联网搜索配置'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
         if tavily_key:
             search_scenario = _classify_query(message)
             scenario_label = SCENARIO_CONFIG[search_scenario]["label"]
             yield f"data: {json.dumps({'type': 'status', 'content': f'正在联网搜索（{scenario_label}）...'})}\n\n"
             search_context = _do_web_search(message, tavily_key, search_scenario)
             if search_context:
+                search_info = {
+                    "query": message,
+                    "scenario": scenario_label,
+                    "results": search_context,
+                }
+                yield f"data: {json.dumps({'type': 'web_search', 'query': message, 'scenario': scenario_label, 'results': search_context})}\n\n"
                 yield f"data: {json.dumps({'type': 'status', 'content': '搜索完成，正在生成回答...'})}\n\n"
 
     system_prompt = (
@@ -680,16 +731,41 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
         "8. 如果用户需要农历转换，使用 convert_gregorian_to_lunar 工具\n"
         "9. 调用工具前先确认参数是否齐全，参数不齐时向用户询问\n\n"
         "回答风格原则（重要）：\n"
-        "根据回答内容的性质，灵活选择最合适的表达形式，避免千篇一律的Markdown列表：\n"
-        "- 结构化数据（天气、股票、赛程、对比信息等）：优先使用Markdown表格，一目了然\n"
-        "- 步骤说明、教程、操作指南：使用有序列表，清晰展示先后顺序\n"
-        "- 多个并列要点、特性列举：使用无序列表，简洁明了\n"
-        "- 叙事性内容、故事、新闻、分析：使用自然段落，流畅阅读\n"
-        "- 代码、命令、配置：使用代码块，方便复制\n"
-        "- 简短问答、闲聊：直接一句话回复，不需要任何格式\n"
-        "- 引用、名言、定义：使用引用块（> 开头）\n"
-        "核心原则：让回答的形式服务于内容，而不是所有回答都用同一种格式。"
+        "优先使用自然段落进行回答，像人类对话一样流畅自然。只在必要时使用格式：\n"
+        "- 简短问答、闲聊、一般性解释：直接用自然段落回答，不要使用任何列表或格式标记\n"
+        "- 步骤说明、教程、操作指南：使用有序列表（1. 2. 3.）\n"
+        "- 多个并列要点：使用无序列表（- 开头）\n"
+        "- 数据对比、规格参数：使用表格（| 列1 | 列2 |）\n"
+        "- 代码、命令、配置：使用代码块（```）\n"
+        "- 引用、名言：使用引用块（> 开头）\n"
+        "核心原则：默认用自然段落，格式只在确实能提升可读性时才使用。不要为了格式化而格式化。\n\n"
+        "回答简洁原则（重要）：\n"
+        "1. 直接回答用户问题，不要过度展开或添加用户未询问的额外信息\n"
+        "2. 优先给出核心结论或答案，必要时再补充简要说明\n"
+        "3. 如果用户没有明确要求详细分析，默认给出简洁版本\n"
+        "4. 避免重复表述，每句话都应有信息增量\n"
+        "5. 对于简单问题，用1-3句话回答即可，不要展开成段落"
     )
+
+    if agent.show_thought:
+        system_prompt += (
+            "\n\n思考过程格式（重要）：\n"
+            "在给出最终回答之前，请用 <thinking>...</thinking> 标签包裹你的思考过程。\n"
+            "思考过程请用自然流畅的独白形式书写，像自己在心里默默分析一样，不要使用列表或标签格式。\n"
+            "应自然覆盖以下内容：先理解用户真正想问什么，然后把问题拆解成几个小步骤，\n"
+            "判断需要哪些知识或工具，一步步推理出结论，最后检查一下有没有遗漏，规划好怎么组织回答。\n\n"
+            "格式示例：\n"
+            "<thinking>\n"
+            "用户想知道北京未来三天天气，应该是为了出行做准备。要回答这个问题，我需要先查到北京的地理位置ID，然后调用天气预报接口获取未来3天的数据。拿到数据后按日期整理温度、天气状况和风力，最后给一个综合的出行建议。让我确认一下：数据要覆盖未来3天，温度单位是摄氏度，天气描述要清晰易懂。回答就按日期逐日列出，最后加一句出行提醒。\n"
+            "</thinking>\n\n"
+            "然后给出你的正式回答。\n"
+            "注意：<thinking> 标签内的内容是你的内部思考，标签外的内容才是给用户的正式回答。\n"
+            "每次回复中只能使用一次 <thinking> 标签，放在正式回答之前。"
+        )
+    else:
+        system_prompt += (
+            "\n\n重要：请直接给出最终回答，不要输出思考过程、分析过程或任何前置说明。"
+        )
 
     if search_context:
         scenario_instruction = SCENARIO_CONFIG[search_scenario]["instruction"]
@@ -719,32 +795,93 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
     tool_specs = registry.get_all_openai_specs()
     max_iterations = 10
+    all_tool_calls = []
+    all_thoughts = []
 
     for iteration in range(max_iterations):
+        if iteration == 0:
+            yield f"data: {json.dumps({'type': 'status', 'content': '正在处理...'})}\n\n"
+
         try:
-            response = llm.chat(chat_messages, tools=tool_specs)
+            stream = llm.chat_stream(chat_messages, tools=tool_specs)
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
             return
 
-        if "tool_calls" not in response:
-            content = response.get("content", "")
-            yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
+        full_content = ""
+        tool_calls = None
+
+        try:
+            for chunk in stream:
+                if chunk.get("content"):
+                    full_content += chunk["content"]
+                    if agent.show_thought:
+                        display = chunk["content"].replace("<thinking>", "").replace("</thinking>", "")
+                        if display.strip():
+                            yield f"data: {json.dumps({'type': 'thought', 'content': display})}\n\n"
+                if chunk.get("finish_reason"):
+                    tool_calls = chunk.get("tool_calls")
+                    break
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            return
+
+        if not tool_calls:
+            if all_tool_calls:
+                yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
+
+            thinking, answer = _split_thinking(full_content)
+
+            if thinking and agent.show_thought:
+                all_thoughts.append(thinking)
+
+            if answer:
+                delay = 0.06 if agent.show_thought else 0.08
+                chunk_size = 12 if agent.show_thought else 8
+                i = 0
+                while i < len(answer):
+                    end = min(i + chunk_size, len(answer))
+                    if end < len(answer):
+                        while end > i and answer[end - 1] not in (' ', '\n', '，', '。', '！', '？', '；', '：', ',', '.', '!', '?', ';', ':'):
+                            end -= 1
+                        if end == i:
+                            end = min(i + chunk_size, len(answer))
+                    yield f"data: {json.dumps({'type': 'token', 'content': answer[i:end]})}\n\n"
+                    await asyncio.sleep(delay)
+                    i = end
+
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
             if session_id:
                 store[session_id]["messages"].append({"role": "user", "content": message})
-                store[session_id]["messages"].append({"role": "assistant", "content": content})
+                assistant_msg = {"role": "assistant", "content": answer or full_content}
+                if search_info:
+                    assistant_msg["search"] = search_info
+                if all_thoughts:
+                    assistant_msg["thought"] = "\n\n".join(all_thoughts)
+                if all_tool_calls:
+                    assistant_msg["tools"] = all_tool_calls
+                store[session_id]["messages"].append(assistant_msg)
                 title = None
                 if len(store[session_id]["messages"]) <= 2:
-                    title = _generate_title(message, content, llm)
+                    title = _generate_title(message, answer or full_content, llm)
                     store[session_id]["title"] = title
                 _save_session_messages(session_id, store[session_id]["messages"], title)
             return
 
-        chat_messages.append(response)
+        if full_content:
+            thinking, _ = _split_thinking(full_content)
+            if thinking:
+                all_thoughts.append(thinking)
 
-        for tool_call in response["tool_calls"]:
+        assistant_msg = {
+            "role": "assistant",
+            "content": full_content,
+            "tool_calls": tool_calls
+        }
+        chat_messages.append(assistant_msg)
+
+        for tool_call in tool_calls:
             tool_name = tool_call["function"]["name"]
             tool_arguments = json.loads(tool_call["function"]["arguments"])
 
@@ -752,18 +889,30 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
             try:
                 tool_result = registry.execute(tool_name, tool_arguments, user_id=user_id)
+                tool_error = False
             except Exception as e:
                 tool_result = f"工具执行错误: {str(e)}"
+                tool_error = True
 
-            yield f"data: {json.dumps({'type': 'tool_result', 'name': tool_name, 'content': str(tool_result)})}\n\n"
+            tool_result_str = str(tool_result)
+            yield f"data: {json.dumps({'type': 'tool_result', 'name': tool_name, 'content': tool_result_str})}\n\n"
+
+            all_tool_calls.append({
+                "name": tool_name,
+                "arguments": tool_arguments,
+                "result": tool_result_str,
+                "error": tool_error or tool_result_str.startswith("[沙箱执行失败]") or tool_result_str.startswith("[沙箱执行超时]") or tool_result_str.startswith("[沙箱异常]") or tool_result_str.startswith("[工具执行异常]"),
+            })
 
             chat_messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call["id"],
                 "name": tool_name,
-                "content": str(tool_result),
+                "content": tool_result_str,
             })
 
+    if all_tool_calls:
+        yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
     yield f"data: {json.dumps({'type': 'error', 'content': '已达到最大迭代次数'})}\n\n"
 
 

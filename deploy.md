@@ -61,11 +61,24 @@ python server/main.py
 ```
 
 首次启动时会自动完成以下初始化：
-- 在 `agent/` 目录下创建 SQLite 数据库（`users.db`），包含用户表、会话表、模型配置表、搜索配置表、权限表
-- 创建默认管理员账户（用户名 `admin`），**随机密码会输出在终端，请务必记录**
+- 在 `data/` 目录下创建 SQLite 数据库（`users.db`），包含用户表、会话表、模型配置表、搜索配置表、权限表
+- 创建默认管理员账户：用户名 `admin`，密码 `admin123`
 - 初始化默认权限（admin 拥有全部权限，user 拥有基础权限）
+- 创建密码文件 `data/.db_web_password`（权限 0o600），用于数据库管理界面认证
 
-看到终端输出的管理员密码后，即可通过浏览器访问 `http://your-server-ip:17520` 登录。
+> ⚠️ **重要**：首次登录后必须修改管理员密码，否则无法使用平台功能。修改密码后，`.db_web_password` 文件会自动同步更新。
+
+启动成功后，通过浏览器访问 `http://your-server-ip:17520` 登录。
+
+### 数据库管理界面
+
+服务启动后会自动启动数据库管理界面（基于 sqlite-web）：
+
+- **地址**：`http://your-server-ip:17521`
+- **认证**：使用管理员账号 `admin` 和当前密码登录（Basic Auth）
+- **依赖**：需安装 `sqlite-web`（已在 `requirements.txt` 中）
+
+> 注意：数据库管理界面仅管理员可访问，普通用户无法通过认证。
 
 ## 6. 配置模型与搜索
 
@@ -164,6 +177,7 @@ sudo systemctl reload nginx
 sudo ufw allow 22/tcp
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
+sudo ufw allow 17521/tcp
 sudo ufw enable
 ```
 
@@ -200,9 +214,7 @@ sudo systemctl restart agent
 ```bash
 # 备份数据库、配置和工具
 tar -czf agent-backup-$(date +%Y%m%d).tar.gz \
-    agent/users.db \
-    agent/.agent_config \
-    agent/.agent_salt \
+    data/ \
     agent/agent_tools/ \
     document_output/
 ```
@@ -225,7 +237,7 @@ python3 -c "import fastapi; print('FastAPI OK')"
 python3 -c "import openai; print('OpenAI OK')"
 
 # 检查数据库文件权限
-ls -la agent/users.db
+ls -la data/users.db
 
 # 手动启动查看错误
 cd /home/agent/Lightweight_agent_service
@@ -249,10 +261,10 @@ sudo systemctl status agent
 ### 数据库问题
 ```bash
 # 检查数据库完整性
-sqlite3 agent/users.db "PRAGMA integrity_check;"
+sqlite3 data/users.db "PRAGMA integrity_check;"
 
 # 查看用户列表
-sqlite3 agent/users.db "SELECT id, username, user_type FROM users;"
+sqlite3 data/users.db "SELECT id, username, user_type FROM users;"
 ```
 
 ### 内存不足

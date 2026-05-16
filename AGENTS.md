@@ -4,14 +4,16 @@
 
 轻量级 AI Agent 框架，支持自然语言动态创建工具、多用户管理、流式对话。提供 Web 界面和终端两种交互方式。
 
+**默认管理员账号**: `admin` / `admin123`（首次登录强制修改密码）
+
 ## 2. 环境与依赖
 
-- **Python**: 3.8+
+- **Python**: 3.14.0
 - **包管理器**: pip（`requirements.txt`）
-- **核心依赖**: `openai>=1.0.0`, `fastapi>=0.100.0`, `uvicorn[standard]>=0.23.0`, `pydantic>=2.0.0`, `python-multipart`, `tavily-python`
-- **数据库**: SQLite（WAL 模式），文件位于 `agent/users.db`
+- **核心依赖**: `openai>=1.0.0`, `fastapi>=0.100.0`, `uvicorn[standard]>=0.23.0`, `pydantic>=2.0.0`, `python-multipart`, `tavily-python`, `sqlite-web`
+- **数据库**: SQLite（WAL 模式），文件位于 `data/users.db`
 - **前端**: 原生 JS/HTML/CSS，无框架，无构建工具
-- **环境变量**: 无。所有配置通过 Web 界面或终端命令设置，API Key 加密存储在 `agent/.agent_config`
+- **环境变量**: 无。所有配置通过 Web 界面或终端命令设置，API Key 加密存储在 `data/.agent_config`
 
 ## 3. 常用命令
 
@@ -133,11 +135,84 @@ document_output/
 
 Office 文档（`.docx .xlsx .pptx`）不支持浏览器端预览，仅提供下载。
 
+### 5.3 消息存储格式
+
+会话消息存储在 `sessions.messages` JSON 字段中，格式如下：
+
+```json
+[
+  {"role": "user", "content": "用户消息"},
+  {"role": "assistant", "content": "回答内容（已剥离 <thinking> 标签）", "search": {...}, "thought": "...", "tools": [...]}
+]
+```
+
+**字段说明**：
+- `role`, `content`：必选，所有消息都有
+- `content`：存储解析后的纯净回答，不含 `<thinking>...</thinking>` 标签。原始 LLM 输出中的思考内容被提取到 `thought` 字段
+- `search`：可选，联网搜索信息 `{query, scenario, results}`，仅当该轮对话使用了联网搜索时存在
+- `thought`：可选，模型的思考过程文本（从 `<thinking>` 标签中提取），仅当该轮对话开启了思考模式时存在（多轮思考用 `\n\n` 拼接）
+- `tools`：可选，工具调用记录数组 `[{name, arguments, result, error}]`，仅当该轮对话使用了工具时存在
+
+**兼容性**：旧消息只有 `{role, content}`，前端 `renderHistoryMessage()` 自动降级为简单布局。
+
+### 5.4 前端消息布局（四段式）
+
+每条 AI 回复采用四段式可折叠布局，按流程顺序排列：
+
+```
+┌─ think-area（折叠）    — 思考过程：模型的推理内容（含工具调用和联网搜索的思考记录）
+├─ search-area（折叠）   — 联网搜索：场景、关键词、搜索结果（思考结束后才显示）
+├─ tool-summary（折叠）  — 工具调用：工具名、参数、结果、错误标记
+└─ answer-area（始终可见）— 最终回答
+```
+
+**联网搜索延迟显示**：搜索触发时，搜索信息先融入思考内容（显示"联网搜索: xxx"），不弹出独立区块。思考结束后，搜索折叠区才出现在思考下方。无思考模式时在流结束（`done`）时显示。
+
+**SSE 事件类型**（`chat.py` → 前端 `app.js`）：
+
+| 事件类型 | 说明 | 触发时机 |
+|---------|------|---------|
+| `web_search` | 联网搜索结果 | 搜索完成后，融入思考内容，不立即显示独立区块 |
+| `thought` | 思考内容 | 模型输出工具调用前的推理（实时流式） |
+| `tool_call` | 工具调用通知 | 每个工具调用时，融入思考内容 |
+| `tool_result` | 工具执行结果 | 每个工具执行完成后，融入思考内容 |
+| `tool_summary` | 工具调用汇总 | 所有工具执行完毕，最终回答前 |
+| `token` | 回答内容 | 最终回答的流式输出 |
+| `status` | 状态提示 | 搜索进度等 |
+| `error` | 错误信息 | 发生错误时 |
+| `done` | 流结束标记 | 回答完成 |
+
+**思考模式开关**：用户可通过输入框下方按钮切换，状态持久化到 `localStorage`，同时同步到服务端 `model_configs.show_thought`。
+
+**思考过程格式**：使用自然流畅的独白形式，通过 `<thinking>...</thinking>` 标签包裹。后端 `_split_thinking()` 解析标签，提取思考内容存入 `thought` 字段，纯净回答存入 `content` 字段。前端实时流式展示思考内容（过滤标签），思考结束后自动折叠。
+
+### 5.5 密码与数据库管理
+
+**管理员密码机制**:
+- 首次启动：自动创建管理员账户 `admin`，初始密码固定为 `admin123`
+- 首次登录：强制修改密码（`must_change_password=1`），修改后才能使用平台功能
+- 密码文件：管理员密码以 SHA-256 哈希（`salt:hash` 格式）存储在 `data/.db_web_password`（权限 0o600），用于数据库管理界面认证
+- 密码同步：管理员通过 Web 界面修改密码时，自动同步更新 `.db_web_password` 文件（哈希格式）
+- 密码文件丢失恢复：启动时检测 `.db_web_password` 是否存在，若丢失则自动重置管理员密码并输出到终端
+- 向后兼容：代理同时支持旧版明文格式和新版哈希格式，管理员下次修改密码时自动迁移为哈希
+
+**数据库管理界面**:
+- 地址：`http://localhost:17521`（仅管理员可访问）
+- 认证：使用 `admin` 用户名 + `.db_web_password` 中的密码（Basic Auth）
+- 后端：`sqlite-web` 绑定 `127.0.0.1:17523`，通过认证代理转发
+- 依赖：需安装 `sqlite-web`（`pip install sqlite-web`）
+
+**关键文件**:
+- `data/users.db` — SQLite 数据库（WAL 模式）
+- `data/.db_web_password` — 管理员密码哈希（0o600 权限）
+- `data/.agent_config` — 加密的模型配置（0o600 权限）
+- `data/.agent_salt` — 加密盐值（0o600 权限）
+
 ## 6. NEVER 规则
 
 1. **NEVER** 在代码中硬编码 API Key、密码或密钥 — 使用 `AgentConfig` 加密存储或数据库
 2. **NEVER** 在 `agent/` 模块中导入 `server/` 的任何内容 — 保持核心独立
-3. **NEVER** 直接操作 `users.db` 数据库文件 — 必须通过 `server/database.py` 的函数
+3. **NEVER** 直接操作 `data/users.db` 数据库文件 — 必须通过 `server/database.py` 的函数
 4. **NEVER** 直接用 SQL 修改用户密码 — 密码经过加盐哈希，直接覆盖会导致原密码不可恢复；应通过 `database.py` 的 `update_user_password()` 或 Web 界面修改
 5. **NEVER** 在工具 `execution_code` 中执行危险操作（文件删除、系统命令、网络外连）— 沙箱会拦截，但不应依赖沙箱
 6. **NEVER** 修改 `agent/agent_tools/` 中已有工具的名称（`name` 字段）— 可能破坏已有会话的工具调用记录
@@ -172,3 +247,9 @@ pip install pytest httpx
 - **前端文件列表**: 三层嵌套结构（用户 → 类型 → 文件），`renderFileFolder()` 自动检测子节点类型适配
 - **测试用账户**: 需要测试 API 时创建临时测试用户，不要修改已有用户的密码或数据
 - **密码相关**: 如需重置密码，通过 Web 界面或调用 `database.py` 的 `update_user_password()` 函数
+- **消息格式**: 扩展消息字段（`search`/`thought`/`tools`）均为可选，新增时需保持向后兼容，`renderHistoryMessage()` 通过 `hasMeta` 判断是否使用三段式布局
+- **SSE 事件**: 新增 SSE 事件类型时需同步更新前端 `app.js` 的事件处理 switch-case 和 `style.css` 样式
+- **前端状态**: 思考模式开关状态通过 `localStorage` 持久化，同时同步到服务端 `model_configs.show_thought`，两端保持一致
+- **思考过程**: 使用 `<thinking>...</thinking>` 标签包裹，自然独白风格。后端 `_split_thinking()` 解析后分别存储 `thought` 和 `content`，前端实时流式展示并过滤标签
+- **登录页**: 支持毛玻璃效果（`backdrop-filter`）、浮动动画光斑（`.bg-orb`）、时段渐变背景（4 个时段 × 亮/暗双模式）。主题切换为三态循环（自动 → 暗色 → 亮色），自动模式跟随系统偏好
+- **消息布局顺序**: 思考过程 → 联网搜索 → 工具调用 → 回答。联网搜索结果延迟到思考结束后显示

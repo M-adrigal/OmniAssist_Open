@@ -6,7 +6,7 @@ import threading
 from datetime import datetime
 
 
-DB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agent")
+DB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 DB_PATH = os.path.join(DB_DIR, "users.db")
 
 _local = threading.local()
@@ -37,10 +37,16 @@ def init_db() -> str:
             password_hash TEXT NOT NULL,
             user_type TEXT NOT NULL DEFAULT 'user',
             description TEXT DEFAULT '',
+            must_change_password INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
@@ -110,12 +116,12 @@ def init_db() -> str:
     admin_password = None
 
     if not existing:
-        admin_password = _generate_random_password(8)
+        admin_password = "admin123"
         password_hash = _hash_password(admin_password)
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute(
-            "INSERT INTO users (username, password_hash, user_type, description, created_at, updated_at) "
-            "VALUES (?, ?, 'admin', '系统管理员', ?, ?)",
+            "INSERT INTO users (username, password_hash, user_type, description, must_change_password, created_at, updated_at) "
+            "VALUES (?, ?, 'admin', '系统管理员', 1, ?, ?)",
             ("admin", password_hash, now, now)
         )
         conn.commit()
@@ -232,7 +238,7 @@ def authenticate(username: str, password: str) -> dict | None:
     """验证用户，成功返回用户信息字典，失败返回 None"""
     conn = _get_connection()
     row = conn.execute(
-        "SELECT id, username, password_hash, user_type, description FROM users WHERE username = ?",
+        "SELECT id, username, password_hash, user_type, description, must_change_password FROM users WHERE username = ?",
         (username,)
     ).fetchone()
     if row and verify_password(password, row["password_hash"]):
@@ -241,6 +247,7 @@ def authenticate(username: str, password: str) -> dict | None:
             "username": row["username"],
             "user_type": row["user_type"],
             "description": row["description"],
+            "must_change_password": bool(row["must_change_password"]),
         }
     return None
 
@@ -270,8 +277,8 @@ def create_user(username: str, password: str, user_type: str = "user", descripti
     password_hash = _hash_password(password)
     try:
         cursor = conn.execute(
-            "INSERT INTO users (username, password_hash, user_type, description, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO users (username, password_hash, user_type, description, must_change_password, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 1, ?, ?)",
             (username, password_hash, user_type, description, now, now)
         )
         conn.commit()
@@ -343,7 +350,7 @@ def change_password(user_id: int, old_password: str, new_password: str) -> bool:
     new_hash = _hash_password(new_password)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn.execute(
-        "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+        "UPDATE users SET password_hash = ?, must_change_password = 0, updated_at = ? WHERE id = ?",
         (new_hash, now, user_id)
     )
     conn.commit()

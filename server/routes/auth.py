@@ -102,6 +102,7 @@ def login(req: LoginRequest):
         message="登录成功",
         user_type=user["user_type"],
         username=user["username"],
+        must_change_password=user.get("must_change_password", False),
     )
 
 
@@ -127,8 +128,9 @@ def update_password(req: ChangePasswordRequest, request: Request):
 
     if user["user_type"] == "admin":
         pw_file = os.path.join(os.path.dirname(DB_PATH), ".db_web_password")
+        from server.database import _hash_password
         with open(pw_file, "w") as f:
-            f.write(req.new_password)
+            f.write(_hash_password(req.new_password))
         try:
             os.chmod(pw_file, 0o600)
         except Exception:
