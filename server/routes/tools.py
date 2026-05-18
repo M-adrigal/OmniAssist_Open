@@ -97,7 +97,7 @@ def create_tool(body: ToolCreate, request: Request):
             raise HTTPException(status_code=500, detail=f"工具定义校验失败: {msg}")
 
     try:
-        builder.save_tool_to_file(tool_json, tools_dir=tools_dir)
+        builder.save_tool_to_file(tool_json, tools_dir=tools_dir, registry=registry)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"保存失败: {str(e)}")
 
@@ -162,7 +162,7 @@ def update_tool(tool_name: str, body: ToolUpdate, request: Request):
         raise HTTPException(status_code=500, detail=f"修复后校验失败: {msg}")
 
     try:
-        builder.save_tool_to_file(tool_json, tools_dir=tools_dir)
+        builder.save_tool_to_file(tool_json, tools_dir=tools_dir, registry=registry)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"保存失败: {str(e)}")
 
@@ -214,5 +214,6 @@ def delete_tool(tool_name: str, request: Request):
 
     os.remove(filepath)
     registry.unregister_tool(tool_name)
+    registry.remove_from_manifest(tool_name)
 
     return {"success": True, "message": f"工具 '{tool_name}' 已删除"}

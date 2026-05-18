@@ -73,7 +73,8 @@ class LLMClient:
             self.client = None
         self.model = model_name
 
-    def chat(self, messages, tools=None, tool_choice="auto", temperature=0):
+    def chat(self, messages, tools=None, tool_choice="auto", temperature=0,
+             extra_body=None, reasoning_effort=None):
         """调用大模型聊天接口（非流式）
 
         Args:
@@ -81,6 +82,8 @@ class LLMClient:
             tools (list, optional): 工具列表
             tool_choice (str, optional): 工具选择策略，默认为 "auto"
             temperature (float, optional): 温度参数，默认为 0
+            extra_body (dict, optional): 额外参数，通过 extra_body 透传
+            reasoning_effort (str, optional): 推理强度，如 "minimal"/"medium"/"high"
 
         Returns:
             dict: 标准化的响应消息
@@ -88,38 +91,41 @@ class LLMClient:
         if self.client is None:
             raise RuntimeError("LLM 客户端未配置 API Key，请先在设置中配置模型参数")
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=tools,
-            tool_choice=tool_choice,
-            temperature=temperature
-        )
+        create_kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": tool_choice,
+            "temperature": temperature,
+        }
+        if reasoning_effort is not None:
+            create_kwargs["reasoning_effort"] = reasoning_effort
+        if extra_body is not None:
+            create_kwargs["extra_body"] = extra_body
+
+        response = self.client.chat.completions.create(**create_kwargs)
 
         msg = response.choices[0].message
+        result = {"role": "assistant", "content": msg.content}
+
+        if hasattr(msg, "reasoning_content") and msg.reasoning_content:
+            result["reasoning_content"] = msg.reasoning_content
 
         if msg.tool_calls:
-            return {
-                "role": "assistant",
-                "content": msg.content,
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments
-                        }
-                    } for tc in msg.tool_calls
-                ]
-            }
-        else:
-            return {
-                "role": "assistant",
-                "content": msg.content
-            }
+            result["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments
+                    }
+                } for tc in msg.tool_calls
+            ]
+        return result
 
-    def chat_stream(self, messages, tools=None, tool_choice="auto", temperature=0):
+    def chat_stream(self, messages, tools=None, tool_choice="auto", temperature=0,
+                 extra_body=None, reasoning_effort=None):
         """调用大模型聊天接口（流式），逐块返回内容，同时累积工具调用
 
         Args:
@@ -127,24 +133,33 @@ class LLMClient:
             tools (list, optional): 工具列表
             tool_choice (str, optional): 工具选择策略，默认为 "auto"
             temperature (float, optional): 温度参数，默认为 0
+            extra_body (dict, optional): 额外参数，通过 extra_body 透传
+            reasoning_effort (str, optional): 推理强度，如 "minimal"/"medium"/"high"
 
         Yields:
-            dict: {"content": "文本块"} 流式内容，
+            dict: {"content": "文本块"} 或 {"reasoning_content": "推理块"} 流式内容，
                   流结束时 yield {"content": None, "finish_reason": str, "tool_calls": list}
         """
         if self.client is None:
             raise RuntimeError("LLM 客户端未配置 API Key，请先在设置中配置模型参数")
 
-        stream = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=tools,
-            tool_choice=tool_choice,
-            temperature=temperature,
-            stream=True
-        )
+        create_kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": tool_choice,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if reasoning_effort is not None:
+            create_kwargs["reasoning_effort"] = reasoning_effort
+        if extra_body is not None:
+            create_kwargs["extra_body"] = extra_body
+
+        stream = self.client.chat.completions.create(**create_kwargs)
 
         content = ""
+        reasoning_content = ""
         tool_calls = []
         finish_reason = None
 
@@ -153,6 +168,11 @@ class LLMClient:
                 continue
             delta = chunk.choices[0].delta
             finish_reason = chunk.choices[0].finish_reason
+
+            if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                reasoning_text = delta.reasoning_content
+                reasoning_content += reasoning_text
+                yield {"reasoning_content": reasoning_text}
 
             if delta.content:
                 content += delta.content
@@ -180,7 +200,8 @@ class LLMClient:
                     "content": None,
                     "finish_reason": finish_reason,
                     "tool_calls": tool_calls if tool_calls else None,
-                    "full_content": content
+                    "full_content": content,
+                    "full_reasoning_content": reasoning_content if reasoning_content else None,
                 }
                 return
 

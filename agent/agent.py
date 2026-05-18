@@ -1,5 +1,7 @@
 import json
 
+from agent.model_gateway import ModelGateway
+
 
 SYSTEM_PROMPT = """你是一个能使用工具的助手，可以根据情况调用工具，获得足够信息后直接给出答案。
 
@@ -39,6 +41,7 @@ class SimpleAgent:
         self.show_thought = show_thought
         self.context_limit = context_limit
         self._context_limit_tokens = self._parse_context_limit(context_limit)
+        self._gateway = ModelGateway(llm_client.model if hasattr(llm_client, 'model') else "")
         self.messages = []
         self._rebuild_system_message()
 
@@ -84,8 +87,11 @@ class SimpleAgent:
         return total
 
     def _rebuild_system_message(self):
-        """根据 show_thought 状态重建系统消息"""
-        prompt = SYSTEM_PROMPT_WITH_THOUGHT if self.show_thought else SYSTEM_PROMPT
+        """根据 show_thought 状态和网关能力重建系统消息"""
+        if self.show_thought and self._gateway.needs_prompt_fallback:
+            prompt = SYSTEM_PROMPT_WITH_THOUGHT
+        else:
+            prompt = SYSTEM_PROMPT
 
         if self.messages and self.messages[0]["role"] == "system":
             self.messages[0] = {"role": "system", "content": prompt}
@@ -177,9 +183,10 @@ class SimpleAgent:
         recent_messages = messages[-keep_count:]
 
         summary_text = _generate_summary(old_messages, llm_client)
+        compressed_metadata = _extract_compressed_metadata(old_messages)
 
         if summary_text:
-            compressed = [{"role": "system", "content": f"[历史对话摘要] {summary_text}"}]
+            compressed = [{"role": "system", "content": f"[历史对话摘要] {summary_text}", "compressed_metadata": compressed_metadata}]
             compressed.extend(recent_messages)
             return compressed
 
@@ -246,10 +253,15 @@ class SimpleAgent:
         tool_specs = self.tool_registry.get_all_openai_specs()
 
         for _ in range(max_iterations):
-            response = self.llm.chat(self.messages, tools=tool_specs)
+            gw_cfg = self._gateway.build_params(self.show_thought, temperature=0)
+            response = self.llm.chat(self.messages, tools=tool_specs, **gw_cfg["api_params"])
 
-            if self.show_thought and response.get("content"):
-                print(f"[思考] {response['content'].strip()}")
+            if self.show_thought:
+                reasoning = response.get("reasoning_content")
+                if reasoning:
+                    print(f"[思考] {reasoning.strip()}")
+                elif response.get("content"):
+                    print(f"[思考] {response['content'].strip()}")
 
             if "tool_calls" not in response:
                 self.messages.append(response)
@@ -275,6 +287,44 @@ class SimpleAgent:
                 })
 
         return "已达到最大迭代次数，无法完成任务。"
+
+
+def _extract_compressed_metadata(messages: list) -> dict:
+    """从被压缩的旧消息中提取思考过程、工具调用和搜索元数据
+
+    将被压缩的消息中的 thought/tools/search 字段提取出来，
+    存储到压缩消息的 compressed_metadata 字段中，供历史记录渲染使用。
+
+    Args:
+        messages: 被压缩的消息列表（role: user/assistant）
+
+    Returns:
+        dict: {"rounds": [{"thought": ..., "tools": [...], "search": {...}}, ...]}
+    """
+    rounds = []
+    i = 0
+    while i < len(messages):
+        if messages[i].get("role") == "user":
+            user_msg = messages[i]
+            assistant_msg = messages[i + 1] if i + 1 < len(messages) and messages[i + 1].get("role") == "assistant" else None
+            round_data = {"user": user_msg.get("content", "")[:100]}
+            if assistant_msg:
+                meta = {}
+                if assistant_msg.get("thought"):
+                    meta["thought"] = assistant_msg["thought"]
+                if assistant_msg.get("tools"):
+                    meta["tools"] = assistant_msg["tools"]
+                if assistant_msg.get("search"):
+                    meta["search"] = assistant_msg["search"]
+                if meta:
+                    round_data["meta"] = meta
+            if "meta" in round_data:
+                rounds.append(round_data)
+            i += 2 if assistant_msg else 1
+        else:
+            # 跳过非user开头的消息（如system summary）
+            i += 1
+    return {"rounds": rounds} if rounds else {}
 
 
 def _generate_summary(messages: list, llm_client) -> str:

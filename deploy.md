@@ -4,7 +4,7 @@
 
 ### 系统要求
 - Ubuntu 20.04+ / Debian 11+ / CentOS 8+
-- Python 3.8+
+- Python 3.14.0
 - 至少 2GB RAM，10GB 磁盘空间
 
 ### 创建部署用户

@@ -233,11 +233,29 @@ function appendMessage(role, content) {
 function renderHistoryMessage(m) {
   const role = typeof m === 'string' ? 'user' : (m.role || 'user');
   const content = typeof m === 'string' ? m : (m.content || '');
+  const compressedMeta = (m && m.compressed_metadata) || null;
   const thought = (m && m.thought) || '';
   const showThought = !!thought;
   const tools = (m && m.tools) || null;
   const search = (m && m.search) || null;
   const hasMeta = showThought || (tools && tools.length > 0) || search;
+
+  if (role === 'assistant') {
+    console.log('[renderHistoryMessage]', {
+      hasThought: showThought,
+      thoughtLen: thought.length,
+      hasTools: !!(tools && tools.length > 0),
+      toolsCount: tools ? tools.length : 0,
+      hasSearch: !!search,
+      hasMeta: hasMeta,
+      contentPreview: typeof content === 'string' ? content.substring(0, 80) : String(content).substring(0, 80)
+    });
+  }
+
+  if (role === 'system' && compressedMeta && compressedMeta.rounds && compressedMeta.rounds.length > 0) {
+    renderCompressedHistory(content, compressedMeta);
+    return;
+  }
 
   if (role === 'user' || !hasMeta) {
     appendMessage(role, content);
@@ -379,6 +397,138 @@ function renderHistoryMessage(m) {
     }
   }
 
+  return div;
+}
+
+function renderCompressedHistory(summaryContent, meta) {
+  const container = $('#chat-messages');
+  const welcome = container.querySelector('.welcome-message');
+  if (welcome) welcome.remove();
+
+  const div = document.createElement('div');
+  div.className = 'message system';
+
+  const roundsHtml = meta.rounds.map((r, i) => {
+    const metaPart = r.meta;
+    const hasThought = metaPart && metaPart.thought;
+    const hasTools = metaPart && metaPart.tools && metaPart.tools.length > 0;
+    const hasSearch = metaPart && metaPart.search;
+    const hasAny = hasThought || hasTools || hasSearch;
+
+    if (!hasAny) return '';
+
+    let metaHtml = '';
+    if (hasThought) {
+      metaHtml += `
+        <div class="compressed-think">
+          <div class="compressed-think-header">
+            <span>思考过程</span>
+            <span class="compressed-think-toggle">▸</span>
+          </div>
+          <div class="compressed-think-content collapsed">${escapeHtml(metaPart.thought)}</div>
+        </div>`;
+    }
+    if (hasSearch) {
+      metaHtml += `
+        <div class="compressed-search">
+          <div class="compressed-search-header">
+            <span>联网搜索: ${escapeHtml(metaPart.search.scenario || '')}</span>
+            <span class="compressed-search-toggle">▸</span>
+          </div>
+          <div class="compressed-search-content collapsed">
+            <div>关键词: ${escapeHtml(metaPart.search.query || '')}</div>
+            <div class="compressed-search-results">${escapeHtml((metaPart.search.results || '').substring(0, 200))}</div>
+          </div>
+        </div>`;
+    }
+    if (hasTools) {
+      metaHtml += `
+        <div class="compressed-tools">
+          <div class="compressed-tools-header">
+            <span>工具调用 (${metaPart.tools.length} 个)</span>
+            <span class="compressed-tools-toggle">▸</span>
+          </div>
+          <div class="compressed-tools-content collapsed">
+            ${metaPart.tools.map(t => `<div class="compressed-tool-item">${escapeHtml(t.name)}${t.error ? ' <span class="tool-error-badge">错误</span>' : ''}</div>`).join('')}
+          </div>
+        </div>`;
+    }
+
+    return `<div class="compressed-round">
+      <div class="compressed-round-header">
+        <span class="compressed-round-title">历史轮次: ${escapeHtml(r.user)}</span>
+      </div>
+      ${metaHtml}
+    </div>`;
+  }).filter(h => h).join('');
+
+  div.innerHTML = `
+    <div class="avatar">📋</div>
+    <div class="message-body">
+      <div class="compressed-summary">
+        <div class="compressed-summary-header">
+          <span>历史对话已压缩</span>
+          <span class="compressed-summary-toggle">▸</span>
+        </div>
+        <div class="compressed-summary-content collapsed">
+          <div class="compressed-summary-text">${escapeHtml(summaryContent)}</div>
+          ${roundsHtml ? `
+            <div class="compressed-rounds-label">包含 ${meta.rounds.length} 轮历史记录的元数据</div>
+            ${roundsHtml}
+          ` : ''}
+        </div>
+      </div>
+    </div>
+  `;
+  container.appendChild(div);
+
+  const summaryHeader = div.querySelector('.compressed-summary-header');
+  const summaryContentEl = div.querySelector('.compressed-summary-content');
+  const summaryToggle = div.querySelector('.compressed-summary-toggle');
+  if (summaryHeader && summaryContentEl && summaryToggle) {
+    summaryHeader.addEventListener('click', () => {
+      const collapsed = summaryContentEl.classList.toggle('collapsed');
+      summaryToggle.textContent = collapsed ? '▸' : '▾';
+    });
+  }
+
+  div.querySelectorAll('.compressed-think-header').forEach(header => {
+    const content = header.nextElementSibling;
+    const toggle = header.querySelector('.compressed-think-toggle');
+    if (toggle) {
+      header.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const collapsed = content.classList.toggle('collapsed');
+        toggle.textContent = collapsed ? '▸' : '▾';
+      });
+    }
+  });
+
+  div.querySelectorAll('.compressed-search-header').forEach(header => {
+    const content = header.nextElementSibling;
+    const toggle = header.querySelector('.compressed-search-toggle');
+    if (toggle) {
+      header.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const collapsed = content.classList.toggle('collapsed');
+        toggle.textContent = collapsed ? '▸' : '▾';
+      });
+    }
+  });
+
+  div.querySelectorAll('.compressed-tools-header').forEach(header => {
+    const content = header.nextElementSibling;
+    const toggle = header.querySelector('.compressed-tools-toggle');
+    if (toggle) {
+      header.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const collapsed = content.classList.toggle('collapsed');
+        toggle.textContent = collapsed ? '▸' : '▾';
+      });
+    }
+  });
+
+  container.scrollTop = container.scrollHeight;
   return div;
 }
 
@@ -810,6 +960,7 @@ async function sendMessage() {
         session_id: state.currentSessionId,
         message: message,
         web_search: state.webSearch,
+        show_thought: state.showThought,
       }),
       signal: abortController.signal,
     });

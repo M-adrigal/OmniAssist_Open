@@ -1,6 +1,6 @@
 import uuid
 import time
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, Response
 from server.models import SessionCreate, SessionRename
 from server.routes.auth import get_current_user
 from server.database import (
@@ -42,15 +42,23 @@ def create_session(body: SessionCreate = None, request: Request = None):
 
 
 @router.get("/{session_id}", response_model=dict)
-def get_session(session_id: str):
+def get_session(session_id: str, response: Response):
     s = db_get_session(session_id)
     if not s:
         raise HTTPException(status_code=404, detail="会话不存在")
+    messages = s.get("messages", [])
+    import logging
+    log = logging.getLogger("chat")
+    for i, m in enumerate(messages):
+        if m.get("role") == "assistant":
+            log.info(f"[LOAD] session={session_id} msg[{i}] role={m['role']} has_thought={bool(m.get('thought'))} has_tools={bool(m.get('tools'))} thought_len={len(m.get('thought',''))} content_len={len(m.get('content',''))}")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
     return {
         "id": s["id"],
-        "title": s.get("title", "新对话"),
+        "title": s.get("title", "new conversation"),
         "created_at": s.get("created_at", 0),
-        "messages": s.get("messages", []),
+        "messages": messages,
     }
 
 

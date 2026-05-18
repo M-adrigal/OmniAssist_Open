@@ -271,6 +271,7 @@ body {
 .chat-messages {
   flex: 1;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   padding: 52px 60px 24px 24px;
   display: flex;
   flex-direction: column;
@@ -1918,4 +1919,124 @@ body {
   .tool-item-args code {
     max-height: 80px;
   }
+}
+
+/* ===== 压缩历史记录 ===== */
+.compressed-summary {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin: 8px 0;
+  background: var(--bg-secondary);
+}
+
+.compressed-summary-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.compressed-summary-toggle {
+  font-size: 12px;
+  transition: transform 0.2s;
+}
+
+.compressed-summary-content.collapsed {
+  display: none;
+}
+
+.compressed-summary-text {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  padding: 8px 12px;
+  background: rgba(128, 128, 128, 0.06);
+  border-radius: 6px;
+}
+
+.compressed-rounds-label {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.compressed-round {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.compressed-round-header {
+  padding: 8px 12px;
+  background: rgba(128, 128, 128, 0.04);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.compressed-think-header,
+.compressed-search-header,
+.compressed-tools-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-muted);
+  user-select: none;
+  border-top: 1px solid var(--border);
+}
+
+.compressed-think-header:hover,
+.compressed-search-header:hover,
+.compressed-tools-header:hover {
+  background: rgba(128, 128, 128, 0.04);
+}
+
+.compressed-think-content,
+.compressed-search-content,
+.compressed-tools-content {
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text-primary);
+  border-top: 1px solid var(--border);
+}
+
+.compressed-think-content.collapsed,
+.compressed-search-content.collapsed,
+.compressed-tools-content.collapsed {
+  display: none;
+}
+
+.compressed-tool-item {
+  padding: 4px 0;
+}
+
+.compressed-search-results {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+.message.system {
+  opacity: 0.85;
+}
+
+.message.system .avatar {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+}
+
+.message.system .message-body {
+  max-width: 100%;
 }

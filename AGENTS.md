@@ -61,6 +61,7 @@ agent/                  # Agent 核心（不依赖 server/）
   tool_builder.py       # ToolBuilder 自然语言创建工具
   sandbox.py            # 沙箱隔离执行（含用户目录路径替换）
   config.py             # 加密配置管理
+  model_gateway.py      # 多模型参数适配（思考模式/温度等）
   pdf_formatter.py      # PDF 文档格式化引擎（ReportLab）
   document_formatter.py # Word 文档格式化引擎（python-docx）
   excel_formatter.py    # Excel 文档格式化引擎（openpyxl）

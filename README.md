@@ -190,6 +190,7 @@ Agent 会自动完成以下步骤：
 │   ├── tools.py          # 工具注册与执行
 │   ├── tool_builder.py   # 自然语言工具生成（分析/生成/修复）
 │   ├── sandbox.py        # 安全执行沙箱（venv + 子进程）
+│   ├── model_gateway.py  # 多模型参数适配（思考模式/温度等）
 │   ├── pdf_formatter.py  # PDF 文档格式化引擎（ReportLab）
 │   ├── document_formatter.py  # Word 文档格式化引擎（python-docx）
 │   ├── excel_formatter.py     # Excel 文档格式化引擎（openpyxl）
@@ -197,7 +198,6 @@ Agent 会自动完成以下步骤：
 │   └── agent_tools/      # 工具定义 JSON 文件
 ├── document_output/      # 用户文件输出目录（按用户 ID 隔离）
 ├── tool_sandbox/         # 沙箱虚拟环境（自动创建）
-├── test_features.py      # 功能测试脚本
 ├── requirements.txt      # Python 依赖
 ├── README.md             # 项目说明
 ├── deploy.md             # 部署指南

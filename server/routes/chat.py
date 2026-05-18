@@ -5,6 +5,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from server.models import ChatRequest
+from agent.model_gateway import ModelGateway
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -421,7 +422,7 @@ async def _handle_command(message: str, session_id: str, user_id: int):
         tools_dir = _os.path.join(base_dir, "agent", "agent_tools")
 
         try:
-            builder.save_tool_to_file(tool_json, tools_dir=tools_dir)
+            builder.save_tool_to_file(tool_json, tools_dir=tools_dir, registry=registry)
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': f'保存失败: {str(e)}'})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
@@ -506,7 +507,7 @@ async def _handle_command(message: str, session_id: str, user_id: int):
             return
 
         try:
-            builder.save_tool_to_file(tool_json, tools_dir=tools_dir)
+            builder.save_tool_to_file(tool_json, tools_dir=tools_dir, registry=registry)
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': f'保存失败: {str(e)}'})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
@@ -561,6 +562,7 @@ async def _handle_command(message: str, session_id: str, user_id: int):
 
         _os.remove(filepath)
         registry.unregister_tool(tool_name)
+        registry.remove_from_manifest(tool_name)
 
         yield f"data: {json.dumps({'type': 'token', 'content': f'工具 **{tool_name}** 已删除。'})}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
@@ -642,7 +644,38 @@ def _split_thinking(content: str):
     return thinking, answer
 
 
-async def _stream_chat(message: str, session_id: str = None, web_search: str = "off", user_id: int = None):
+def _extract_cached_tool_context(messages: list) -> str:
+    """从历史消息中提取最近工具调用信息，生成可复用提示
+
+    Args:
+        messages: 会话历史消息列表
+
+    Returns:
+        str: 缓存工具提示文本，无缓存则返回空字符串
+    """
+    tool_names = []
+    seen = set()
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant":
+            for t in msg.get("tools", []):
+                name = t.get("name", "")
+                if name and name not in seen:
+                    seen.add(name)
+                    tool_names.append(name)
+        if len(tool_names) >= 5:
+            break
+
+    if not tool_names:
+        return ""
+
+    return (
+        f"以下工具已在本次对话中执行过：{', '.join(tool_names)}\n"
+        "如果用户的新问题可以用这些工具的历史结果直接回答，请引用历史数据，不要重复调用工具。\n"
+        "只有当用户明确要求重新查询、或数据范围超出已有结果时，才需要重新调用。"
+    )
+
+
+async def _stream_chat(message: str, session_id: str = None, web_search: str = "off", user_id: int = None, show_thought: bool = False):
     agent, _, registry, _, _ = get_dependencies()
     store = get_session_store()
 
@@ -673,6 +706,13 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
         else:
             yield f"data: {json.dumps({'type': 'error', 'content': '模型尚未配置，请联系管理员配置全局模型，或在设置中配置个人模型'})}\n\n"
         return
+
+    model_name = cfg.get("model_name", "").strip()
+    gateway = ModelGateway(model_name)
+    gateway_cfg = gateway.build_params(show_thought, temperature=0)
+    reasoning_field = gateway_cfg["reasoning_field"]
+    needs_prompt_fallback = gateway_cfg["needs_prompt_fallback"]
+    api_params = gateway_cfg["api_params"]
 
     if session_id:
         messages = _load_session_messages(session_id)
@@ -730,6 +770,15 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
         "7. 如果用户需要网页内容，使用 web_fetch 工具\n"
         "8. 如果用户需要农历转换，使用 convert_gregorian_to_lunar 工具\n"
         "9. 调用工具前先确认参数是否齐全，参数不齐时向用户询问\n\n"
+        "工具复用原则（重要）：\n"
+        "10. 调用工具前，先检查对话历史中是否已有该工具的执行结果\n"
+        "11. 如果之前的工具调用已经获取了所需数据，直接引用历史结果，不要重复调用\n"
+        "12. 只有以下情况才需要重新调用工具：\n"
+        "    - 之前没有相关数据\n"
+        "    - 用户明确要求重新查询（如'重新查一下'、'再查一下'、'刷新'）\n"
+        "    - 数据范围超出已有结果（如已有7天预报但用户问第8天）\n"
+        "    - 数据可能已过期（时间敏感数据，如股市行情、实时路况等）\n"
+        "13. 例如：已有北京7天天气预报结果，用户再问其中某天天气，直接引用已有数据回答即可\n\n"
         "回答风格原则（重要）：\n"
         "优先使用自然段落进行回答，像人类对话一样流畅自然。只在必要时使用格式：\n"
         "- 简短问答、闲聊、一般性解释：直接用自然段落回答，不要使用任何列表或格式标记\n"
@@ -747,21 +796,22 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
         "5. 对于简单问题，用1-3句话回答即可，不要展开成段落"
     )
 
-    if agent.show_thought:
-        system_prompt += (
-            "\n\n思考过程格式（重要）：\n"
-            "在给出最终回答之前，请用 <thinking>...</thinking> 标签包裹你的思考过程。\n"
-            "思考过程请用自然流畅的独白形式书写，像自己在心里默默分析一样，不要使用列表或标签格式。\n"
-            "应自然覆盖以下内容：先理解用户真正想问什么，然后把问题拆解成几个小步骤，\n"
-            "判断需要哪些知识或工具，一步步推理出结论，最后检查一下有没有遗漏，规划好怎么组织回答。\n\n"
-            "格式示例：\n"
-            "<thinking>\n"
-            "用户想知道北京未来三天天气，应该是为了出行做准备。要回答这个问题，我需要先查到北京的地理位置ID，然后调用天气预报接口获取未来3天的数据。拿到数据后按日期整理温度、天气状况和风力，最后给一个综合的出行建议。让我确认一下：数据要覆盖未来3天，温度单位是摄氏度，天气描述要清晰易懂。回答就按日期逐日列出，最后加一句出行提醒。\n"
-            "</thinking>\n\n"
-            "然后给出你的正式回答。\n"
-            "注意：<thinking> 标签内的内容是你的内部思考，标签外的内容才是给用户的正式回答。\n"
-            "每次回复中只能使用一次 <thinking> 标签，放在正式回答之前。"
-        )
+    if show_thought:
+        if needs_prompt_fallback:
+            system_prompt += (
+                "\n\n思考过程格式（重要）：\n"
+                "在给出最终回答之前，请用 <thinking>...</thinking> 标签包裹你的思考过程。\n"
+                "思考过程请用自然流畅的独白形式书写，像自己在心里默默分析一样，不要使用列表或标签格式。\n"
+                "应自然覆盖以下内容：先理解用户真正想问什么，然后把问题拆解成几个小步骤，\n"
+                "判断需要哪些知识或工具，一步步推理出结论，最后检查一下有没有遗漏，规划好怎么组织回答。\n\n"
+                "格式示例：\n"
+                "<thinking>\n"
+                "用户想知道北京未来三天天气，应该是为了出行做准备。要回答这个问题，我需要先查到北京的地理位置ID，然后调用天气预报接口获取未来3天的数据。拿到数据后按日期整理温度、天气状况和风力，最后给一个综合的出行建议。让我确认一下：数据要覆盖未来3天，温度单位是摄氏度，天气描述要清晰易懂。回答就按日期逐日列出，最后加一句出行提醒。\n"
+                "</thinking>\n\n"
+                "然后给出你的正式回答。\n"
+                "注意：<thinking> 标签内的内容是你的内部思考，标签外的内容才是给用户的正式回答。\n"
+                "每次回复中只能使用一次 <thinking> 标签，放在正式回答之前。"
+            )
     else:
         system_prompt += (
             "\n\n重要：请直接给出最终回答，不要输出思考过程、分析过程或任何前置说明。"
@@ -793,7 +843,11 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
     chat_messages.append({"role": "user", "content": message})
 
-    tool_specs = registry.get_all_openai_specs()
+    cached_hint = _extract_cached_tool_context(messages)
+    if cached_hint:
+        chat_messages[0]["content"] = chat_messages[0]["content"] + "\n\n" + cached_hint
+
+    tool_specs = registry.get_filtered_specs(message)
     max_iterations = 10
     all_tool_calls = []
     all_thoughts = []
@@ -803,22 +857,92 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             yield f"data: {json.dumps({'type': 'status', 'content': '正在处理...'})}\n\n"
 
         try:
-            stream = llm.chat_stream(chat_messages, tools=tool_specs)
+            stream = llm.chat_stream(chat_messages, tools=tool_specs, **api_params)
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
             return
 
         full_content = ""
+        full_reasoning = ""
         tool_calls = None
+        _stream_buf = ""
+        _in_thinking = False
 
         try:
             for chunk in stream:
+                if chunk.get("reasoning_content"):
+                    reasoning_text = chunk["reasoning_content"]
+                    full_reasoning += reasoning_text
+                    if show_thought:
+                        yield f"data: {json.dumps({'type': 'thought', 'content': reasoning_text})}\n\n"
+
                 if chunk.get("content"):
-                    full_content += chunk["content"]
-                    if agent.show_thought:
-                        display = chunk["content"].replace("<thinking>", "").replace("</thinking>", "")
-                        if display.strip():
-                            yield f"data: {json.dumps({'type': 'thought', 'content': display})}\n\n"
+                    content = chunk["content"]
+                    full_content += content
+
+                    if reasoning_field is not None:
+                        yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
+                    elif show_thought:
+                        _stream_buf += content
+                        while True:
+                            if _in_thinking:
+                                think_end = _stream_buf.find("</thinking>")
+                                if think_end != -1:
+                                    think_text = _stream_buf[:think_end]
+                                    if think_text.strip():
+                                        yield f"data: {json.dumps({'type': 'thought', 'content': think_text})}\n\n"
+                                    _stream_buf = _stream_buf[think_end + len("</thinking>"):]
+                                    _in_thinking = False
+                                    continue
+                                safe_len = len(_stream_buf)
+                                for k in range(1, len("</thinking>")):
+                                    if _stream_buf.endswith("</thinking>"[:k]):
+                                        safe_len = len(_stream_buf) - k
+                                        break
+                                if safe_len > 0:
+                                    if _stream_buf[:safe_len].strip():
+                                        yield f"data: {json.dumps({'type': 'thought', 'content': _stream_buf[:safe_len]})}\n\n"
+                                    _stream_buf = _stream_buf[safe_len:]
+                                break
+                            start_tag = _stream_buf.find("<thinking>")
+                            if start_tag == -1:
+                                safe_len = len(_stream_buf)
+                                for k in range(1, len("<thinking>")):
+                                    if _stream_buf.endswith("<thinking>"[:k]):
+                                        safe_len = len(_stream_buf) - k
+                                        break
+                                if safe_len > 0:
+                                    yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:safe_len]})}\n\n"
+                                    _stream_buf = _stream_buf[safe_len:]
+                                break
+                            else:
+                                if start_tag > 0:
+                                    yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:start_tag]})}\n\n"
+                                _stream_buf = _stream_buf[start_tag + len("<thinking>"):]
+                                _in_thinking = True
+                                continue
+                    else:
+                        _stream_buf += content
+                        while True:
+                            if "</thinking>" in _stream_buf:
+                                end = _stream_buf.find("</thinking>") + len("</thinking>")
+                                _stream_buf = _stream_buf[end:]
+                                continue
+                            start = _stream_buf.find("<thinking>")
+                            if start == -1:
+                                safe_len = len(_stream_buf)
+                                for k in range(1, len("<thinking>")):
+                                    if _stream_buf.endswith("<thinking>"[:k]):
+                                        safe_len = len(_stream_buf) - k
+                                        break
+                                if safe_len > 0:
+                                    yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:safe_len]})}\n\n"
+                                    _stream_buf = _stream_buf[safe_len:]
+                                break
+                            else:
+                                if start > 0:
+                                    yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:start]})}\n\n"
+                                _stream_buf = _stream_buf[start + len("<thinking>"):]
                 if chunk.get("finish_reason"):
                     tool_calls = chunk.get("tool_calls")
                     break
@@ -826,29 +950,21 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
             return
 
+        if reasoning_field is None and not _in_thinking and _stream_buf.strip():
+            yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf})}\n\n"
+
         if not tool_calls:
             if all_tool_calls:
                 yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
 
-            thinking, answer = _split_thinking(full_content)
-
-            if thinking and agent.show_thought:
-                all_thoughts.append(thinking)
-
-            if answer:
-                delay = 0.06 if agent.show_thought else 0.08
-                chunk_size = 12 if agent.show_thought else 8
-                i = 0
-                while i < len(answer):
-                    end = min(i + chunk_size, len(answer))
-                    if end < len(answer):
-                        while end > i and answer[end - 1] not in (' ', '\n', '，', '。', '！', '？', '；', '：', ',', '.', '!', '?', ';', ':'):
-                            end -= 1
-                        if end == i:
-                            end = min(i + chunk_size, len(answer))
-                    yield f"data: {json.dumps({'type': 'token', 'content': answer[i:end]})}\n\n"
-                    await asyncio.sleep(delay)
-                    i = end
+            if reasoning_field is not None:
+                if full_reasoning and show_thought:
+                    all_thoughts.append(full_reasoning)
+                answer = full_content
+            else:
+                thinking, answer = _split_thinking(full_content)
+                if thinking and show_thought:
+                    all_thoughts.append(thinking)
 
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
@@ -866,19 +982,30 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                 if len(store[session_id]["messages"]) <= 2:
                     title = _generate_title(message, answer or full_content, llm)
                     store[session_id]["title"] = title
+                import logging
+                log = logging.getLogger("chat")
+                for i, m in enumerate(store[session_id]["messages"]):
+                    if m.get("role") == "assistant":
+                        log.info(f"[SAVE] msg[{i}] role={m['role']} has_thought={bool(m.get('thought'))} has_tools={bool(m.get('tools'))} thought_len={len(m.get('thought',''))} content_len={len(m.get('content',''))}")
                 _save_session_messages(session_id, store[session_id]["messages"], title)
             return
 
         if full_content:
-            thinking, _ = _split_thinking(full_content)
-            if thinking:
-                all_thoughts.append(thinking)
+            if reasoning_field is not None:
+                if full_reasoning:
+                    all_thoughts.append(full_reasoning)
+            else:
+                thinking, _ = _split_thinking(full_content)
+                if thinking:
+                    all_thoughts.append(thinking)
 
         assistant_msg = {
             "role": "assistant",
             "content": full_content,
             "tool_calls": tool_calls
         }
+        if full_reasoning:
+            assistant_msg["reasoning_content"] = full_reasoning
         chat_messages.append(assistant_msg)
 
         for tool_call in tool_calls:
@@ -924,7 +1051,7 @@ async def chat_stream(body: ChatRequest, request: Request):
     user = get_current_user(request)
 
     return StreamingResponse(
-        _stream_chat(body.message, body.session_id, body.web_search, user["id"]),
+        _stream_chat(body.message, body.session_id, body.web_search, user["id"], body.show_thought),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

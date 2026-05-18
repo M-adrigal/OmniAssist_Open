@@ -2,6 +2,7 @@ import os
 import sys
 import subprocess
 import signal
+import struct
 import atexit
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -154,6 +155,9 @@ def init_services():
 
     _tool_registry = ToolRegistry()
     _tool_builder = ToolBuilder(_llm_client)
+
+    _tool_registry.load_manifest()
+    _tool_registry.sync_manifest(tools_dir)
 
     _tool_registry.load_tools_from_dir(
         tools_dir,
@@ -380,28 +384,56 @@ app.mount("/static", StaticFiles(directory=static_dir, html=False), name="static
 def _check_and_free_port(port: int):
     import signal
     import socket
+    import time
 
     if _is_port_available(port):
         return
 
     pids = _find_port_pids(port)
     if not pids:
-        print(f"[启动] 警告：端口 {port} 被占用，但无法确定占用进程（可能在容器外），将继续尝试启动")
+        print(f"[启动] 警告：端口 {port} 被占用，但无法确定占用进程（可能在容器外）")
+        _force_release_port(port)
         return
 
     for pid in pids:
         if pid == os.getpid():
             continue
         try:
-            os.kill(pid, signal.SIGTERM)
+            os.kill(pid, signal.SIGKILL)
             print(f"[启动] 已终止占用端口 {port} 的进程 (PID: {pid})")
         except ProcessLookupError:
             pass
         except PermissionError:
             print(f"[启动] 警告：无权限终止进程 (PID: {pid})，端口 {port} 可能仍被占用")
 
-    import time
-    time.sleep(0.5)
+    for _ in range(10):
+        time.sleep(0.3)
+        if _is_port_available(port):
+            return
+
+    print(f"[启动] 警告：端口 {port} 仍被占用，尝试强制释放...")
+    _force_release_port(port)
+
+
+def _force_release_port(port: int):
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        try:
+            s.bind(("0.0.0.0", port))
+        except OSError:
+            try:
+                s.bind(("127.0.0.1", port))
+            except OSError as e:
+                print(f"[启动] 无法强制释放端口 {port}: {e}")
+                return
+        s.listen(1)
+        s.close()
+        print(f"[启动] 端口 {port} 已强制释放")
+    except Exception as e:
+        print(f"[启动] 强制释放端口 {port} 失败: {e}")
 
 
 def _is_port_available(port: int) -> bool:

@@ -18,11 +18,11 @@
       },
       "formatting": {
         "type": "object",
-        "description": "排版描述JSON对象。当用户有排版要求时必须提供。结构如下：\n{\n  \"sheets\": [{\n    \"name\": \"Sheet1\",\n    \"tab_color\": \"#4472C4\",\n    \"freeze_pane\": \"A2\",\n    \"auto_fit_columns\": true,\n    \"default_font\": {\"name\": \"宋体\", \"size\": 11},\n    \"default_alignment\": {\"horizontal\": \"left\", \"vertical\": \"center\"},\n    \"data\": [[\"姓名\", \"年龄\", \"城市\"], [\"张三\", 28, \"北京\"]],\n    \"merged_cells\": [{\"range\": \"A1:D1\", \"content\": \"标题\", \"style\": {\"font\": {\"bold\": true, \"size\": 16}, \"alignment\": {\"horizontal\": \"center\"}}}],\n    \"styles\": [\n      {\"range\": \"1:1\", \"style\": {\"font\": {\"bold\": true, \"color\": \"#FFFFFF\"}, \"fill\": {\"color\": \"#4472C4\"}, \"alignment\": {\"horizontal\": \"center\"}}},\n      {\"range\": {\"column\": \"金额\"}, \"style\": {\"number_format\": \"thousands_2\"}}\n    ],\n    \"conditional_formats\": [\n      {\"range\": \"B2:B100\", \"type\": \"cell_value\", \"operator\": \"greaterThan\", \"value\": 100, \"style\": {\"font\": {\"color\": \"#FF0000\"}, \"fill\": {\"color\": \"#FFCCCC\"}}},\n      {\"range\": \"C2:C100\", \"type\": \"color_scale\"},\n      {\"range\": \"D2:D100\", \"type\": \"data_bar\"},\n      {\"range\": \"E2:E100\", \"type\": \"icon_set\", \"icon_style\": \"3Arrows\"}\n    ],\n    \"charts\": [{\"type\": \"bar\", \"title\": \"图表\", \"data_range\": \"A1:B10\", \"position\": \"E2\"}]\n  }]\n}\n\n数字格式预设：general/integer/decimal_1/decimal_2/thousands/thousands_2/currency/currency_usd/percent/percent_int/date/date_cn/datetime/time/text/scientific\n条件格式type：cell_value/color_scale/data_bar/icon_set/formula\n图表type：bar/line/pie",
+        "description": "排版配置JSON对象。当用户有排版要求时提供，可控制多Sheet、单元格样式、数字格式、条件格式、图表等。不提供则使用简单模式",
         "properties": {
           "sheets": {
             "type": "array",
-            "description": "工作表数组，每个元素描述一个Sheet"
+            "description": "工作表数组，每个元素描述一个Sheet，包含name、data、styles、conditional_formats、charts等"
           },
           "sheet_order": {
             "type": "array",

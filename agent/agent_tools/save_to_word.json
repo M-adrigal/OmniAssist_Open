@@ -14,7 +14,7 @@
       },
       "formatting": {
         "type": "object",
-        "description": "排版描述JSON对象。当用户有排版要求时必须提供。结构如下：\n{\n  \"page\": {\"paper_size\": \"A4\", \"orientation\": \"portrait\", \"margin_top_cm\": 2.54, \"margin_bottom_cm\": 2.54, \"margin_left_cm\": 3.18, \"margin_right_cm\": 3.18, \"header\": {\"text\": \"页眉\"}, \"footer\": {\"text\": \"页脚\", \"show_page_number\": true}},\n  \"default_font\": {\"name\": \"宋体\", \"size_pt\": 12, \"color\": \"#000000\", \"bold\": false, \"italic\": false, \"underline\": false},\n  \"default_paragraph\": {\"alignment\": \"left\", \"first_line_indent\": {\"value\": 2, \"unit\": \"char\"}, \"line_spacing\": {\"mode\": \"multiple\", \"value\": 1.5}, \"space_before_pt\": 0, \"space_after_pt\": 6},\n  \"sections\": [\n    {\"type\": \"heading\", \"level\": 1, \"content\": \"标题\", \"font\": {\"name\": \"黑体\", \"size_pt\": 18, \"bold\": true}, \"paragraph\": {\"alignment\": \"center\"}},\n    {\"type\": \"paragraph\", \"content\": \"正文内容...\"},\n    {\"type\": \"paragraph\", \"runs\": [{\"text\": \"普通\", \"bold\": false}, {\"text\": \"加粗\", \"bold\": true}, {\"text\": \"红色\", \"color\": \"#FF0000\"}]},\n    {\"type\": \"table\", \"headers\": [\"列1\", \"列2\"], \"rows\": [[\"A\", \"B\"]], \"column_widths_cm\": [3, 5], \"header_style\": {\"bold\": true, \"bg_color\": \"#4472C4\", \"font_color\": \"#FFFFFF\"}},\n    {\"type\": \"list\", \"items\": [\"项目1\", \"项目2\"], \"ordered\": false},\n    {\"type\": \"image\", \"path\": \"/path/to/img.png\", \"width_cm\": 8, \"alignment\": \"center\"}\n  ]\n}",
+        "description": "排版配置JSON对象。当用户有排版要求时提供，可控制页面、字体、段落、表格、列表、图片等。不提供则使用简单模式",
         "properties": {
           "page": {
             "type": "object",

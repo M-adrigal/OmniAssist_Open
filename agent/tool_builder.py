@@ -608,14 +608,80 @@ class ToolBuilder:
 
         return True, ""
 
-    def save_tool_to_file(self, tool_json: dict, tools_dir: str = None) -> str:
+    @staticmethod
+    def _infer_category(tool_json: dict) -> str:
+        """根据工具定义推断分类
+
+        Args:
+            tool_json: 工具定义字典
+
+        Returns:
+            str: 分类名称
+        """
+        mode = tool_json.get("execution_mode", "")
+        name = tool_json.get("name", "").lower()
+        desc = tool_json.get("description", "").lower()
+        output_dir = tool_json.get("output_dir", "")
+
+        if output_dir or any(kw in name for kw in ["save_to_", "generate_", "export_", "create_"]):
+            if "word" in output_dir or "word" in name:
+                return "document"
+            if "excel" in output_dir or "excel" in name:
+                return "document"
+            if "pdf" in output_dir or "pdf" in name:
+                return "document"
+            if "ppt" in output_dir or "ppt" in name:
+                return "document"
+            return "document"
+
+        weather_kw = ["weather", "天气", "qweather", "forecast"]
+        if any(kw in name for kw in weather_kw):
+            return "weather"
+
+        web_kw = ["web", "fetch", "http", "url", "网页", "抓取"]
+        if any(kw in name for kw in web_kw):
+            return "web"
+
+        if mode == "http_request":
+            return "web"
+
+        return "utility"
+
+    @staticmethod
+    def _extract_keywords(tool_json: dict) -> list:
+        """从工具定义中提取关键词
+
+        Args:
+            tool_json: 工具定义字典
+
+        Returns:
+            list: 关键词列表
+        """
+        keywords = set()
+        desc = tool_json.get("description", "")
+        name = tool_json.get("name", "")
+
+        for word in re.findall(r'[\u4e00-\u9fff]{2,}', desc):
+            if len(word) <= 4:
+                keywords.add(word)
+
+        params = tool_json.get("parameters", {}).get("properties", {})
+        for param_name in params:
+            keywords.add(param_name)
+
+        return list(keywords)[:15]
+
+    def save_tool_to_file(self, tool_json: dict, tools_dir: str = None,
+                          registry=None) -> str:
         """将生成的 Tool JSON 保存到指定目录下的文件中
 
         文件名格式为 {tool_name}.json，同时自动添加 created_at 时间戳。
+        如果提供了 registry，会自动同步工具清单。
 
         Args:
             tool_json: 工具定义字典
             tools_dir: 保存目录路径，默认为当前文件所在目录下的 agent_tools/
+            registry: 可选的 ToolRegistry 实例，用于自动同步清单
 
         Returns:
             str: 保存的文件完整路径
@@ -641,6 +707,17 @@ class ToolBuilder:
 
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(tool_json, f, ensure_ascii=False, indent=2)
+
+        if registry is not None:
+            category = self._infer_category(tool_json)
+            keywords = self._extract_keywords(tool_json)
+            registry.add_to_manifest(
+                name=tool_json["name"],
+                description=tool_json.get("description", ""),
+                category=category,
+                keywords=keywords,
+                file=filename,
+            )
 
         print(f"[保存 Tool] {tool_json['name']} → {filepath}")
         return filepath

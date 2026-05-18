@@ -6,6 +6,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     message: str
     web_search: str = "off"
+    show_thought: bool = False
 
 
 class SessionCreate(BaseModel):
