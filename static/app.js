@@ -32,13 +32,6 @@ const API = {
 const COMMANDS = [
   { command: '/help', description: '显示帮助信息', category: '通用' },
   { command: '/reset', description: '重置对话上下文', category: '对话' },
-  { command: '/tool list', description: '查看所有已安装的工具', category: '工具' },
-  { command: '/tool add', description: '通过自然语言新增工具', category: '工具' },
-  { command: '/tool update', description: '通过自然语言修改已有工具', category: '工具' },
-  { command: '/tool delete', description: '删除指定工具', category: '工具' },
-  { command: '/model set', description: '配置模型参数', category: '模型' },
-  { command: '/model show', description: '查看当前模型配置', category: '模型' },
-  { command: '/model update', description: '修改单个配置项', category: '模型' },
 ];
 
 let state = {
@@ -209,7 +202,7 @@ function clearMessages() {
     <div class="welcome-message">
       <h1>OmniAssist</h1>
       <p>计时算文查网，一站式全能辅助</p>
-      <p style="margin-top:8px;font-size:13px;">输入消息开始对话，或输入 <code>/</code> 查看可用命令</p>
+      <p style="margin-top:8px;font-size:13px;">输入消息开始对话，工具管理现已支持自然语言交互</p>
     </div>`;
 }
 

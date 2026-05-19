@@ -1,0 +1,23 @@
+{
+  "name": "query_gold_price",
+  "description": "查询上海黄金交易所的实时黄金价格（周六日闭市期间返回最后一次行情数据，每分钟更新）",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "key": {
+        "type": "string",
+        "description": "API密钥，默认使用提供的密钥，用户也可自行替换。",
+        "default": "e9553fb622f1558f30db19447dd24daf"
+      }
+    },
+    "required": []
+  },
+  "execution_mode": "http_request",
+  "execution_prompt": "请解析API返回的JSON数据，提取黄金价格的关键信息（如品种、最新价、涨跌幅、更新时间等），并以清晰、友好的自然语言格式呈现给用户。\nAPI返回数据：{api_response}\n",
+  "http_config": {
+    "url": "https://api2.tanshuapi.com/api/gold/v1/shgold2?key={key}",
+    "method": "GET",
+    "headers": {}
+  },
+  "created_at": "2026-05-18T16:10:39.254933"
+}

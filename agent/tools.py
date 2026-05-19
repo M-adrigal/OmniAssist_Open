@@ -403,6 +403,8 @@ class ToolRegistry:
             if user_id is not None:
                 arguments['_user_id'] = user_id
             result = self.tools[name]["function"](**arguments)
+            if isinstance(result, dict):
+                return json.dumps(result, ensure_ascii=False)
             return str(result)
         except Exception as e:
             return f"Error executing tool '{name}': {str(e)}"

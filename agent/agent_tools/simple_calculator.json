@@ -1,6 +1,6 @@
 {
   "name": "simple_calculator",
-  "description": "执行基本的加减乘除数学运算",
+  "description": "执行基本的加减乘除及平方运算",
   "parameters": {
     "type": "object",
     "properties": {
@@ -11,26 +11,26 @@
           "add",
           "subtract",
           "multiply",
-          "divide"
+          "divide",
+          "square"
         ]
       },
       "num1": {
         "type": "number",
-        "description": "第一个操作数"
+        "description": "第一个操作数，对于平方运算是要计算的数字"
       },
       "num2": {
         "type": "number",
-        "description": "第二个操作数"
+        "description": "第二个操作数，对于平方运算可忽略"
       }
     },
     "required": [
       "operation",
-      "num1",
-      "num2"
+      "num1"
     ]
   },
   "execution_mode": "local_execution",
-  "execution_prompt": "请编写Python代码来执行数学运算。参数为：{params}。请根据operation的值执行对应运算（add为加、subtract为减、multiply为乘、divide为除），将计算结果赋值给变量result。只输出纯Python代码，不要包含任何解释或markdown标记。",
-  "execution_code": "if operation == 'add':\n    result = num1 + num2\nelif operation == 'subtract':\n    result = num1 - num2\nelif operation == 'multiply':\n    result = num1 * num2\nelif operation == 'divide':\n    if num2 == 0:\n        result = '错误：除数不能为零'\n    else:\n        result = num1 / num2",
-  "created_at": "2026-05-06T09:22:38.850499"
+  "execution_prompt": "请编写Python代码来执行数学运算。参数为：{params}。请根据operation的值执行对应运算（add为加、subtract为减、multiply为乘、divide为除、square为平方），将计算结果赋值给变量result。对于平方运算，只需使用num1参数计算其平方。只输出纯Python代码，不要包含任何解释或markdown标记。",
+  "execution_code": "if operation == 'add':\n    result = num1 + num2\nelif operation == 'subtract':\n    result = num1 - num2\nelif operation == 'multiply':\n    result = num1 * num2\nelif operation == 'divide':\n    if num2 == 0:\n        result = '错误：除数不能为零'\n    else:\n        result = num1 / num2\nelif operation == 'square':\n    result = num1 * num1",
+  "created_at": "2026-05-18T23:36:43.340787"
 }

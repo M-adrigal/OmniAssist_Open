@@ -1,4 +1,5 @@
 import json
+import os
 import asyncio
 import re
 from datetime import datetime
@@ -6,9 +7,17 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from server.models import ChatRequest
 from agent.model_gateway import ModelGateway
+from agent.tool_management import (
+    create_tool_from_chat,
+    update_tool_from_chat,
+    delete_tool_from_chat,
+    list_all_tools,
+    META_TOOL_SPECS,
+)
+
+META_TOOL_NAMES = {"create_tool", "update_tool", "delete_tool", "list_tools"}
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
-
 
 from server.routes.auth import get_current_user
 
@@ -306,15 +315,8 @@ async def _handle_command(message: str, session_id: str, user_id: int):
 |------|------|
 | `/help` | 显示此帮助信息 |
 | `/reset` | 重置当前对话上下文 |
-| `/tool list` | 查看所有已安装的工具 |
-| `/tool add` | 通过自然语言新增工具 |
-| `/tool update <工具名>` | 修改已有工具 |
-| `/tool delete <工具名>` | 删除指定工具 |
-| `/model show` | 查看当前模型配置 |
-| `/agent thought on` | 开启思考过程显示 |
-| `/agent thought off` | 关闭思考过程显示 |
 
-> 提示：`/tool add`、`/tool update`、`/tool delete`、`/model set`、`/model update` 等操作也可以在左侧设置面板中完成。"""
+> 工具管理（创建/更新/删除/查看）已支持自然语言交互，直接在对话中描述需求即可。"""
         yield f"data: {json.dumps({'type': 'token', 'content': help_text})}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
         return
@@ -675,9 +677,76 @@ def _extract_cached_tool_context(messages: list) -> str:
     )
 
 
+_meta_user_ctx = {}
+_meta_registered = False
+
+
+def _ensure_meta_tools(registry, builder, llm, tools_dir, agent):
+    global _meta_registered
+    if _meta_registered:
+        return
+
+    from server.database import log_tool_operation
+
+    def _create_tool(description: str, **kwargs):
+        return create_tool_from_chat(
+            description=description,
+            builder=builder,
+            llm=llm,
+            registry=registry,
+            tools_dir=tools_dir,
+            sandbox=None,
+            agent=agent,
+            user_ctx=_meta_user_ctx,
+            log_func=log_tool_operation,
+        )
+
+    def _update_tool(tool_name: str, update_description: str, **kwargs):
+        return update_tool_from_chat(
+            tool_name=tool_name,
+            update_description=update_description,
+            builder=builder,
+            llm=llm,
+            registry=registry,
+            tools_dir=tools_dir,
+            sandbox=None,
+            agent=agent,
+            user_ctx=_meta_user_ctx,
+            log_func=log_tool_operation,
+        )
+
+    def _delete_tool(tool_name: str, **kwargs):
+        return delete_tool_from_chat(
+            tool_name=tool_name,
+            registry=registry,
+            tools_dir=tools_dir,
+            agent=agent,
+            user_ctx=_meta_user_ctx,
+            log_func=log_tool_operation,
+        )
+
+    def _list_tools(**kwargs):
+        return list_all_tools(registry)
+
+    for name, func, desc in [
+        ("create_tool", _create_tool, "创建新的工具"),
+        ("update_tool", _update_tool, "更新已有工具"),
+        ("delete_tool", _delete_tool, "删除指定工具"),
+        ("list_tools", _list_tools, "查看所有已安装的工具"),
+    ]:
+        try:
+            registry.unregister_tool(name)
+        except Exception:
+            pass
+        registry.register_tool(name=name, description=desc, parameters={}, func=func)
+
+    _meta_registered = True
+
+
 async def _stream_chat(message: str, session_id: str = None, web_search: str = "off", user_id: int = None, show_thought: bool = False):
-    agent, _, registry, _, _ = get_dependencies()
+    agent, _, registry, builder, _ = get_dependencies()
     store = get_session_store()
+    tools_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "agent", "agent_tools")
 
     if user_id is None:
         yield f"data: {json.dumps({'type': 'error', 'content': '用户未登录'})}\n\n"
@@ -796,6 +865,18 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
         "5. 对于简单问题，用1-3句话回答即可，不要展开成段落"
     )
 
+    system_prompt += (
+        "\n\n【工具管理指令】\n"
+        "当用户明确要求创建/更新/删除/查看工具时，调用对应函数：\n"
+        "- 创建 → create_tool\n"
+        "- 更新 → update_tool\n"
+        "- 删除 → delete_tool\n"
+        "- 查看 → list_tools\n"
+        "【例外】同一句话中用户明确说了'不需要/不要/不用'创建工具，则不要调用。\n"
+        "【例外】用户只是假设性讨论（'如果做一个...工具'）而未明确要求时，不要调用。\n"
+        "其余情况（信息不足、不确定权限等）一律先调用函数，拿到结果后再回复。"
+    )
+
     if show_thought:
         if needs_prompt_fallback:
             system_prompt += (
@@ -852,195 +933,254 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
     all_tool_calls = []
     all_thoughts = []
 
-    for iteration in range(max_iterations):
-        if iteration == 0:
-            yield f"data: {json.dumps({'type': 'status', 'content': '正在处理...'})}\n\n"
+    user_ctx = {
+        "user_id": user_id,
+        "username": "",
+        "user_type": "user",
+        "session_id": session_id or "",
+    }
+    try:
+        from server.database import get_user_by_id as _gbu
+        db_user = _gbu(user_id)
+        if db_user:
+            user_ctx["username"] = db_user.get("username", "")
+            user_ctx["user_type"] = db_user.get("user_type", "user")
+    except Exception:
+        pass
 
-        try:
-            stream = llm.chat_stream(chat_messages, tools=tool_specs, **api_params)
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
-            return
+    # 预拦截：pending 删除的确认消息，自动执行删除
+    deletion_context = ""
+    if user_id:
+        from agent.tool_management import _pending_deletions
+        pending_tool = _pending_deletions.get(user_id)
+        if pending_tool:
+            msg_lower = message.lower()
+            tool_in_msg = pending_tool.lower() in msg_lower
+            confirm_words = ["确认", "确定", "好的", "是", "删除"]
+            is_confirm = any(w in msg_lower for w in confirm_words)
+            is_short = len(message.strip()) <= 15
 
-        full_content = ""
-        full_reasoning = ""
-        tool_calls = None
-        _stream_buf = ""
-        _in_thinking = False
+            if is_confirm and (tool_in_msg or is_short):
+                result = delete_tool_from_chat(
+                    tool_name=pending_tool,
+                    registry=registry,
+                    tools_dir=tools_dir,
+                    agent=agent,
+                    user_ctx=user_ctx,
+                    log_func=None,
+                )
+                if result.get("success"):
+                    deletion_context = f"\n\n[系统消息] 工具 {pending_tool} 已成功删除。"
+                    try:
+                        from server.database import log_tool_operation
+                        log_tool_operation("delete", pending_tool, user_ctx)
+                    except Exception:
+                        pass
+                _pending_deletions.pop(user_id, None)
 
-        try:
-            for chunk in stream:
-                if chunk.get("reasoning_content"):
-                    reasoning_text = chunk["reasoning_content"]
-                    full_reasoning += reasoning_text
-                    if show_thought:
-                        yield f"data: {json.dumps({'type': 'thought', 'content': reasoning_text})}\n\n"
+    if deletion_context:
+        chat_messages.append({"role": "system", "content": deletion_context})
 
-                if chunk.get("content"):
-                    content = chunk["content"]
-                    full_content += content
+    _ensure_meta_tools(registry, builder, llm, tools_dir, agent)
+    _meta_user_ctx.clear()
+    _meta_user_ctx.update(user_ctx)
+    tool_specs = list(tool_specs) + META_TOOL_SPECS
 
-                    if reasoning_field is not None:
-                        yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
-                    elif show_thought:
-                        _stream_buf += content
-                        while True:
-                            if _in_thinking:
-                                think_end = _stream_buf.find("</thinking>")
-                                if think_end != -1:
-                                    think_text = _stream_buf[:think_end]
-                                    if think_text.strip():
-                                        yield f"data: {json.dumps({'type': 'thought', 'content': think_text})}\n\n"
-                                    _stream_buf = _stream_buf[think_end + len("</thinking>"):]
-                                    _in_thinking = False
-                                    continue
-                                safe_len = len(_stream_buf)
-                                for k in range(1, len("</thinking>")):
-                                    if _stream_buf.endswith("</thinking>"[:k]):
-                                        safe_len = len(_stream_buf) - k
-                                        break
-                                if safe_len > 0:
-                                    if _stream_buf[:safe_len].strip():
-                                        yield f"data: {json.dumps({'type': 'thought', 'content': _stream_buf[:safe_len]})}\n\n"
-                                    _stream_buf = _stream_buf[safe_len:]
-                                break
-                            start_tag = _stream_buf.find("<thinking>")
-                            if start_tag == -1:
-                                safe_len = len(_stream_buf)
-                                for k in range(1, len("<thinking>")):
-                                    if _stream_buf.endswith("<thinking>"[:k]):
-                                        safe_len = len(_stream_buf) - k
-                                        break
-                                if safe_len > 0:
-                                    yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:safe_len]})}\n\n"
-                                    _stream_buf = _stream_buf[safe_len:]
-                                break
-                            else:
-                                if start_tag > 0:
-                                    yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:start_tag]})}\n\n"
-                                _stream_buf = _stream_buf[start_tag + len("<thinking>"):]
-                                _in_thinking = True
-                                continue
-                    else:
-                        _stream_buf += content
-                        while True:
-                            if "</thinking>" in _stream_buf:
-                                end = _stream_buf.find("</thinking>") + len("</thinking>")
-                                _stream_buf = _stream_buf[end:]
-                                continue
-                            start = _stream_buf.find("<thinking>")
-                            if start == -1:
-                                safe_len = len(_stream_buf)
-                                for k in range(1, len("<thinking>")):
-                                    if _stream_buf.endswith("<thinking>"[:k]):
-                                        safe_len = len(_stream_buf) - k
-                                        break
-                                if safe_len > 0:
-                                    yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:safe_len]})}\n\n"
-                                    _stream_buf = _stream_buf[safe_len:]
-                                break
-                            else:
-                                if start > 0:
-                                    yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:start]})}\n\n"
-                                _stream_buf = _stream_buf[start + len("<thinking>"):]
-                if chunk.get("finish_reason"):
-                    tool_calls = chunk.get("tool_calls")
-                    break
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
-            return
-
-        if reasoning_field is None and not _in_thinking and _stream_buf.strip():
-            yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf})}\n\n"
-
-        if not tool_calls:
-            if all_tool_calls:
-                yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
-
-            if reasoning_field is not None:
-                if full_reasoning and show_thought:
-                    all_thoughts.append(full_reasoning)
-                answer = full_content
-            else:
-                thinking, answer = _split_thinking(full_content)
-                if thinking and show_thought:
-                    all_thoughts.append(thinking)
-
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
-            if session_id:
-                store[session_id]["messages"].append({"role": "user", "content": message})
-                assistant_msg = {"role": "assistant", "content": answer or full_content}
-                if search_info:
-                    assistant_msg["search"] = search_info
-                if all_thoughts:
-                    assistant_msg["thought"] = "\n\n".join(all_thoughts)
-                if all_tool_calls:
-                    assistant_msg["tools"] = all_tool_calls
-                store[session_id]["messages"].append(assistant_msg)
-                title = None
-                if len(store[session_id]["messages"]) <= 2:
-                    title = _generate_title(message, answer or full_content, llm)
-                    store[session_id]["title"] = title
-                import logging
-                log = logging.getLogger("chat")
-                for i, m in enumerate(store[session_id]["messages"]):
-                    if m.get("role") == "assistant":
-                        log.info(f"[SAVE] msg[{i}] role={m['role']} has_thought={bool(m.get('thought'))} has_tools={bool(m.get('tools'))} thought_len={len(m.get('thought',''))} content_len={len(m.get('content',''))}")
-                _save_session_messages(session_id, store[session_id]["messages"], title)
-            return
-
-        if full_content:
-            if reasoning_field is not None:
-                if full_reasoning:
-                    all_thoughts.append(full_reasoning)
-            else:
-                thinking, _ = _split_thinking(full_content)
-                if thinking:
-                    all_thoughts.append(thinking)
-
-        assistant_msg = {
-            "role": "assistant",
-            "content": full_content,
-            "tool_calls": tool_calls
-        }
-        if full_reasoning:
-            assistant_msg["reasoning_content"] = full_reasoning
-        chat_messages.append(assistant_msg)
-
-        for tool_call in tool_calls:
-            tool_name = tool_call["function"]["name"]
-            tool_arguments = json.loads(tool_call["function"]["arguments"])
-
-            yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_name, 'arguments': tool_arguments})}\n\n"
-
+    try:
+        for iteration in range(max_iterations):
+            if iteration == 0:
+                yield f"data: {json.dumps({'type': 'status', 'content': '正在处理...'})}\n\n"
+    
             try:
-                tool_result = registry.execute(tool_name, tool_arguments, user_id=user_id)
-                tool_error = False
+                stream = llm.chat_stream(chat_messages, tools=tool_specs, **api_params)
             except Exception as e:
-                tool_result = f"工具执行错误: {str(e)}"
-                tool_error = True
-
-            tool_result_str = str(tool_result)
-            yield f"data: {json.dumps({'type': 'tool_result', 'name': tool_name, 'content': tool_result_str})}\n\n"
-
-            all_tool_calls.append({
-                "name": tool_name,
-                "arguments": tool_arguments,
-                "result": tool_result_str,
-                "error": tool_error or tool_result_str.startswith("[沙箱执行失败]") or tool_result_str.startswith("[沙箱执行超时]") or tool_result_str.startswith("[沙箱异常]") or tool_result_str.startswith("[工具执行异常]"),
-            })
-
-            chat_messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call["id"],
-                "name": tool_name,
-                "content": tool_result_str,
-            })
-
-    if all_tool_calls:
-        yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
-    yield f"data: {json.dumps({'type': 'error', 'content': '已达到最大迭代次数'})}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                return
+    
+            full_content = ""
+            full_reasoning = ""
+            tool_calls = None
+            _stream_buf = ""
+            _in_thinking = False
+    
+            try:
+                for chunk in stream:
+                    if chunk.get("reasoning_content"):
+                        reasoning_text = chunk["reasoning_content"]
+                        full_reasoning += reasoning_text
+                        if show_thought:
+                            yield f"data: {json.dumps({'type': 'thought', 'content': reasoning_text})}\n\n"
+    
+                    if chunk.get("content"):
+                        content = chunk["content"]
+                        full_content += content
+    
+                        if reasoning_field is not None:
+                            yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
+                        elif show_thought:
+                            _stream_buf += content
+                            while True:
+                                if _in_thinking:
+                                    think_end = _stream_buf.find("</thinking>")
+                                    if think_end != -1:
+                                        think_text = _stream_buf[:think_end]
+                                        if think_text.strip():
+                                            yield f"data: {json.dumps({'type': 'thought', 'content': think_text})}\n\n"
+                                        _stream_buf = _stream_buf[think_end + len("</thinking>"):]
+                                        _in_thinking = False
+                                        continue
+                                    safe_len = len(_stream_buf)
+                                    for k in range(1, len("</thinking>")):
+                                        if _stream_buf.endswith("</thinking>"[:k]):
+                                            safe_len = len(_stream_buf) - k
+                                            break
+                                    if safe_len > 0:
+                                        if _stream_buf[:safe_len].strip():
+                                            yield f"data: {json.dumps({'type': 'thought', 'content': _stream_buf[:safe_len]})}\n\n"
+                                        _stream_buf = _stream_buf[safe_len:]
+                                    break
+                                start_tag = _stream_buf.find("<thinking>")
+                                if start_tag == -1:
+                                    safe_len = len(_stream_buf)
+                                    for k in range(1, len("<thinking>")):
+                                        if _stream_buf.endswith("<thinking>"[:k]):
+                                            safe_len = len(_stream_buf) - k
+                                            break
+                                    if safe_len > 0:
+                                        yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:safe_len]})}\n\n"
+                                        _stream_buf = _stream_buf[safe_len:]
+                                    break
+                                else:
+                                    if start_tag > 0:
+                                        yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:start_tag]})}\n\n"
+                                    _stream_buf = _stream_buf[start_tag + len("<thinking>"):]
+                                    _in_thinking = True
+                                    continue
+                        else:
+                            _stream_buf += content
+                            while True:
+                                if "</thinking>" in _stream_buf:
+                                    end = _stream_buf.find("</thinking>") + len("</thinking>")
+                                    _stream_buf = _stream_buf[end:]
+                                    continue
+                                start = _stream_buf.find("<thinking>")
+                                if start == -1:
+                                    safe_len = len(_stream_buf)
+                                    for k in range(1, len("<thinking>")):
+                                        if _stream_buf.endswith("<thinking>"[:k]):
+                                            safe_len = len(_stream_buf) - k
+                                            break
+                                    if safe_len > 0:
+                                        yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:safe_len]})}\n\n"
+                                        _stream_buf = _stream_buf[safe_len:]
+                                    break
+                                else:
+                                    if start > 0:
+                                        yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:start]})}\n\n"
+                                    _stream_buf = _stream_buf[start + len("<thinking>"):]
+                    if chunk.get("finish_reason"):
+                        tool_calls = chunk.get("tool_calls")
+                        break
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                return
+    
+            if reasoning_field is None and not _in_thinking and _stream_buf.strip():
+                yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf})}\n\n"
+    
+            if not tool_calls:
+                if all_tool_calls:
+                    yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
+    
+                if reasoning_field is not None:
+                    if full_reasoning and show_thought:
+                        all_thoughts.append(full_reasoning)
+                    answer = full_content
+                else:
+                    thinking, answer = _split_thinking(full_content)
+                    if thinking and show_thought:
+                        all_thoughts.append(thinking)
+    
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+    
+                if session_id:
+                    store[session_id]["messages"].append({"role": "user", "content": message})
+                    assistant_msg = {"role": "assistant", "content": answer or full_content}
+                    if search_info:
+                        assistant_msg["search"] = search_info
+                    if all_thoughts:
+                        assistant_msg["thought"] = "\n\n".join(all_thoughts)
+                    if all_tool_calls:
+                        assistant_msg["tools"] = all_tool_calls
+                    store[session_id]["messages"].append(assistant_msg)
+                    title = None
+                    if len(store[session_id]["messages"]) <= 2:
+                        title = _generate_title(message, answer or full_content, llm)
+                        store[session_id]["title"] = title
+                    import logging
+                    log = logging.getLogger("chat")
+                    for i, m in enumerate(store[session_id]["messages"]):
+                        if m.get("role") == "assistant":
+                            log.info(f"[SAVE] msg[{i}] role={m['role']} has_thought={bool(m.get('thought'))} has_tools={bool(m.get('tools'))} thought_len={len(m.get('thought',''))} content_len={len(m.get('content',''))}")
+                    _save_session_messages(session_id, store[session_id]["messages"], title)
+                return
+    
+            if full_content:
+                if reasoning_field is not None:
+                    if full_reasoning:
+                        all_thoughts.append(full_reasoning)
+                else:
+                    thinking, _ = _split_thinking(full_content)
+                    if thinking:
+                        all_thoughts.append(thinking)
+    
+            assistant_msg = {
+                "role": "assistant",
+                "content": full_content,
+                "tool_calls": tool_calls
+            }
+            if full_reasoning:
+                assistant_msg["reasoning_content"] = full_reasoning
+            chat_messages.append(assistant_msg)
+    
+            for tool_call in tool_calls:
+                tool_name = tool_call["function"]["name"]
+                tool_arguments = json.loads(tool_call["function"]["arguments"])
+    
+                yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_name, 'arguments': tool_arguments})}\n\n"
+    
+                try:
+                    tool_result = registry.execute(tool_name, tool_arguments, user_id=user_id)
+                    tool_error = False
+                except Exception as e:
+                    tool_result = f"工具执行错误: {str(e)}"
+                    tool_error = True
+    
+                if isinstance(tool_result, dict):
+                    tool_result_str = json.dumps(tool_result, ensure_ascii=False)
+                else:
+                    tool_result_str = str(tool_result)
+                yield f"data: {json.dumps({'type': 'tool_result', 'name': tool_name, 'content': tool_result_str})}\n\n"
+    
+                all_tool_calls.append({
+                    "name": tool_name,
+                    "arguments": tool_arguments,
+                    "result": tool_result_str,
+                    "error": tool_error or tool_result_str.startswith("[沙箱执行失败]") or tool_result_str.startswith("[沙箱执行超时]") or tool_result_str.startswith("[沙箱异常]") or tool_result_str.startswith("[工具执行异常]"),
+                })
+    
+                chat_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call["id"],
+                    "name": tool_name,
+                    "content": tool_result_str,
+                })
+    
+        if all_tool_calls:
+            yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
+        yield f"data: {json.dumps({'type': 'error', 'content': '已达到最大迭代次数'})}\n\n"
+    except Exception as e:
+        yield f"data: {json.dumps({'type': 'error', 'content': f'对话处理异常: {str(e)}'})}\n\n"
 
 
 @router.post("/stream")
@@ -1066,13 +1206,4 @@ def get_commands():
     return [
         {"command": "/help", "description": "显示帮助信息", "category": "通用"},
         {"command": "/reset", "description": "重置对话上下文", "category": "对话"},
-        {"command": "/tool list", "description": "查看所有已安装的工具", "category": "工具"},
-        {"command": "/tool add", "description": "通过自然语言新增工具", "category": "工具"},
-        {"command": "/tool update", "description": "通过自然语言修改已有工具", "category": "工具"},
-        {"command": "/tool delete", "description": "删除指定工具", "category": "工具"},
-        {"command": "/model set", "description": "配置模型参数", "category": "模型"},
-        {"command": "/model show", "description": "查看当前模型配置", "category": "模型"},
-        {"command": "/model update", "description": "修改单个配置项", "category": "模型"},
-        {"command": "/agent thought on", "description": "开启思考过程显示", "category": "Agent"},
-        {"command": "/agent thought off", "description": "关闭思考过程显示", "category": "Agent"},
     ]

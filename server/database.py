@@ -105,6 +105,22 @@ def init_db() -> str:
         )
     """)
 
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tool_operation_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tool_name TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            operator TEXT DEFAULT '',
+            operator_id INTEGER DEFAULT 0,
+            details TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_logs_tool_name ON tool_operation_logs(tool_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_logs_operation ON tool_operation_logs(operation)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_logs_created_at ON tool_operation_logs(created_at)")
+
     _seed_default_permissions(conn)
 
     conn.execute(
@@ -606,3 +622,42 @@ def save_search_config(tavily_api_key: str = None) -> dict:
         )
     conn.commit()
     return get_search_config()
+
+
+def log_tool_operation(tool_name: str, operation: str, operator: str = "",
+                       operator_id: int = 0, details: str = ""):
+    conn = _get_connection()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "INSERT INTO tool_operation_logs (tool_name, operation, operator, operator_id, details, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (tool_name, operation, operator, operator_id, details, now)
+    )
+    conn.commit()
+
+
+def get_tool_operation_logs(tool_name: str = None, operation: str = None,
+                            limit: int = 100, offset: int = 0) -> list[dict]:
+    conn = _get_connection()
+    conditions = []
+    params = []
+
+    if tool_name:
+        conditions.append("tool_name = ?")
+        params.append(tool_name)
+    if operation:
+        conditions.append("operation = ?")
+        params.append(operation)
+
+    where_clause = ""
+    if conditions:
+        where_clause = "WHERE " + " AND ".join(conditions)
+
+    params.extend([limit, offset])
+    rows = conn.execute(
+        f"SELECT id, tool_name, operation, operator, operator_id, details, created_at "
+        f"FROM tool_operation_logs {where_clause} "
+        f"ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        params
+    ).fetchall()
+    return [dict(r) for r in rows]

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-18T14:00:39.605607",
+  "updated_at": "2026-05-19T11:38:19.427629",
   "tools": [
     {
       "name": "get_current_datetime",
@@ -22,22 +22,12 @@
     },
     {
       "name": "simple_calculator",
-      "description": "执行基本的加减乘除数学运算",
+      "description": "执行基本的加减乘除及平方运算",
       "category": "utility",
       "keywords": [
-        "计算",
-        "加减乘除",
-        "算",
-        "数学",
-        "运算",
-        "加",
-        "减",
-        "乘",
-        "除",
-        "等于",
-        "求和",
-        "总和",
-        "多少"
+        "num1",
+        "num2",
+        "operation"
       ],
       "file": "simple_calculator.json"
     },
@@ -210,6 +200,35 @@
         "ppt文档"
       ],
       "file": "save_to_ppt.json"
+    },
+    {
+      "name": "query_gold_price",
+      "description": "查询上海黄金交易所的实时黄金价格（周六日闭市期间返回最后一次行情数据，每分钟更新）",
+      "category": "web",
+      "keywords": [
+        "金价",
+        "黄金",
+        "上海黄金",
+        "金价查询",
+        "黄金价格",
+        "实时金价",
+        "今日金价",
+        "金价走势",
+        "贵金属",
+        "Au99.99",
+        "金价行情"
+      ],
+      "file": "query_gold_price.json"
+    },
+    {
+      "name": "count_chinese_characters",
+      "description": "统计一段文本中汉字的个数，排除标点符号、数字、英文字母等其他字符",
+      "category": "utility",
+      "keywords": [
+        "数字",
+        "text"
+      ],
+      "file": "count_chinese_characters.json"
     }
   ]
 }

@@ -59,6 +59,7 @@ agent/                  # Agent 核心（不依赖 server/）
   llm.py                # LLMClient（OpenAI 兼容）
   tools.py              # ToolRegistry 工具注册
   tool_builder.py       # ToolBuilder 自然语言创建工具
+  tool_management.py    # 自然语言工具管理（创建/更新/删除/查询组件注册）
   sandbox.py            # 沙箱隔离执行（含用户目录路径替换）
   config.py             # 加密配置管理
   model_gateway.py      # 多模型参数适配（思考模式/温度等）
@@ -73,7 +74,7 @@ server/                 # Web 服务层（依赖 agent/）
   models.py             # Pydantic 请求/响应模型
   routes/               # API 路由模块
     auth.py             # 登录认证
-    chat.py             # 对话（传递 user_id 给沙箱）
+    chat.py             # 对话（传递 user_id 给沙箱，含工具管理预拦截）
     config.py           # 系统配置
     files.py            # 文件列表/下载/预览（用户隔离 + 权限控制）
     sessions.py         # 会话管理
@@ -209,6 +210,32 @@ Office 文档（`.docx .xlsx .pptx`）不支持浏览器端预览，仅提供下
 - `data/.agent_config` — 加密的模型配置（0o600 权限）
 - `data/.agent_salt` — 加密盐值（0o600 权限）
 
+### 5.6 自然语言工具管理
+
+工具管理（创建/更新/删除/查看）已集成到对话中，用户通过自然语言即可操作，无需输入 `/tool` 或 `/model` 命令。
+
+**架构**: 工具管理功能通过 Meta-Tool 机制实现。`agent/tool_management.py` 定义了 4 个元工具函数（`create_tool`/`update_tool`/`delete_tool`/`list_tools`），这些函数以 OpenAI function calling 格式注册到 LLM，当用户消息涉及工具管理时，LLM 自动调用对应函数。
+
+**关键组件**:
+- `agent/tool_management.py` — 元工具定义与执行逻辑，含权限检查、重复检测、自测、待确认删除跟踪
+- `server/routes/chat.py` — Meta-Tool 全局单例注册、系统提示词注入、删除预拦截
+- `agent/tool_builder.py` — 底层工具生成与校验（被 `create_tool`/`update_tool` 复用）
+
+**权限控制**:
+- `create_tool`/`update_tool`/`delete_tool` — 仅管理员可用，非管理员返回权限制止
+- `list_tools` — 所有用户可用
+
+**删除确认机制**:
+1. LLM 调用 `delete_tool`，函数返回 `needs_confirmation` 状态，并记录 `_pending_deletions[user_id] = tool_name`
+2. 用户回复确认消息（含"确认/确定/好的/是"等关键词），服务端预拦截自动执行删除，不经过 LLM
+3. 删除完成后清除 `_pending_deletions` 记录
+
+**自测流程**: 工具创建或更新后，自动执行工具函数并用典型参数测试，测试结果包含在返回信息中反馈给用户。
+
+**系统提示词**: chat.py 在每次对话构建时注入精简的工具管理指令，引导 LLM 在用户明确要求时优先调用元工具函数，例外情况（用户明确说"不需要/不要"、假设性讨论）跳过调用。
+
+**前端**: 输入框中 `/tool` 和 `/model` 相关斜杠命令已隐藏，仅保留 `/help` 和 `/reset`。工具管理面板（设置 → 工具管理）仍可通过左侧设置抽屉访问。
+
 ## 6. NEVER 规则
 
 1. **NEVER** 在代码中硬编码 API Key、密码或密钥 — 使用 `AgentConfig` 加密存储或数据库
@@ -238,7 +265,12 @@ pip install pytest httpx
 ## 8. AI 行为指引
 
 - **修改前先阅读**: 理解相关模块的完整上下文后再动手，特别是 `tool_builder.py` 和 `tools.py` 的工具加载链路
-- **新增工具**: 在 `agent/agent_tools/` 下创建 JSON 文件即可，服务重启后自动加载，无需改代码
+- **新增工具**: 在 `agent/agent_tools/` 下创建 JSON 文件即可，服务重启后自动加载，无需改代码。也可通过自然语言对话创建（LLM 自动调用 `create_tool` 元工具）
+- **工具管理**: 创建/更新/删除/查询工具已集成自然语言交互。`tool_management.py` 定义元工具函数，`chat.py` 通过 Meta-Tool 机制注册到 LLM。修改工具管理逻辑时需同步更新 `META_TOOL_SPECS` 和系统提示词
+- **工具管理权限**: 创建/更新/删除仅管理员可用（在 `create_tool`/`update_tool`/`delete_tool` 内检查），普通用户调用返回权限制止。查看工具全员可用
+- **删除确认**: `delete_tool` 首次调用返回确认提示并记录 `_pending_deletions[user_id]`，用户回复确认后由 `chat.py` 预拦截自动执行，不经过 LLM
+- **工具重复检测**: `create_tool` 检测到相似工具时给出警告但不阻止创建，允许用户在同一领域创建不同工具
+- **系统提示词**: 工具管理指令已精简，通过"明确要求才调用 + 例外跳过"策略避免 LLM 在模糊场景下过度调用。修改时避免使用"绝对禁止/违反此规则"等过于绝对的措辞
 - **新增 API 路由**: 在 `server/routes/` 下创建模块，并在 `__init__.py` 的 `routers` 列表中注册
 - **不确定时**: 先询问用户，不要猜测 API 端点、参数格式或业务逻辑
 - **修改后验证**: 确保 `python server/main.py` 能正常启动，检查终端无 import 错误

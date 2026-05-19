@@ -1,0 +1,21 @@
+{
+  "name": "count_chinese_characters",
+  "description": "统计一段文本中汉字的个数，排除标点符号、数字、英文字母等其他字符",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "description": "输入的文本"
+      }
+    },
+    "required": [
+      "text"
+    ]
+  },
+  "execution_mode": "local_execution",
+  "execution_prompt": "请编写Python代码，统计参数text中汉字的数量。汉字定义为在Unicode中属于CJK统一表意文字范围的字符。统计时排除所有非汉字字符（如标点、数字、英文、空格等），并返回纯数字结果。将结果赋值给变量result。只输出纯Python代码。参数为：{params}",
+  "execution_code": "def count_chinese_characters(text):\n    \"\"\"统计文本中汉字的个数\"\"\"\n    # CJK统一表意文字范围（基本区+扩展A区，覆盖绝大多数常用汉字）\n    count = 0\n    for char in text:\n        # 检查字符是否在CJK统一表意文字范围内\n        if '\\u4e00' <= char <= '\\u9fff' or '\\u3400' <= char <= '\\u4dbf':\n            count += 1\n    return count\n\nresult = count_chinese_characters(text)",
+  "dependencies": [],
+  "created_at": "2026-05-19T09:53:51.075808"
+}
