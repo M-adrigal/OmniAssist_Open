@@ -85,6 +85,76 @@ META_TOOL_SPECS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_tool_secret",
+            "description": (
+                "设置工具密钥（API Key、Token等敏感信息）。\n"
+                "当用户明确提供了某个API的密钥信息时调用此函数加密存储。\n"
+                "例如'和风天气的API密钥是abc123'或'配置百度地图的key为xyz'。\n"
+                "密钥将加密存储在本地，不会随代码开源泄露。\n"
+                "【权限】仅管理员可用。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "密钥名称，如'qweather_api_key'、'gold_price_api_key'"},
+                    "value": {"type": "string", "description": "密钥明文值"}
+                },
+                "required": ["key", "value"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_tool_secret",
+            "description": (
+                "删除指定的工具密钥。\n"
+                "【权限】仅管理员可用。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "要删除的密钥名称"}
+                },
+                "required": ["key"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_tool_secrets",
+            "description": (
+                "查看所有已配置的工具密钥列表（值已脱敏，仅显示前后几位）。\n"
+                "【权限】仅管理员可用。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_tool_secret",
+            "description": (
+                "查看指定工具密钥的脱敏信息（仅显示前后几位）。\n"
+                "【权限】仅管理员可用。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "要查看的密钥名称"}
+                },
+                "required": ["key"]
+            }
+        }
+    },
 ]
 
 
@@ -534,4 +604,144 @@ def list_all_tools(registry) -> dict:
         "count": len(result),
         "tools": result,
         "message": "\n".join(lines),
+    }
+
+
+def set_tool_secret_from_chat(key: str, value: str, user_ctx: dict, log_func=None) -> dict:
+    """从对话中设置工具密钥
+
+    Args:
+        key: 密钥名称
+        value: 密钥明文值
+        user_ctx: {"user_id", "username", "user_type"}
+        log_func: log_tool_operation 函数
+
+    Returns:
+        dict: 结构化结果
+    """
+    if user_ctx.get("user_type") != "admin":
+        _log(log_func, "secret_set_denied", key, user_ctx, {"reason": "非管理员尝试设置密钥"})
+        return {
+            "success": False,
+            "permission_denied": True,
+            "message": "该操作需要管理员权限。密钥的增删改查仅管理员可执行。",
+        }
+
+    from agent.tool_secrets import get_tool_secrets
+    secrets = get_tool_secrets()
+    try:
+        secrets.set(key, value)
+        masked = secrets.get_masked(key)
+        _log(log_func, "secret_set", key, user_ctx, {"masked": masked})
+        return {
+            "success": True,
+            "key": key,
+            "masked": masked,
+            "message": f"密钥 **{key}** 已设置成功（值：{masked}）。工具中引用 `{{secret:{key}}}` 即可自动注入。",
+        }
+    except Exception as e:
+        return {"success": False, "message": f"密钥设置失败: {str(e)}"}
+
+
+def delete_tool_secret_from_chat(key: str, user_ctx: dict, log_func=None) -> dict:
+    """从对话中删除工具密钥
+
+    Args:
+        key: 密钥名称
+        user_ctx: {"user_id", "username", "user_type"}
+        log_func: log_tool_operation 函数
+
+    Returns:
+        dict: 结构化结果
+    """
+    if user_ctx.get("user_type") != "admin":
+        _log(log_func, "secret_delete_denied", key, user_ctx, {"reason": "非管理员尝试删除密钥"})
+        return {
+            "success": False,
+            "permission_denied": True,
+            "message": "该操作需要管理员权限。密钥的增删改查仅管理员可执行。",
+        }
+
+    from agent.tool_secrets import get_tool_secrets
+    secrets = get_tool_secrets()
+    if not secrets.has(key):
+        return {
+            "success": False,
+            "message": f"密钥 **{key}** 不存在，无需删除。",
+        }
+    try:
+        secrets.delete(key)
+        _log(log_func, "secret_delete", key, user_ctx, {})
+        return {
+            "success": True,
+            "key": key,
+            "message": f"密钥 **{key}** 已删除。",
+        }
+    except Exception as e:
+        return {"success": False, "message": f"密钥删除失败: {str(e)}"}
+
+
+def list_tool_secrets_from_chat(user_ctx: dict) -> dict:
+    """从对话中列出所有工具密钥
+
+    Args:
+        user_ctx: {"user_id", "username", "user_type"}
+
+    Returns:
+        dict: 结构化结果
+    """
+    if user_ctx.get("user_type") != "admin":
+        return {
+            "success": False,
+            "permission_denied": True,
+            "message": "该操作需要管理员权限。密钥的增删改查仅管理员可执行。",
+        }
+
+    from agent.tool_secrets import get_tool_secrets
+    secrets = get_tool_secrets()
+    keys = secrets.list_keys()
+    if not keys:
+        return {
+            "success": True,
+            "count": 0,
+            "message": "当前没有已配置的工具密钥。\n\n配置方式：直接告诉我要设置的密钥，如'设置和风天气的API密钥为abc123'。",
+            "keys": [],
+        }
+
+    lines = [f"已配置 {len(keys)} 个密钥："]
+    for k in keys:
+        masked = secrets.get_masked(k)
+        lines.append(f"- **{k}**：{masked}")
+
+    lines.append("\n工具中引用 `{secret:密钥名}` 即可自动注入。")
+    return {
+        "success": True,
+        "count": len(keys),
+        "keys": [{"name": k, "masked": secrets.get_masked(k)} for k in keys],
+        "message": "\n".join(lines),
+    }
+
+
+def get_tool_secret_from_chat(key: str, user_ctx: dict) -> dict:
+    """从对话中查看指定工具密钥的脱敏信息"""
+    if user_ctx.get("user_type") != "admin":
+        return {
+            "success": False,
+            "permission_denied": True,
+            "message": "该操作需要管理员权限。密钥的增删改查仅管理员可执行。",
+        }
+
+    from agent.tool_secrets import get_tool_secrets
+    secrets = get_tool_secrets()
+    if not secrets.has(key):
+        return {
+            "success": False,
+            "message": f"密钥 **{key}** 尚未配置。\n\n如需设置，请直接告诉我密钥值，如'设置{key}为abc123'。",
+        }
+    masked = secrets.get_masked(key)
+    return {
+        "success": True,
+        "key": key,
+        "masked": masked,
+        "message": f"密钥 **{key}**：{masked}",
     }

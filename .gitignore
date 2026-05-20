@@ -19,6 +19,9 @@ agent/.agent_salt
 agent/tool_sandbox/
 tool_sandbox/
 
+# Tool secrets (encrypted API keys for individual tools, never commit)
+data/.tool_secrets
+
 # Data directory (runtime data, never commit)
 data/
 

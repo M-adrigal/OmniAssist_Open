@@ -111,6 +111,9 @@ def init_services():
 
     _config = AgentConfig(config_path)
 
+    from agent.tool_secrets import get_tool_secrets
+    get_tool_secrets()
+
     from server.database import get_model_config, save_model_config, get_search_config, save_search_config
 
     global_cfg = get_model_config(None)

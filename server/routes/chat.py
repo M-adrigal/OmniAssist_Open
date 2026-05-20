@@ -12,10 +12,14 @@ from agent.tool_management import (
     update_tool_from_chat,
     delete_tool_from_chat,
     list_all_tools,
+    set_tool_secret_from_chat,
+    delete_tool_secret_from_chat,
+    list_tool_secrets_from_chat,
+    get_tool_secret_from_chat,
     META_TOOL_SPECS,
 )
 
-META_TOOL_NAMES = {"create_tool", "update_tool", "delete_tool", "list_tools"}
+META_TOOL_NAMES = {"create_tool", "update_tool", "delete_tool", "list_tools", "set_tool_secret", "delete_tool_secret", "list_tool_secrets", "get_tool_secret"}
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -728,11 +732,35 @@ def _ensure_meta_tools(registry, builder, llm, tools_dir, agent):
     def _list_tools(**kwargs):
         return list_all_tools(registry)
 
+    def _set_tool_secret(key: str, value: str, **kwargs):
+        return set_tool_secret_from_chat(
+            key=key, value=value,
+            user_ctx=_meta_user_ctx,
+            log_func=log_tool_operation,
+        )
+
+    def _delete_tool_secret(key: str, **kwargs):
+        return delete_tool_secret_from_chat(
+            key=key,
+            user_ctx=_meta_user_ctx,
+            log_func=log_tool_operation,
+        )
+
+    def _list_tool_secrets(**kwargs):
+        return list_tool_secrets_from_chat(user_ctx=_meta_user_ctx)
+
+    def _get_tool_secret(key: str, **kwargs):
+        return get_tool_secret_from_chat(key=key, user_ctx=_meta_user_ctx)
+
     for name, func, desc in [
         ("create_tool", _create_tool, "创建新的工具"),
         ("update_tool", _update_tool, "更新已有工具"),
         ("delete_tool", _delete_tool, "删除指定工具"),
         ("list_tools", _list_tools, "查看所有已安装的工具"),
+        ("set_tool_secret", _set_tool_secret, "设置工具密钥"),
+        ("delete_tool_secret", _delete_tool_secret, "删除工具密钥"),
+        ("list_tool_secrets", _list_tool_secrets, "查看所有工具密钥"),
+        ("get_tool_secret", _get_tool_secret, "查看工具密钥详情"),
     ]:
         try:
             registry.unregister_tool(name)
@@ -874,7 +902,15 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
         "- 查看 → list_tools\n"
         "【例外】同一句话中用户明确说了'不需要/不要/不用'创建工具，则不要调用。\n"
         "【例外】用户只是假设性讨论（'如果做一个...工具'）而未明确要求时，不要调用。\n"
-        "其余情况（信息不足、不确定权限等）一律先调用函数，拿到结果后再回复。"
+        "其余情况（信息不足、不确定权限等）一律先调用函数，拿到结果后再回复。\n\n"
+        "【密钥管理指令】\n"
+        "当用户提供了API密钥、Token等敏感信息，或要求设置/查看/删除密钥时，调用对应函数：\n"
+        "- 设置密钥 → set_tool_secret（用户说'设置XX的API密钥为abc123'、'配置百度地图的key是xyz'等）\n"
+        "- 删除密钥 → delete_tool_secret（用户说'删除XX的密钥'）\n"
+        "- 查看所有 → list_tool_secrets（用户说'查看所有密钥'、'有哪些密钥'等）\n"
+        "- 查看指定 → get_tool_secret（用户说'看看XX的密钥'）\n"
+        "密钥将加密存储，工具中可通过 {secret:密钥名} 引用，不会随代码上传泄露。\n"
+        "创建工具时若包含API密钥，应先用 set_tool_secret 存储密钥，再创建工具引用 {secret:密钥名}。"
     )
 
     if show_thought:
@@ -916,6 +952,20 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                 f"【场景指令 - 自动模式】\n{scenario_instruction}\n"
                 f"请参考以上场景指令，灵活判断如何最佳地回答用户问题。"
             )
+
+    if session_id and user_id:
+        upload_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "document_output", str(user_id), "uploads", session_id
+        )
+        if os.path.isdir(upload_dir):
+            uploaded = [os.path.join(upload_dir, f) for f in sorted(os.listdir(upload_dir))
+                        if os.path.isfile(os.path.join(upload_dir, f)) and not f.startswith(".")]
+            if uploaded:
+                from agent.file_parser import parse_files, build_context_prompt
+                parsed = parse_files(uploaded)
+                file_context = build_context_prompt(parsed)
+                system_prompt = file_context + "\n\n" + system_prompt
 
     chat_messages = [{"role": "system", "content": system_prompt}]
 

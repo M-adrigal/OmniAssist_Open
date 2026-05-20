@@ -893,6 +893,13 @@ def create_http_executor(tool_name: str, http_config: dict,
         method = http_config.get("method", "GET").upper()
         headers = http_config.get("headers", {})
 
+        from agent.tool_secrets import resolve_secrets_in_template
+        url = resolve_secrets_in_template(url)
+        headers = {
+            k: resolve_secrets_in_template(v)
+            for k, v in headers.items()
+        }
+
         for key, value in kwargs.items():
             placeholder = "{" + key + "}"
             encoded_value = urllib.parse.quote(str(value), safe='')

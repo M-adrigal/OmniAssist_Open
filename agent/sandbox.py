@@ -350,6 +350,11 @@ class ToolSandbox:
         for key in params:
             wrapper += f"{key} = _params[{json.dumps(key)}]\n"
 
+        from agent.tool_secrets import get_tool_secrets
+        _secrets = get_tool_secrets()
+        secrets_json = json.dumps(_secrets.get_all_raw(), ensure_ascii=False)
+        wrapper += f"_TOOL_SECRETS = json.loads({json.dumps(secrets_json)})\n"
+
         wrapper += (
             f"_BLOCKED = set({blocked_list})\n"
             "import builtins\n"

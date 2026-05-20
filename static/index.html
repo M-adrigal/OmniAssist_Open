@@ -64,6 +64,10 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         <span>文件列表</span>
       </button>
+      <button class="drawer-item" data-action="cloud-files">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+        <span>云文件管理</span>
+      </button>
       <div style="border-top: 1px solid var(--border); margin: 4px 0;"></div>
       <button class="drawer-item" data-action="change-password">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
@@ -92,7 +96,11 @@
     </div>
     <div class="chat-input-container">
       <div id="command-suggestions" class="command-suggestions hidden"></div>
+      <div id="file-chips" class="file-chips hidden"></div>
       <div class="chat-input-wrapper">
+        <button id="btn-attach" class="btn-attach" title="上传文件">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        </button>
         <textarea id="chat-input" rows="1" placeholder="输入消息..."></textarea>
         <button id="btn-send" class="btn-send" title="发送">
           <svg class="icon-send" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
@@ -390,6 +398,77 @@
     <div class="modal-body">
       <div id="preview-content" class="preview-content"></div>
     </div>
+  </div>
+</div>
+
+<!-- 模态框: 云文件管理 -->
+<div id="modal-cloud-files" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-content modal-xl">
+    <div class="modal-header">
+      <h3>云文件管理</h3>
+      <button class="btn-icon modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="cloud-toolbar">
+        <input type="text" id="cloud-search" placeholder="搜索文件名...">
+      </div>
+      <div class="cloud-table-wrap">
+        <table class="cloud-table">
+          <thead>
+            <tr>
+              <th>文件名</th>
+              <th>类型</th>
+              <th>大小</th>
+              <th>上传时间</th>
+              <th>所属会话</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="cloud-table-body">
+            <tr><td colspan="6" class="loading-text">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 模态框: 云文件选择器 -->
+<div id="modal-file-picker" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-content modal-lg">
+    <div class="modal-header">
+      <h3>从云文件选择</h3>
+      <button class="btn-icon modal-close">&times;</button>
+    </div>
+    <div class="modal-body file-picker-body">
+      <div class="picker-toolbar">
+        <input type="text" id="picker-search" placeholder="搜索文件...">
+      </div>
+      <div class="picker-list" id="picker-list">
+        <div class="loading-text" style="padding:40px;text-align:center;">加载中...</div>
+      </div>
+      <div class="picker-footer">
+        <span id="picker-count">已选 0 个文件</span>
+        <div class="picker-actions">
+          <button id="btn-picker-cancel" class="btn-secondary btn-sm-height">取消</button>
+          <button id="btn-picker-confirm" class="btn-primary btn-sm-height">确认添加</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 附件菜单浮层 -->
+<div id="attach-menu" class="attach-menu hidden">
+  <div class="attach-menu-item" data-action="upload">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+    <span>上传本地文件</span>
+  </div>
+  <div class="attach-menu-item" data-action="cloud">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+    <span>从云文件选择</span>
   </div>
 </div>
 

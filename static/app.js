@@ -45,6 +45,7 @@ let state = {
   permissions: {},
   webSearch: 'off',
   showThought: false,
+  attachedFiles: [],
 };
 
 function $(sel) { return document.querySelector(sel); }
@@ -160,6 +161,7 @@ async function createSession() {
     state.currentSessionId = s.id;
     await loadSessions();
     clearMessages();
+    clearAttachedFiles();
     showToast('新对话已创建', 'success');
   } catch (e) {
     showToast('创建会话失败: ' + e.message, 'error');
@@ -194,6 +196,7 @@ async function switchSession(id) {
   } catch (e) {
     console.error('加载会话消息失败:', e);
   }
+  loadAttachedFiles();
 }
 
 function clearMessages() {
@@ -207,16 +210,25 @@ function clearMessages() {
 }
 
 // ===== 消息渲染 =====
-function appendMessage(role, content) {
+function appendMessage(role, content, attachments) {
   const container = $('#chat-messages');
   const welcome = container.querySelector('.welcome-message');
   if (welcome) welcome.remove();
 
   const div = document.createElement('div');
   div.className = `message ${role}`;
+  let attachHtml = '';
+  if (attachments && attachments.length > 0) {
+    const iconMap = { text: 'T', pdf: 'P', docx: 'W', xlsx: 'E', pptx: 'S', csv: 'C' };
+    const tags = attachments.map(f => {
+      const icon = iconMap[f.type] || 'F';
+      return `<span class="msg-attach-tag"><span class="tag-icon">${icon}</span>${escapeHtml(f.filename)}</span>`;
+    }).join('');
+    attachHtml = `<div class="msg-attachments">${tags}</div>`;
+  }
   div.innerHTML = `
     <div class="avatar">${role === 'user' ? 'U' : 'AI'}</div>
-    <div class="message-body"><div class="answer-area">${renderContent(content)}</div></div>
+    <div class="message-body"><div class="answer-area">${renderContent(content)}${attachHtml}</div></div>
   `;
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
@@ -938,6 +950,23 @@ async function sendMessage() {
 
   appendMessage('user', message);
 
+  const currentAttachments = [...state.attachedFiles];
+  if (currentAttachments.length > 0) {
+    const lastMsg = $('#chat-messages').lastElementChild;
+    if (lastMsg && lastMsg.classList.contains('user')) {
+      const iconMap = { text: 'T', pdf: 'P', docx: 'W', xlsx: 'E', pptx: 'S', csv: 'C' };
+      const tags = currentAttachments.map(f => {
+        const icon = iconMap[f.type] || 'F';
+        return `<span class="msg-attach-tag"><span class="tag-icon">${icon}</span>${escapeHtml(f.filename)}</span>`;
+      }).join('');
+      const areaEl = lastMsg.querySelector('.answer-area');
+      if (areaEl) {
+        areaEl.insertAdjacentHTML('beforeend', `<div class="msg-attachments">${tags}</div>`);
+      }
+    }
+    clearAttachedFiles();
+  }
+
   const stream = createAssistantContainer();
   state.isStreaming = true;
   $('#btn-send').classList.add('streaming');
@@ -1104,6 +1133,304 @@ async function sendMessage() {
 function stopGeneration() {
   if (abortController) {
     abortController.abort();
+  }
+}
+
+// ===== 文件上传 =====
+const UPLOAD_FILE_ICONS = {
+  text: 'T', pdf: 'P', docx: 'W', xlsx: 'E', pptx: 'S', csv: 'C',
+};
+
+function getFileChipIcon(fileType) {
+  const cls = UPLOAD_FILE_ICONS[fileType] ? fileType : 'text';
+  return `<span class="chip-icon ${cls}">${UPLOAD_FILE_ICONS[fileType] || 'F'}</span>`;
+}
+
+function renderFileChips() {
+  const container = $('#file-chips');
+  if (!state.attachedFiles || state.attachedFiles.length === 0) {
+    container.classList.add('hidden');
+    container.innerHTML = '';
+    return;
+  }
+  container.classList.remove('hidden');
+  container.innerHTML = state.attachedFiles.map((f, i) => `
+    <div class="file-chip" title="${escapeHtml(f.summary || f.filename)}">
+      ${getFileChipIcon(f.type)}
+      <span class="chip-name">${escapeHtml(f.filename)}</span>
+      <button class="chip-remove" data-idx="${i}" title="移除文件">&times;</button>
+    </div>
+  `).join('');
+
+  container.querySelectorAll('.chip-remove').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.idx);
+      const file = state.attachedFiles[idx];
+      if (!file) return;
+      try {
+        await API.del(`/api/files/upload?session_id=${state.currentSessionId}&filename=${encodeURIComponent(file.filename)}`);
+      } catch (_) {}
+      state.attachedFiles.splice(idx, 1);
+      renderFileChips();
+    });
+  });
+}
+
+async function loadAttachedFiles() {
+  if (!state.currentSessionId) {
+    state.attachedFiles = [];
+    renderFileChips();
+    return;
+  }
+  try {
+    const data = await API.get(`/api/files/uploads?session_id=${state.currentSessionId}`);
+    state.attachedFiles = data.files || [];
+  } catch (_) {
+    state.attachedFiles = [];
+  }
+  renderFileChips();
+}
+
+async function uploadFiles(fileList) {
+  if (!state.currentSessionId) {
+    try {
+      const s = await API.post('/api/sessions', { title: '文件对话' });
+      state.currentSessionId = s.id;
+      await loadSessions();
+    } catch (e) {
+      showToast('创建会话失败: ' + e.message, 'error');
+      return;
+    }
+  }
+
+  const formData = new FormData();
+  for (const file of fileList) {
+    formData.append('files', file);
+  }
+
+  try {
+    const res = await fetch(`/api/files/upload?session_id=${state.currentSessionId}`, {
+      method: 'POST',
+      body: formData,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || '上传失败');
+
+    if (data.errors && data.errors.length > 0) {
+      data.errors.forEach(e => showToast(e, 'warning'));
+    }
+    if (data.uploaded && data.uploaded.length > 0) {
+      state.attachedFiles = state.attachedFiles.concat(data.uploaded);
+      showToast(`已上传 ${data.uploaded.length} 个文件`, 'success');
+    }
+    renderFileChips();
+  } catch (e) {
+    showToast('上传失败: ' + e.message, 'error');
+  }
+}
+
+function clearAttachedFiles() {
+  state.attachedFiles = [];
+  renderFileChips();
+}
+
+// ===== 云文件管理 =====
+async function loadCloudFiles() {
+  const search = $('#cloud-search') ? $('#cloud-search').value : '';
+  const tbody = $('#cloud-table-body');
+  tbody.innerHTML = '<tr><td colspan="6" class="loading-text">加载中...</td></tr>';
+
+  const previewPanel = $('#cloud-preview-panel');
+  if (previewPanel) previewPanel.remove();
+
+  try {
+    const data = await API.get(`/api/files/all-uploads?search=${encodeURIComponent(search)}`);
+    renderCloudFiles(data.files || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="loading-text" style="color:var(--danger)">加载失败: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+function renderCloudFiles(files) {
+  const tbody = $('#cloud-table-body');
+  if (!files || files.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="loading-text">暂无上传文件</td></tr>';
+    return;
+  }
+
+  const iconMap = {
+    text: 'T', pdf: 'P', docx: 'W', xlsx: 'E', pptx: 'S', csv: 'C',
+  };
+
+  tbody.innerHTML = files.map(f => {
+    const sizeStr = f.size < 1024 ? `${f.size}B` : f.size < 1024 * 1024 ? `${(f.size / 1024).toFixed(1)}KB` : `${(f.size / (1024 * 1024)).toFixed(1)}MB`;
+    const icon = iconMap[f.type] || 'F';
+    const iconCls = iconMap[f.type] ? f.type : 'text';
+    return `
+      <tr>
+        <td title="${escapeHtml(f.filename)}">
+          <span class="picker-file-icon ${iconCls}" style="display:inline-flex;vertical-align:middle;margin-right:6px;">${icon}</span>
+          ${escapeHtml(f.filename)}
+        </td>
+        <td><span class="badge badge-${iconCls}">${f.type.toUpperCase()}</span></td>
+        <td>${sizeStr}</td>
+        <td>${escapeHtml(f.upload_time || '')}</td>
+        <td>${escapeHtml(f.session_id || '')}</td>
+        <td>
+          <button class="btn-preview" data-path="${escapeHtml(f.path)}">预览</button>
+          <button class="btn-delete-cloud" data-path="${escapeHtml(f.path)}" data-filename="${escapeHtml(f.filename)}">删除</button>
+        </td>
+      </tr>`;
+  }).join('');
+
+  tbody.querySelectorAll('.btn-preview').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const file = files.find(f => f.path === btn.dataset.path);
+      if (file) showCloudPreview(file);
+    });
+  });
+
+  tbody.querySelectorAll('.btn-delete-cloud').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const filename = btn.dataset.filename;
+      const confirmed = await showConfirmDialog('删除文件', `确定要删除 "${filename}" 吗？此操作不可撤销。`, '删除');
+      if (!confirmed) return;
+      try {
+        await API.del(`/api/files/all-uploads?path=${encodeURIComponent(btn.dataset.path)}`);
+        showToast(`已删除 "${filename}"`, 'success');
+        loadCloudFiles();
+      } catch (e) {
+        showToast('删除失败: ' + e.message, 'error');
+      }
+    });
+  });
+}
+
+function showCloudPreview(file) {
+  const existingPanel = $('#cloud-preview-panel');
+  if (existingPanel) existingPanel.remove();
+
+  const modalBody = $('#modal-cloud-files').querySelector('.modal-body');
+  const panel = document.createElement('div');
+  panel.id = 'cloud-preview-panel';
+  panel.className = 'cloud-preview-panel';
+  panel.innerHTML = `<strong>${escapeHtml(file.filename)}</strong><br><br>${escapeHtml(file.content_preview || '(无内容预览)')}`;
+  modalBody.appendChild(panel);
+}
+
+// ===== 云文件选择器 =====
+let pickerAllFiles = [];
+let pickerSelected = {};
+
+async function openFilePicker() {
+  const pickerSearch = $('#picker-search');
+  if (pickerSearch) pickerSearch.value = '';
+  pickerSelected = {};
+  openModal('modal-file-picker');
+  await loadPickerFiles('');
+}
+
+async function loadPickerFiles(search) {
+  const list = $('#picker-list');
+  list.innerHTML = '<div class="loading-text" style="padding:40px;text-align:center;">加载中...</div>';
+
+  try {
+    const data = await API.get(`/api/files/all-uploads?search=${encodeURIComponent(search)}`);
+    pickerAllFiles = data.files || [];
+    renderPickerFiles();
+  } catch (e) {
+    list.innerHTML = `<div class="loading-text" style="padding:40px;text-align:center;color:var(--danger);">加载失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderPickerFiles() {
+  const list = $('#picker-list');
+  const iconMap = {
+    text: 'T', pdf: 'P', docx: 'W', xlsx: 'E', pptx: 'S', csv: 'C',
+  };
+
+  if (pickerAllFiles.length === 0) {
+    list.innerHTML = '<div class="loading-text" style="padding:40px;text-align:center;">暂无上传文件</div>';
+  } else {
+    list.innerHTML = pickerAllFiles.map(f => {
+      const sizeStr = f.size < 1024 ? `${f.size}B` : f.size < 1024 * 1024 ? `${(f.size / 1024).toFixed(1)}KB` : `${(f.size / (1024 * 1024)).toFixed(1)}MB`;
+      const icon = iconMap[f.type] || 'F';
+      const iconCls = iconMap[f.type] ? f.type : 'text';
+      const checked = pickerSelected[f.path] ? ' checked' : '';
+      return `
+        <div class="picker-item" data-path="${escapeHtml(f.path)}">
+          <input type="checkbox"${checked} data-path="${escapeHtml(f.path)}">
+          <span class="picker-file-icon ${iconCls}">${icon}</span>
+          <div class="picker-file-info">
+            <div class="picker-file-name">${escapeHtml(f.filename)}</div>
+            <div class="picker-file-meta">${sizeStr} · ${escapeHtml(f.session_id || '')} · ${escapeHtml(f.upload_time || '')}</div>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  updatePickerCount();
+  bindPickerEvents();
+}
+
+function bindPickerEvents() {
+  $$('#picker-list .picker-item input[type="checkbox"]').forEach(cb => {
+    cb.removeEventListener('change', handlePickerCheck);
+    cb.addEventListener('change', handlePickerCheck);
+  });
+}
+
+function handlePickerCheck(e) {
+  const path = e.target.dataset.path;
+  if (e.target.checked) {
+    pickerSelected[path] = true;
+  } else {
+    delete pickerSelected[path];
+  }
+  updatePickerCount();
+}
+
+function updatePickerCount() {
+  const count = Object.keys(pickerSelected).length;
+  $('#picker-count').textContent = `已选 ${count} 个文件`;
+}
+
+async function confirmPickerSelection() {
+  const paths = Object.keys(pickerSelected);
+  if (paths.length === 0) {
+    showToast('请先选择文件', 'info');
+    return;
+  }
+
+  if (!state.currentSessionId) {
+    try {
+      const s = await API.post('/api/sessions', { title: '文件对话' });
+      state.currentSessionId = s.id;
+      await loadSessions();
+    } catch (e) {
+      showToast('创建会话失败: ' + e.message, 'error');
+      return;
+    }
+  }
+
+  try {
+    const data = await API.post('/api/files/reference-files', {
+      paths: paths,
+      session_id: state.currentSessionId,
+    });
+
+    if (data.errors && data.errors.length > 0) {
+      data.errors.forEach(e => showToast(e, 'warning'));
+    }
+    if (data.referenced && data.referenced.length > 0) {
+      state.attachedFiles = state.attachedFiles.concat(data.referenced);
+      showToast(`已引用 ${data.referenced.length} 个文件`, 'success');
+    }
+    renderFileChips();
+    closeModal('modal-file-picker');
+  } catch (e) {
+    showToast('引用失败: ' + e.message, 'error');
   }
 }
 
@@ -1877,12 +2204,79 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  const cloudSearch = $('#cloud-search');
+  if (cloudSearch) {
+    let cloudSearchTimer;
+    cloudSearch.addEventListener('input', () => {
+      clearTimeout(cloudSearchTimer);
+      cloudSearchTimer = setTimeout(() => loadCloudFiles(), 300);
+    });
+  }
+
+  const pickerSearch = $('#picker-search');
+  if (pickerSearch) {
+    let pickerSearchTimer;
+    pickerSearch.addEventListener('input', () => {
+      clearTimeout(pickerSearchTimer);
+      pickerSearchTimer = setTimeout(() => loadPickerFiles(pickerSearch.value), 300);
+    });
+  }
+
+  const btnPickerConfirm = $('#btn-picker-confirm');
+  if (btnPickerConfirm) {
+    btnPickerConfirm.addEventListener('click', confirmPickerSelection);
+  }
+
+  const btnPickerCancel = $('#btn-picker-cancel');
+  if (btnPickerCancel) {
+    btnPickerCancel.addEventListener('click', () => {
+      closeModal('modal-file-picker');
+    });
+  }
+
   $('#btn-send').addEventListener('click', () => {
     if (state.isStreaming) {
       stopGeneration();
     } else {
       sendMessage();
     }
+  });
+
+  $('#btn-attach').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const menu = $('#attach-menu');
+    if (!menu.classList.contains('hidden')) {
+      menu.classList.add('hidden');
+      return;
+    }
+    const btn = $('#btn-attach');
+    const rect = btn.getBoundingClientRect();
+    menu.style.left = rect.left + 'px';
+    menu.style.bottom = (window.innerHeight - rect.top + 6) + 'px';
+    menu.style.position = 'fixed';
+    menu.classList.remove('hidden');
+  });
+
+  $$('.attach-menu-item').forEach(item => {
+    item.addEventListener('click', (e) => {
+      e.stopPropagation();
+      $('#attach-menu').classList.add('hidden');
+      const action = item.dataset.action;
+      if (action === 'upload') {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.multiple = true;
+        input.accept = '.txt,.md,.csv,.json,.xml,.html,.css,.js,.py,.log,.yaml,.yml,.ini,.cfg,.toml,.sh,.bash,.zsh,.sql,.r,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.ts,.tsx,.jsx,.vue,.conf,.env,.properties,.pdf,.docx,.xlsx,.pptx';
+        input.onchange = () => {
+          if (input.files.length > 0) {
+            uploadFiles(input.files);
+          }
+        };
+        input.click();
+      } else if (action === 'cloud') {
+        openFilePicker();
+      }
+    });
   });
 
   const input = $('#chat-input');
@@ -1937,6 +2331,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!e.target.closest('.chat-input-container') && !e.target.closest('#command-suggestions')) {
       hideCommandSuggestions();
     }
+    if (!e.target.closest('#attach-menu') && !e.target.closest('#btn-attach')) {
+      $('#attach-menu').classList.add('hidden');
+    }
   });
 
   // 设置抽屉菜单
@@ -1947,6 +2344,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (action === 'config') { loadConfig(); openModal('modal-config'); }
       if (action === 'tools') { loadTools(); openModal('modal-tools'); }
       if (action === 'files') { loadFiles(); openModal('modal-files'); }
+      if (action === 'cloud-files') { loadCloudFiles(); openModal('modal-cloud-files'); }
       if (action === 'change-password') { openChangePassword(); }
       if (action === 'user-management') { loadUsers(); openModal('modal-user-management'); }
       if (action === 'logout') {

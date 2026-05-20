@@ -941,6 +941,9 @@ def main():
 
     config = AgentConfig()
 
+    from agent.tool_secrets import get_tool_secrets
+    get_tool_secrets()
+
     tool_registry = ToolRegistry()
 
     context_limit = config.get('context_limit') or ''
