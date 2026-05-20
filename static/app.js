@@ -187,16 +187,34 @@ async function deleteSession(id) {
 async function switchSession(id) {
   state.currentSessionId = id;
   renderSessions();
+  clearAttachedFiles();
   clearMessages();
   try {
     const s = await API.get(`/api/sessions/${id}`);
     if (s.messages && s.messages.length > 0) {
       s.messages.forEach(m => renderHistoryMessage(m));
     }
+    const filesData = await API.get(`/api/files/uploads?session_id=${id}`);
+    if (filesData.files && filesData.files.length > 0) {
+      const iconMap = { text: 'T', pdf: 'P', docx: 'W', xlsx: 'E', pptx: 'S', csv: 'C' };
+      const tags = filesData.files.map(f => {
+        const icon = iconMap[f.type] || 'F';
+        return `<span class="msg-attach-tag"><span class="tag-icon">${icon}</span>${escapeHtml(f.filename)}</span>`;
+      }).join('');
+      const attachHtml = `<div class="msg-attachments">${tags}</div>`;
+      const container = $('#chat-messages');
+      const userMsgs = container.querySelectorAll('.message.user');
+      if (userMsgs.length > 0) {
+        const lastUserMsg = userMsgs[userMsgs.length - 1];
+        const areaEl = lastUserMsg.querySelector('.answer-area');
+        if (areaEl && !areaEl.querySelector('.msg-attachments')) {
+          areaEl.insertAdjacentHTML('beforeend', attachHtml);
+        }
+      }
+    }
   } catch (e) {
     console.error('加载会话消息失败:', e);
   }
-  loadAttachedFiles();
 }
 
 function clearMessages() {

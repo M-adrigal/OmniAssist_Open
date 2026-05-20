@@ -17,9 +17,8 @@ from agent.tool_management import (
     list_tool_secrets_from_chat,
     get_tool_secret_from_chat,
     META_TOOL_SPECS,
+    META_TOOL_NAMES,
 )
-
-META_TOOL_NAMES = {"create_tool", "update_tool", "delete_tool", "list_tools", "set_tool_secret", "delete_tool_secret", "list_tool_secrets", "get_tool_secret"}
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -336,12 +335,14 @@ async def _handle_command(message: str, session_id: str, user_id: int):
 
     if msg == "/tool list":
         tools = registry.list_tools()
-        if not tools:
+        user_tools = {name: info for name, info in tools.items() if name not in META_TOOL_NAMES}
+        if not user_tools:
             text = "当前没有已安装的工具。\n\n使用 `/tool add` 命令或在设置面板中通过自然语言创建工具。"
         else:
-            lines = [f"已安装 {len(tools)} 个工具："]
-            for name, info in tools.items():
+            lines = [f"已安装 {len(user_tools)} 个工具："]
+            for name, info in user_tools.items():
                 mode = ""
+                created_at = ""
                 tool_data = _load_tool_json(name)
                 if tool_data:
                     mode_map = {
@@ -350,7 +351,9 @@ async def _handle_command(message: str, session_id: str, user_id: int):
                         "llm_simulated": "LLM模拟",
                     }
                     mode = f" ({mode_map.get(tool_data.get('execution_mode', ''), '')})"
-                lines.append(f"- **{name}**{mode}: {info.get('description', '')}")
+                    created_at = tool_data.get("created_at", "")
+                time_str = f" - 创建于 {created_at}" if created_at else ""
+                lines.append(f"- **{name}**{mode}{time_str}: {info.get('description', '')}")
             text = "\n".join(lines)
         yield f"data: {json.dumps({'type': 'token', 'content': text})}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
@@ -730,7 +733,7 @@ def _ensure_meta_tools(registry, builder, llm, tools_dir, agent):
         )
 
     def _list_tools(**kwargs):
-        return list_all_tools(registry)
+        return list_all_tools(registry, tools_dir=tools_dir)
 
     def _set_tool_secret(key: str, value: str, **kwargs):
         return set_tool_secret_from_chat(
@@ -1034,6 +1037,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
     _ensure_meta_tools(registry, builder, llm, tools_dir, agent)
     _meta_user_ctx.clear()
     _meta_user_ctx.update(user_ctx)
+    tool_specs = [t for t in tool_specs if t.get("function", {}).get("name") not in META_TOOL_NAMES]
     tool_specs = list(tool_specs) + META_TOOL_SPECS
 
     try:

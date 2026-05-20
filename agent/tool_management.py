@@ -3,9 +3,11 @@ import io
 import json
 from datetime import datetime
 
-# 待确认的删除操作：{session_id: tool_name}
+# 待确认的删除操作：{user_id: tool_name}
 _pending_deletions = {}
 
+META_TOOL_NAMES = {"create_tool", "update_tool", "delete_tool", "list_tools",
+                   "set_tool_secret", "delete_tool_secret", "list_tool_secrets", "get_tool_secret"}
 
 META_TOOL_SPECS = [
     {
@@ -315,16 +317,20 @@ def create_tool_from_chat(
     from agent.main import _ensure_output_dir, _create_executor
     _ensure_output_dir(tool_json)
 
-    executor = _create_executor(
-        tool_json["name"], tool_json["execution_prompt"],
-        tool_json["execution_mode"],
-        tool_json.get("execution_code", ""),
-        tool_json.get("http_config", {}),
-        llm,
-        tool_json.get("dependencies"),
-        tool_json.get("response_formatter"),
-        sandbox
-    )
+    try:
+        executor = _create_executor(
+            tool_json["name"], tool_json["execution_prompt"],
+            tool_json["execution_mode"],
+            tool_json.get("execution_code", ""),
+            tool_json.get("http_config", {}),
+            llm,
+            tool_json.get("dependencies"),
+            tool_json.get("response_formatter"),
+            sandbox
+        )
+    except Exception as e:
+        return {"success": False, "message": f"工具执行器创建失败: {str(e)}"}
+
     registry.register_tool(
         name=tool_json["name"],
         description=tool_json["description"],
@@ -447,15 +453,19 @@ def update_tool_from_chat(
     from agent.main import _ensure_output_dir, _create_executor
     _ensure_output_dir(tool_json)
 
-    executor = _create_executor(
-        tool_name, tool_json["execution_prompt"],
-        tool_json["execution_mode"],
-        tool_json.get("execution_code", ""),
-        tool_json.get("http_config", {}),
-        llm,
-        tool_json.get("dependencies"),
-        sandbox=sandbox
-    )
+    try:
+        executor = _create_executor(
+            tool_name, tool_json["execution_prompt"],
+            tool_json["execution_mode"],
+            tool_json.get("execution_code", ""),
+            tool_json.get("http_config", {}),
+            llm,
+            tool_json.get("dependencies"),
+            sandbox=sandbox
+        )
+    except Exception as e:
+        return {"success": False, "message": f"工具执行器更新失败: {str(e)}"}
+
     registry.register_tool(
         name=tool_name,
         description=tool_json["description"],
@@ -566,38 +576,54 @@ def delete_tool_from_chat(
     }
 
 
-def list_all_tools(registry) -> dict:
-    """列出所有已注册的工具
+def list_all_tools(registry, tools_dir: str = None) -> dict:
+    """列出所有已注册的工具（过滤系统元工具）
 
     Args:
         registry: ToolRegistry 实例
+        tools_dir: 工具存储目录，用于读取 created_at 时间戳
 
     Returns:
         dict: 结构化工具列表
     """
     tools = registry.list_tools()
-    if not tools:
+    user_tools = {name: info for name, info in tools.items() if name not in META_TOOL_NAMES}
+
+    if not user_tools:
         return {
             "success": True,
             "count": 0,
-            "message": "当前没有已安装的工具。",
             "tools": [],
         }
 
     result = []
-    for name, info in tools.items():
+    for name, info in user_tools.items():
+        created_at = ""
+        if tools_dir:
+            filepath = os.path.join(tools_dir, f"{name}.json")
+            if os.path.isfile(filepath):
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        tool_data = json.load(f)
+                    created_at = tool_data.get("created_at", "")
+                except Exception:
+                    pass
+
         item = {
             "name": name,
             "description": info.get("description", ""),
             "parameters": info.get("parameters", {}),
         }
+        if created_at:
+            item["created_at"] = created_at
         result.append(item)
 
     lines = [f"已安装 {len(result)} 个工具："]
     for item in result:
         prop_keys = list(item["parameters"].get("properties", {}).keys())
         params_str = "、".join(prop_keys) if prop_keys else "无参数"
-        lines.append(f"- **{item['name']}**：{item['description']}（参数：{params_str}）")
+        time_str = f"（创建于 {item['created_at']}）" if item.get("created_at") else ""
+        lines.append(f"- **{item['name']}**{time_str}：{item['description']}（参数：{params_str}）")
 
     return {
         "success": True,
