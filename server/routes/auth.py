@@ -5,12 +5,15 @@ import os
 import secrets
 import time
 from base64 import urlsafe_b64encode, urlsafe_b64decode
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from server.models import LoginRequest, LoginResponse, ChangePasswordRequest, CurrentUserResponse
 from server.database import authenticate, change_password, get_user_by_id, check_permission, get_role_permissions, DB_PATH
+from agent.logger import get_logger
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+logger = get_logger("auth")
 
 TOKEN_SECRET = secrets.token_hex(32)
 TOKEN_TTL = 1800
@@ -34,7 +37,7 @@ def _generate_token(user_id: int, username: str, user_type: str) -> str:
     return token
 
 
-def decode_token(token: str) -> dict | None:
+def decode_token(token: str) -> Optional[dict]:
     if token not in _active_tokens:
         return None
     try:
@@ -56,7 +59,7 @@ def validate_token(token: str) -> bool:
     return decode_token(token) is not None
 
 
-def get_current_user(request: Request) -> dict | None:
+def get_current_user(request: Request) -> Optional[dict]:
     token = request.cookies.get("auth_token") or request.headers.get("Authorization", "").replace("Bearer ", "")
     if not token:
         return None
@@ -94,9 +97,11 @@ def require_login(request: Request):
 def login(req: LoginRequest):
     user = authenticate(req.username, req.password)
     if not user:
+        logger.warning(f"用户登录失败: {req.username} (密码错误)")
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
     token = _generate_token(user["id"], user["username"], user["user_type"])
+    logger.info(f"用户登录成功: {req.username} (user_id={user['id']}, type={user['user_type']})")
     return LoginResponse(
         token=token,
         message="登录成功",
@@ -136,6 +141,7 @@ def update_password(req: ChangePasswordRequest, request: Request):
         except Exception:
             pass
 
+    logger.info(f"用户修改密码: {user['username']} (user_id={user['id']})")
     return {"message": "密码修改成功"}
 
 

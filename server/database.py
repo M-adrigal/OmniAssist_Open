@@ -4,6 +4,10 @@ import hashlib
 import secrets
 import threading
 from datetime import datetime
+from typing import Optional
+from agent.logger import get_logger
+
+logger = get_logger("db")
 
 
 DB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
@@ -14,10 +18,14 @@ _local = threading.local()
 
 def _get_connection() -> sqlite3.Connection:
     if not hasattr(_local, "conn") or _local.conn is None:
-        _local.conn = sqlite3.connect(DB_PATH)
-        _local.conn.row_factory = sqlite3.Row
-        _local.conn.execute("PRAGMA journal_mode=WAL")
-        _local.conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            _local.conn = sqlite3.connect(DB_PATH)
+            _local.conn.row_factory = sqlite3.Row
+            _local.conn.execute("PRAGMA journal_mode=WAL")
+            _local.conn.execute("PRAGMA foreign_keys=ON")
+        except sqlite3.Error as e:
+            logger.error(f"数据库连接失败: {e}")
+            raise
     return _local.conn
 
 
@@ -120,6 +128,28 @@ def init_db() -> str:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_logs_tool_name ON tool_operation_logs(tool_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_logs_operation ON tool_operation_logs(operation)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_logs_created_at ON tool_operation_logs(created_at)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_skills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            skill_name TEXT NOT NULL,
+            skill_content TEXT NOT NULL DEFAULT '',
+            skill_scripts TEXT NOT NULL DEFAULT '[]',
+            enabled INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    """)
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_skills_user_id ON user_skills(user_id)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_user_skills_name ON user_skills(user_id, skill_name)")
+
+    try:
+        conn.execute("ALTER TABLE user_skills ADD COLUMN enabled INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
 
     _seed_default_permissions(conn)
 
@@ -250,7 +280,7 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def authenticate(username: str, password: str) -> dict | None:
+def authenticate(username: str, password: str) -> Optional[dict]:
     """验证用户，成功返回用户信息字典，失败返回 None"""
     conn = _get_connection()
     row = conn.execute(
@@ -268,7 +298,7 @@ def authenticate(username: str, password: str) -> dict | None:
     return None
 
 
-def get_user_by_id(user_id: int) -> dict | None:
+def get_user_by_id(user_id: int) -> Optional[dict]:
     conn = _get_connection()
     row = conn.execute(
         "SELECT id, username, user_type, description, created_at, updated_at FROM users WHERE id = ?",
@@ -305,7 +335,7 @@ def create_user(username: str, password: str, user_type: str = "user", descripti
         raise ValueError(f"用户名 '{username}' 已存在")
 
 
-def update_user(user_id: int, **kwargs) -> dict | None:
+def update_user(user_id: int, **kwargs) -> Optional[dict]:
     conn = _get_connection()
     allowed = {"password", "user_type", "description"}
     updates = {}
@@ -384,7 +414,7 @@ def create_session(session_id: str, user_id: int, title: str = "新对话") -> d
     return get_session(session_id)
 
 
-def get_session(session_id: str) -> dict | None:
+def get_session(session_id: str) -> Optional[dict]:
     conn = _get_connection()
     row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
     if row:
@@ -412,11 +442,24 @@ def list_sessions(user_id: int) -> list[dict]:
     return result
 
 
-def update_session_messages(session_id: str, messages: list, title: str = None) -> dict | None:
+def update_session_messages(session_id: str, messages: list, title: str = None, user_id: int = None) -> Optional[dict]:
     conn = _get_connection()
     import json
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     messages_json = json.dumps(messages, ensure_ascii=False)
+
+    # 检查 session 是否存在，不存在则先创建
+    existing = conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    if not existing:
+        if user_id is None:
+            user_id = 1  # 兜底使用 admin
+        conn.execute(
+            "INSERT INTO sessions (id, user_id, title, messages, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, user_id, title or "新对话", messages_json, now, now)
+        )
+        conn.commit()
+        return get_session(session_id)
+
     if title:
         conn.execute(
             "UPDATE sessions SET messages = ?, title = ?, updated_at = ? WHERE id = ?",
@@ -431,7 +474,7 @@ def update_session_messages(session_id: str, messages: list, title: str = None) 
     return get_session(session_id)
 
 
-def rename_session(session_id: str, title: str) -> dict | None:
+def rename_session(session_id: str, title: str) -> Optional[dict]:
     conn = _get_connection()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn.execute(
@@ -516,7 +559,7 @@ def _mask_key(key: str) -> str:
     return key[:4] + "*" * (len(key) - 8) + key[-4:]
 
 
-def get_model_config(user_id: int = None) -> dict | None:
+def get_model_config(user_id: int = None) -> Optional[dict]:
     conn = _get_connection()
     if user_id is not None:
         row = conn.execute("SELECT * FROM model_configs WHERE user_id = ?", (user_id,)).fetchone()
@@ -661,3 +704,175 @@ def get_tool_operation_logs(tool_name: str = None, operation: str = None,
         params
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---- 用户技能管理 ----
+
+def get_user_skills(user_id: int, enabled_only: bool = False, skill_name: str = None) -> list[dict]:
+    """获取用户自建技能列表
+
+    Args:
+        user_id: 用户 ID
+        enabled_only: 是否仅返回启用的技能
+        skill_name: 按名称筛选
+
+    Returns:
+        list[dict]: 技能列表
+    """
+    conn = _get_connection()
+    conditions = ["user_id = ?"]
+    params = [user_id]
+
+    if enabled_only:
+        conditions.append("enabled = 1")
+    if skill_name:
+        conditions.append("skill_name = ?")
+        params.append(skill_name)
+
+    where = " AND ".join(conditions)
+    rows = conn.execute(
+        f"SELECT id, user_id, skill_name, skill_content, skill_scripts, enabled, "
+        f"created_at, updated_at FROM user_skills WHERE {where} ORDER BY skill_name",
+        params
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_enabled_system_skills() -> set:
+    """获取所有启用的系统技能名称集合
+
+    从 user_skills 表中查询所有 enabled=0 的记录（即禁用的系统技能），
+    返回所有系统技能名称减去禁用集合。
+
+    Returns:
+        set: 启用的系统技能名称集合
+    """
+    conn = _get_connection()
+    # 查询所有被禁用的技能
+    rows = conn.execute(
+        "SELECT DISTINCT skill_name FROM user_skills WHERE enabled = 0"
+    ).fetchall()
+    disabled = {r["skill_name"] for r in rows}
+    return disabled  # 返回禁用集合，调用方自行处理
+
+
+def save_user_skill(user_id: int, skill_name: str, skill_content: str,
+                    skill_scripts: str = "[]", enabled: int = 1) -> dict:
+    """创建或更新用户技能
+
+    Args:
+        user_id: 用户 ID
+        skill_name: 技能名称
+        skill_content: SKILL.md 内容
+        skill_scripts: 脚本 JSON 数组
+        enabled: 是否启用（1=启用, 0=禁用）
+
+    Returns:
+        dict: 保存后的技能记录
+    """
+    conn = _get_connection()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    existing = conn.execute(
+        "SELECT id FROM user_skills WHERE user_id = ? AND skill_name = ?",
+        (user_id, skill_name)
+    ).fetchone()
+
+    if existing:
+        conn.execute(
+            "UPDATE user_skills SET skill_content = ?, skill_scripts = ?, enabled = ?, "
+            "updated_at = ? WHERE id = ?",
+            (skill_content, skill_scripts, enabled, now, existing["id"])
+        )
+        conn.commit()
+        return dict(conn.execute(
+            "SELECT * FROM user_skills WHERE id = ?", (existing["id"],)
+        ).fetchone())
+    else:
+        conn.execute(
+            "INSERT INTO user_skills (user_id, skill_name, skill_content, skill_scripts, "
+            "enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user_id, skill_name, skill_content, skill_scripts, enabled, now, now)
+        )
+        conn.commit()
+        return dict(conn.execute(
+            "SELECT * FROM user_skills WHERE id = last_insert_rowid()"
+        ).fetchone())
+
+
+def delete_user_skill(skill_id: int) -> bool:
+    """删除用户技能
+
+    Args:
+        skill_id: 技能 ID
+
+    Returns:
+        bool: 是否删除成功
+    """
+    conn = _get_connection()
+    cursor = conn.execute("DELETE FROM user_skills WHERE id = ?", (skill_id,))
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def toggle_user_skill(skill_id: int, enabled: int) -> bool:
+    """启用/禁用技能
+
+    Args:
+        skill_id: 技能 ID
+        enabled: 1=启用, 0=禁用
+
+    Returns:
+        bool: 是否操作成功
+    """
+    conn = _get_connection()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor = conn.execute(
+        "UPDATE user_skills SET enabled = ?, updated_at = ? WHERE id = ?",
+        (enabled, now, skill_id)
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def update_user_skill(skill_id: int, skill_content: str = None,
+                      skill_scripts: str = None, enabled: int = None) -> bool:
+    """更新用户技能
+
+    Args:
+        skill_id: 技能 ID
+        skill_content: 新的 SKILL.md 内容
+        skill_scripts: 新的脚本 JSON
+        enabled: 启用状态
+
+    Returns:
+        bool: 是否更新成功
+    """
+    conn = _get_connection()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    fields = []
+    params = []
+    if skill_content is not None:
+        fields.append("skill_content = ?")
+        params.append(skill_content)
+    if skill_scripts is not None:
+        fields.append("skill_scripts = ?")
+        params.append(skill_scripts)
+    if enabled is not None:
+        fields.append("enabled = ?")
+        params.append(enabled)
+
+    if not fields:
+        return True
+
+    fields.append("updated_at = ?")
+    params.append(now)
+    params.append(skill_id)
+
+    cursor = conn.execute(
+        f"UPDATE user_skills SET {', '.join(fields)} WHERE id = ?",
+        params
+    )
+    conn.commit()
+    return cursor.rowcount > 0

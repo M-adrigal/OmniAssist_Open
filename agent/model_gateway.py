@@ -4,9 +4,19 @@
 翻译为各模型原生的 API 参数，并归一化流式响应中的推理内容。
 """
 from fnmatch import fnmatch
+from typing import Optional
 
 
 MODEL_CAPABILITIES = {
+    "doubao*": {
+        "provider": "doubao",
+        "thinking_param": "extra_body",
+        "thinking_on": {"extra_body": {"thinking": {"type": "enabled"}}},
+        "thinking_off": {"extra_body": {"thinking": {"type": "disabled"}}},
+        "reasoning_field": "reasoning_content",
+        "needs_prompt_fallback": False,
+        "supports_temperature": True,
+    },
     "gpt-5-mini*": {
         "provider": "openai",
         "thinking_param": "native",
@@ -231,14 +241,14 @@ class ModelGateway:
         result["api_params"] = params
         return result
 
-    def extract_reasoning(self, delta) -> str | None:
+    def extract_reasoning(self, delta) -> Optional[str]:
         """从流式响应的 delta 对象中提取原生推理内容
 
         Args:
             delta: OpenAI SDK 流式 chunk 的 delta 对象
 
         Returns:
-            str | None: 推理内容文本，没有则返回 None
+            Optional[str]: 推理内容文本，没有则返回 None
         """
         field = self.cap.get("reasoning_field")
         if field and hasattr(delta, field):
@@ -256,5 +266,5 @@ class ModelGateway:
         return self.cap.get("needs_prompt_fallback", False)
 
     @property
-    def reasoning_field(self) -> str | None:
+    def reasoning_field(self) -> Optional[str]:
         return self.cap.get("reasoning_field")

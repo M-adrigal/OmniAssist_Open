@@ -746,7 +746,7 @@ function createAssistantContainer() {
         <div class="search-content collapsed"></div>
       </div>
       <div class="tool-summary hidden"></div>
-      <div class="answer-area streaming-cursor">正在处理...</div>
+      <div class="answer-area streaming-cursor"></div>
     </div>
   `;
   container.appendChild(div);
@@ -1337,6 +1337,155 @@ function showCloudPreview(file) {
   modalBody.appendChild(panel);
 }
 
+// ===== 技能列表 =====
+let _skillData = { system: [], user: [] };
+let _skillTab = 'system';
+
+async function loadSkills() {
+  const container = $('#skills-container');
+  container.innerHTML = '<p class="loading-text">加载中...</p>';
+  try {
+    const data = await API.get('/api/skills');
+    _skillData.system = data.system_skills || [];
+    _skillData.user = data.user_skills || [];
+    renderSkillList();
+  } catch (e) {
+    container.innerHTML = `<p class="loading-text" style="color:var(--danger);">加载失败: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function switchSkillTab(tab) {
+  _skillTab = tab;
+  $$('#skills-tabs .skill-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+  $('#skill-search').value = '';
+  renderSkillList();
+}
+
+function filterSkills() {
+  renderSkillList();
+}
+
+function renderSkillList() {
+  const container = $('#skills-container');
+  const query = ($('#skill-search').value || '').trim().toLowerCase();
+  const skills = _skillTab === 'system' ? _skillData.system : _skillData.user;
+
+  let filtered = skills;
+  if (query) {
+    filtered = skills.filter(s => {
+      const name = (s.name || '').toLowerCase();
+      const desc = (s.description || '').toLowerCase();
+      return name.includes(query) || desc.includes(query);
+    });
+  }
+
+  if (filtered.length === 0) {
+    container.innerHTML = '<p class="loading-text" style="padding:20px;">暂无技能</p>';
+    return;
+  }
+
+  container.innerHTML = filtered.map(s => {
+    const name = s.name || s.skill_name || '';
+    const desc = s.description || '';
+    const enabled = s.enabled !== false;
+    const isSystem = _skillTab === 'system';
+    return `
+      <div class="skill-item" data-name="${escapeHtml(name)}">
+        <div class="skill-info">
+          <div class="skill-name">${escapeHtml(name)}</div>
+          ${desc ? `<div class="skill-desc" title="${escapeHtml(desc)}">${escapeHtml(desc)}</div>` : ''}
+        </div>
+        <div class="skill-actions">
+          <button class="btn-preview" onclick="previewSkill('${escapeHtml(name)}', ${isSystem})">预览</button>
+          <button class="skill-toggle ${enabled ? 'on' : ''}" onclick="toggleSkill('${escapeHtml(name)}', ${isSystem}, ${!enabled})" title="${enabled ? '已启用' : '已禁用'}"></button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function toggleSkill(name, isSystem, enable) {
+  try {
+    await API.put(`/api/skills/0/toggle`, { name, enabled: enable });
+    // 更新本地状态
+    const list = isSystem ? _skillData.system : _skillData.user;
+    const item = list.find(s => (s.name || s.skill_name) === name);
+    if (item) item.enabled = enable;
+    renderSkillList();
+  } catch (e) {
+    alert(`操作失败: ${e.message}`);
+  }
+}
+
+async function previewSkill(name, isSystem) {
+  const modal = $('#modal-skill-preview');
+  const content = $('#skill-preview-content');
+  const title = $('#skill-preview-title');
+  title.textContent = `${name} - 技能详情`;
+  content.innerHTML = '<p class="loading-text">加载中...</p>';
+  openModal('modal-skill-preview');
+
+  try {
+    let data;
+    if (isSystem) {
+      data = await API.get(`/api/skills/system/${encodeURIComponent(name)}`);
+    } else {
+      // 用户技能：找到对应的 skill_id
+      const skill = _skillData.user.find(s => (s.name || s.skill_name) === name);
+      if (!skill || !skill.id) throw new Error('技能未找到');
+      data = await API.get(`/api/skills/${skill.id}`);
+    }
+    renderSkillPreview(data);
+  } catch (e) {
+    content.innerHTML = `<p class="loading-text" style="color:var(--danger);">加载失败: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function renderSkillPreview(data) {
+  const content = $('#skill-preview-content');
+  const scripts = Array.isArray(data.scripts) ? data.scripts : [];
+
+  let html = '';
+  if (data.description) {
+    html += `<div class="skill-preview-section">
+      <p style="color:var(--text-muted);">${escapeHtml(data.description)}</p>
+    </div>`;
+  }
+
+  html += `<div class="skill-preview-section">
+    <h4>脚本列表 (${scripts.length})</h4>
+  </div>`;
+
+  if (scripts.length === 0) {
+    html += '<p class="loading-text">暂无脚本</p>';
+  } else {
+    html += scripts.map((s, i) => {
+      const code = s.execution_code || s.code || '';
+      const params = s.parameters || {};
+      const paramStr = typeof params === 'object' && Object.keys(params).length > 0
+        ? Object.entries(params).map(([k, v]) => {
+            const desc = typeof v === 'object' ? (v.description || '') : '';
+            return `${k}${desc ? ': ' + desc : ''}`;
+          }).join(', ')
+        : '无参数';
+      return `
+        <div class="skill-preview-script">
+          <h4>${i + 1}. ${escapeHtml(s.name || '脚本')}</h4>
+          <div style="padding:8px 12px;">
+            ${s.description ? `<p style="color:var(--text-muted);font-size:12px;margin:0 0 6px;">${escapeHtml(s.description)}</p>` : ''}
+            <p style="font-size:11px;color:var(--text-muted);margin:0 0 6px;">参数: ${escapeHtml(paramStr)}</p>
+            ${code ? `<pre>${escapeHtml(code)}</pre>` : ''}
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  content.innerHTML = html;
+}
+
 // ===== 云文件选择器 =====
 let pickerAllFiles = [];
 let pickerSelected = {};
@@ -1883,31 +2032,10 @@ async function confirmDeleteUser() {
   }
 }
 
-// ===== 工具列表 =====
-async function loadTools() {
-  const container = $('#tools-container');
-  container.innerHTML = '<p class="loading-text">加载中...</p>';
-  try {
-    const tools = await API.get('/api/tools');
-    if (tools.length === 0) {
-      container.innerHTML = '<p class="loading-text">暂无工具</p>';
-      return;
-    }
-    container.innerHTML = tools.map(t => `
-      <div class="tool-card">
-        <div class="tool-name">${escapeHtml(t.name)}</div>
-        <div class="tool-desc">${escapeHtml(t.description)}</div>
-        <div class="tool-meta">
-          <span>${escapeHtml(t.execution_mode)}</span>
-          ${t.output_dir ? `<span>输出: ${escapeHtml(t.output_dir)}</span>` : ''}
-          ${t.dependencies && t.dependencies.length > 0 ? `<span>依赖: ${escapeHtml(t.dependencies.join(', '))}</span>` : ''}
-        </div>
-      </div>
-    `).join('');
-  } catch (e) {
-    container.innerHTML = `<p class="loading-text">加载失败: ${escapeHtml(e.message)}</p>`;
-  }
-}
+// 设置抽屉
+// （技能管理页面已移除）
+
+// 设置抽屉菜单点击
 
 // ===== 文件列表 =====
 async function loadFiles() {
@@ -2360,9 +2488,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const action = item.dataset.action;
       $('#settings-drawer').classList.add('hidden');
       if (action === 'config') { loadConfig(); openModal('modal-config'); }
-      if (action === 'tools') { loadTools(); openModal('modal-tools'); }
       if (action === 'files') { loadFiles(); openModal('modal-files'); }
       if (action === 'cloud-files') { loadCloudFiles(); openModal('modal-cloud-files'); }
+      if (action === 'skills') { loadSkills(); openModal('modal-skills'); }
       if (action === 'change-password') { openChangePassword(); }
       if (action === 'user-management') { loadUsers(); openModal('modal-user-management'); }
       if (action === 'logout') {

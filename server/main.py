@@ -1,9 +1,11 @@
 import os
 import sys
+import json
 import subprocess
 import signal
 import struct
 import atexit
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -16,20 +18,25 @@ sys.path.append(os.path.join(_project_root, "agent"))
 from agent.config import AgentConfig
 from agent.llm import LLMClient
 from agent.tools import ToolRegistry
-from agent.tool_builder import ToolBuilder
 from agent.agent import SimpleAgent
 from agent.main import _create_executor
-from agent.sandbox import ToolSandbox
+from agent.sandbox import SandboxPool
+from agent.skills import SkillRegistry
+from agent.agent_pool import AgentPool
+from agent.logger import get_logger
 
 from server.routes import routers
 from server.database import init_db, DB_PATH, _generate_random_password
 
+logger = get_logger("server")
+
 _config: AgentConfig = None
 _llm_client: LLMClient = None
 _tool_registry: ToolRegistry = None
-_tool_builder: ToolBuilder = None
 _agent: SimpleAgent = None
-_sandbox: ToolSandbox = None
+_sandbox_pool: SandboxPool = None
+_skill_registry: SkillRegistry = None
+_agent_pool: AgentPool = None
 _session_store: dict = {}
 _db_process: subprocess.Popen = None
 _db_user = "root"
@@ -45,13 +52,13 @@ def _cleanup():
             except subprocess.TimeoutExpired:
                 _db_process.kill()
                 _db_process.wait()
-            print("[清理] sqlite-web 子进程已终止")
+            logger.info("sqlite-web 子进程已终止")
         except Exception as e:
-            print(f"[清理] 终止 sqlite-web 子进程失败: {e}")
+            logger.error(f"终止 sqlite-web 子进程失败: {e}")
 
 
 def _signal_handler(signum, frame):
-    print(f"\n[信号] 收到信号 {signum}，正在优雅关闭...")
+    logger.info(f"收到信号 {signum}，正在优雅关闭...")
     _cleanup()
     sys.exit(0)
 
@@ -61,53 +68,12 @@ signal.signal(signal.SIGINT, _signal_handler)
 atexit.register(_cleanup)
 
 
-def _prewarm_sandbox(tools_dir: str):
-    """扫描所有工具定义，预热沙箱依赖
-
-    在服务启动时一次性安装所有工具的依赖包，
-    避免首次调用工具时的冷启动延迟。
-    """
-    import json
-
-    if _sandbox is None:
-        return
-    if not os.path.isdir(tools_dir):
-        return
-
-    all_deps = set()
-    for fname in sorted(os.listdir(tools_dir)):
-        if not fname.endswith(".json"):
-            continue
-        fpath = os.path.join(tools_dir, fname)
-        try:
-            with open(fpath, "r", encoding="utf-8") as f:
-                tool_def = json.load(f)
-            deps = tool_def.get("dependencies", [])
-            if deps:
-                for d in deps:
-                    all_deps.add(d)
-        except Exception:
-            pass
-
-    if not all_deps:
-        print("[沙箱预热] 没有需要安装的依赖")
-        return
-
-    print(f"[沙箱预热] 检测到 {len(all_deps)} 个依赖: {sorted(all_deps)}")
-    try:
-        _sandbox.install_verbose(sorted(all_deps))
-        print("[沙箱预热] 依赖安装完成")
-    except Exception as e:
-        print(f"[沙箱预热] 部分依赖安装失败: {e}")
-        print("[沙箱预热] 工具首次调用时将自动重试安装")
-
-
 def init_services():
-    global _config, _llm_client, _tool_registry, _tool_builder, _agent, _sandbox
+    global _config, _llm_client, _tool_registry, _agent, _sandbox_pool, _skill_registry, _agent_pool
 
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     config_path = os.path.join(base_dir, "data", ".agent_config")
-    tools_dir = os.path.join(base_dir, "agent", "agent_tools")
+    skills_dir = os.path.join(base_dir, "agent", "skills")
 
     _config = AgentConfig(config_path)
 
@@ -150,29 +116,144 @@ def init_services():
         _llm_client = LLMClient(config=_config)
 
     try:
-        _sandbox = ToolSandbox()
+        _sandbox_pool = SandboxPool()
     except Exception as e:
-        print(f"[启动] 沙箱初始化失败: {e}")
-        print("[启动] 工具执行功能将不可用，但对话功能不受影响")
-        _sandbox = None
+        logger.error(f"沙箱初始化失败: {e}")
+        logger.warning("工具执行功能将不可用，但对话功能不受影响")
+        _sandbox_pool = None
+
+    # 初始化技能注册中心
+    _skill_registry = SkillRegistry()
+    system_skills = _skill_registry.load_system_skills(skills_dir)
+    logger.info(f"已加载 {len(system_skills)} 个系统技能: {system_skills}")
 
     _tool_registry = ToolRegistry()
-    _tool_builder = ToolBuilder(_llm_client)
 
-    _tool_registry.load_manifest()
-    _tool_registry.sync_manifest(tools_dir)
+    # 从技能注册中心加载所有脚本，注册为工具
+    skill_scripts = _skill_registry.get_all_scripts()
+    for script in skill_scripts:
+        _tool_registry.register_tool(
+            name=script.name,
+            description=script.description,
+            parameters=script.parameters,
+            func=_create_executor(
+                script.name, script.description, script.execution_mode,
+                script.source, script.http_config, _llm_client,
+                script.dependencies, script.response_formatter, sandbox_pool=_sandbox_pool
+            )
+        )
+    logger.info(f"从技能中注册了 {len(skill_scripts)} 个工具脚本")
 
-    _tool_registry.load_tools_from_dir(
-        tools_dir,
-        func_factory=lambda name, prompt, mode, code, http_cfg, deps, fmt=None:
-            _create_executor(name, prompt, mode, code, http_cfg, _llm_client, deps, fmt, sandbox=_sandbox)
+    # 初始化多 Agent 池
+    _agent_pool = AgentPool(_llm_client, _sandbox_pool, _skill_registry)
+    profiles_dir = os.path.join(base_dir, "agent", "profiles")
+    pool_agents = _agent_pool.load_profiles(profiles_dir)
+    if pool_agents:
+        _agent_pool.register_as_tools(_tool_registry)
+        logger.info(f"已加载 {len(pool_agents)} 个子 Agent: {pool_agents}")
+
+    # 注册 Skill 编辑器工具（用户级 Skill CRUD）
+    from agent.skill_editor import create_user_skill, update_user_skill, delete_user_skill, list_user_skills
+    _tool_registry.register_tool(
+        name="create_user_skill",
+        description="为用户创建一个新的自定义 Skill。Skill 包含 SKILL.md（技能描述）和可选的工具脚本。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Skill 名称（英文标识，如 my_analyzer）"},
+                "skill_md": {"type": "string", "description": "SKILL.md 内容（Markdown 格式的技能描述和使用说明）"},
+                "tools": {"type": "array", "description": "工具脚本列表，每项含 name 和 content（JSON Schema）", "items": {"type": "object"}},
+            },
+            "required": ["name", "skill_md"]
+        },
+        func=lambda name, skill_md, tools=None, _user_id=None: json.dumps(
+            create_user_skill(_user_id, name, skill_md, tools), ensure_ascii=False
+        )
     )
+    _tool_registry.register_tool(
+        name="update_user_skill",
+        description="更新用户已有的自定义 Skill。可修改 SKILL.md 内容和/或工具脚本。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "要更新的 Skill 名称"},
+                "skill_md": {"type": "string", "description": "新的 SKILL.md 内容（不传则不更新）"},
+                "tools": {"type": "array", "description": "新的工具脚本列表（不传则不更新，传空数组清空所有工具）", "items": {"type": "object"}},
+            },
+            "required": ["name"]
+        },
+        func=lambda name, skill_md=None, tools=None, _user_id=None: json.dumps(
+            update_user_skill(_user_id, name, skill_md, tools), ensure_ascii=False
+        )
+    )
+    _tool_registry.register_tool(
+        name="delete_user_skill",
+        description="删除用户的一个自定义 Skill（仅限用户级 Skill，系统 Skill 不可删除）。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "要删除的 Skill 名称"},
+            },
+            "required": ["name"]
+        },
+        func=lambda name, _user_id=None: json.dumps(
+            delete_user_skill(_user_id, name), ensure_ascii=False
+        )
+    )
+    _tool_registry.register_tool(
+        name="list_user_skills",
+        description="列出当前用户的所有自定义 Skill。",
+        parameters={"type": "object", "properties": {}, "required": []},
+        func=lambda _user_id=None: json.dumps(
+            list_user_skills(_user_id), ensure_ascii=False
+        )
+    )
+    logger.info("已注册 Skill 编辑器工具（create/update/delete/list）")
 
-    if _sandbox is not None:
-        import threading
-        threading.Thread(target=_prewarm_sandbox, args=(tools_dir,), daemon=True).start()
-    else:
-        print("[沙箱预热] 沙箱不可用，跳过依赖预热")
+    # 注册任务复盘工具
+    from agent.task_reviewer import log_task_execution, review_recent_tasks, analyze_and_suggest, clear_reviews
+    _tool_registry.register_tool(
+        name="review_recent_tasks",
+        description="查看最近的任务执行记录，包括成功/失败任务、工具使用情况、错误信息。用于复盘和发现优化点。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "最多返回条数，默认 20"},
+            },
+            "required": []
+        },
+        func=lambda limit=20, _user_id=None: json.dumps(
+            review_recent_tasks(_user_id, limit), ensure_ascii=False
+        )
+    )
+    _tool_registry.register_tool(
+        name="analyze_and_suggest",
+        description="分析任务执行日志，自动发现失败模式并生成 Skill 优化建议。可用于复盘时自动优化。",
+        parameters={"type": "object", "properties": {}, "required": []},
+        func=lambda _user_id=None: json.dumps(
+            analyze_and_suggest(_user_id), ensure_ascii=False
+        )
+    )
+    logger.info("已注册任务复盘工具（review/analyze）")
+
+    # 注册意图关键词更新工具
+    from agent.intent_keywords import update_user_keywords
+    _tool_registry.register_tool(
+        name="update_intent_keywords",
+        description="更新当前用户的意图关键词配置。关键词用于按需选择工具，减少 LLM 每次请求的 token 开销。"
+                    "当发现某些查询未能匹配到正确的工具时，可通过此工具添加新关键词。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "keywords": {"type": "object", "description": "关键词配置 {类别: [关键词模式列表]}，如 {\"weather\": [\"天气\", \"温度\"]}"},
+            },
+            "required": ["keywords"]
+        },
+        func=lambda keywords, _user_id=None: json.dumps(
+            {"success": update_user_keywords(_user_id, keywords)}, ensure_ascii=False
+        )
+    )
+    logger.info("已注册意图关键词更新工具")
 
     show_thought = False
     context_limit = ""
@@ -184,7 +265,15 @@ def init_services():
         show_thought = _config.get("show_thought", False)
         context_limit = _config.get("context_limit", "")
 
-    _agent = SimpleAgent(_llm_client, _tool_registry, context_limit=context_limit, show_thought=show_thought)
+    # 构建技能上下文
+    skill_context = _skill_registry.build_context()
+
+    _agent = SimpleAgent(
+        _llm_client, _tool_registry,
+        context_limit=context_limit,
+        show_thought=show_thought,
+        skill_context=skill_context
+    )
 
 
 def get_config() -> AgentConfig:
@@ -199,8 +288,13 @@ def get_tool_registry() -> ToolRegistry:
     return _tool_registry
 
 
-def get_tool_builder() -> ToolBuilder:
-    return _tool_builder
+
+def get_skill_registry() -> SkillRegistry:
+    return _skill_registry
+
+
+def get_agent_pool() -> AgentPool:
+    return _agent_pool
 
 
 def get_agent() -> SimpleAgent:
@@ -249,7 +343,74 @@ def get_session_store() -> dict:
     return _session_store
 
 
-app = FastAPI(title="OmniAssist API", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan 事件处理（替代弃用的 on_event）"""
+    admin_pw = init_db()
+    pw_file = os.path.join(os.path.dirname(DB_PATH), ".db_web_password")
+
+    if admin_pw:
+        logger.info("=" * 60)
+        logger.info("OmniAssist 已启动")
+        logger.info(f"访问地址: http://localhost:17520")
+        logger.info("=" * 60)
+        logger.info("默认管理员账号: admin")
+        logger.info("默认管理员密码: admin123")
+        logger.warning("首次登录需修改密码后方可使用！")
+        logger.info("=" * 60)
+
+        from server.database import _hash_password
+        with open(pw_file, "w") as f:
+            f.write(_hash_password(admin_pw))
+        try:
+            os.chmod(pw_file, 0o600)
+        except Exception:
+            pass
+    else:
+        logger.info("=" * 60)
+        logger.info("OmniAssist 已启动")
+        logger.info(f"访问地址: http://localhost:17520")
+        logger.info("=" * 60)
+
+        if not os.path.isfile(pw_file):
+            new_pw = _generate_random_password(8)
+            from server.database import _hash_password, _get_connection
+            conn = _get_connection()
+            now = __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute(
+                "UPDATE users SET password_hash = ?, must_change_password = 1, updated_at = ? WHERE username = 'admin'",
+                (_hash_password(new_pw), now)
+            )
+            conn.commit()
+            with open(pw_file, "w") as f:
+                f.write(_hash_password(new_pw))
+            try:
+                os.chmod(pw_file, 0o600)
+            except Exception:
+                pass
+            logger.warning("密码文件丢失，已重置管理员密码")
+            logger.info(f"新密码: {new_pw}")
+            logger.warning("请使用新密码登录并及时修改！")
+
+    try:
+        init_services()
+        logger.info("服务初始化完成")
+    except Exception as e:
+        logger.error(f"服务初始化失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        logger.warning("请检查模型配置和工具定义，服务将继续启动但部分功能可能不可用")
+
+    refresh_global_llm()
+    _start_sqlite_web()
+
+    yield  # 服务运行中
+
+    # shutdown
+    _cleanup()
+
+
+app = FastAPI(title="OmniAssist API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -286,8 +447,7 @@ async def global_exception_handler(request: Request, call_next):
         return await call_next(request)
     except Exception as e:
         import traceback
-        print(f"[错误] 未捕获的异常: {e}")
-        traceback.print_exc()
+        logger.error(f"未捕获的异常: {e}\n{traceback.format_exc()}")
         return JSONResponse(
             status_code=500,
             content={"detail": f"服务内部错误: {str(e)}"}
@@ -315,68 +475,6 @@ def serve_favicon():
     return FileResponse(os.path.join(static_dir, "favicon.svg"), media_type="image/svg+xml")
 
 
-@app.on_event("startup")
-def startup():
-    admin_pw = init_db()
-    pw_file = os.path.join(os.path.dirname(DB_PATH), ".db_web_password")
-
-    if admin_pw:
-        print(f"\n{'='*60}")
-        print(f"  OmniAssist 已启动")
-        print(f"  访问地址: http://localhost:17520")
-        print(f"{'='*60}")
-        print(f"  默认管理员账号: admin")
-        print(f"  默认管理员密码: admin123")
-        print(f"  ⚠️  首次登录需修改密码后方可使用！")
-        print(f"{'='*60}\n")
-
-        from server.database import _hash_password
-        with open(pw_file, "w") as f:
-            f.write(_hash_password(admin_pw))
-        try:
-            os.chmod(pw_file, 0o600)
-        except Exception:
-            pass
-    else:
-        print(f"\n{'='*60}")
-        print(f"  OmniAssist 已启动")
-        print(f"  访问地址: http://localhost:17520")
-        print(f"{'='*60}\n")
-
-        if not os.path.isfile(pw_file):
-            new_pw = _generate_random_password(8)
-            from server.database import _hash_password, _get_connection
-            conn = _get_connection()
-            now = __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            conn.execute(
-                "UPDATE users SET password_hash = ?, must_change_password = 1, updated_at = ? WHERE username = 'admin'",
-                (_hash_password(new_pw), now)
-            )
-            conn.commit()
-            with open(pw_file, "w") as f:
-                f.write(_hash_password(new_pw))
-            try:
-                os.chmod(pw_file, 0o600)
-            except Exception:
-                pass
-            print(f"[启动] 密码文件丢失，已重置管理员密码")
-            print(f"  新密码: {new_pw}")
-            print(f"  ⚠️  请使用新密码登录并及时修改！")
-
-    try:
-        init_services()
-        print("[启动] 服务初始化完成")
-    except Exception as e:
-        print(f"[启动] 服务初始化失败: {e}")
-        import traceback
-        traceback.print_exc()
-        print("[启动] 请检查模型配置和工具定义，服务将继续启动但部分功能可能不可用")
-
-    refresh_global_llm()
-
-    _start_sqlite_web()
-
-
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
@@ -394,7 +492,7 @@ def _check_and_free_port(port: int):
 
     pids = _find_port_pids(port)
     if not pids:
-        print(f"[启动] 警告：端口 {port} 被占用，但无法确定占用进程（可能在容器外）")
+        logger.warning(f"端口 {port} 被占用，但无法确定占用进程（可能在容器外）")
         _force_release_port(port)
         return
 
@@ -403,18 +501,18 @@ def _check_and_free_port(port: int):
             continue
         try:
             os.kill(pid, signal.SIGKILL)
-            print(f"[启动] 已终止占用端口 {port} 的进程 (PID: {pid})")
+            logger.info(f"已终止占用端口 {port} 的进程 (PID: {pid})")
         except ProcessLookupError:
             pass
         except PermissionError:
-            print(f"[启动] 警告：无权限终止进程 (PID: {pid})，端口 {port} 可能仍被占用")
+            logger.warning(f"无权限终止进程 (PID: {pid})，端口 {port} 可能仍被占用")
 
     for _ in range(10):
         time.sleep(0.3)
         if _is_port_available(port):
             return
 
-    print(f"[启动] 警告：端口 {port} 仍被占用，尝试强制释放...")
+    logger.warning(f"端口 {port} 仍被占用，尝试强制释放...")
     _force_release_port(port)
 
 
@@ -430,13 +528,13 @@ def _force_release_port(port: int):
             try:
                 s.bind(("127.0.0.1", port))
             except OSError as e:
-                print(f"[启动] 无法强制释放端口 {port}: {e}")
+                logger.error(f"无法强制释放端口 {port}: {e}")
                 return
         s.listen(1)
         s.close()
-        print(f"[启动] 端口 {port} 已强制释放")
+        logger.info(f"端口 {port} 已强制释放")
     except Exception as e:
-        print(f"[启动] 强制释放端口 {port} 失败: {e}")
+        logger.error(f"强制释放端口 {port} 失败: {e}")
 
 
 def _is_port_available(port: int) -> bool:
@@ -537,7 +635,7 @@ def _start_sqlite_web():
             os.chmod(password_file, 0o600)
         except Exception:
             pass
-        print(f"[数据库管理] 密码文件丢失，已重置管理员密码: {web_password}")
+        logger.warning(f"密码文件丢失，已重置管理员密码: {web_password}")
 
     try:
         _db_process = subprocess.Popen(
@@ -552,21 +650,20 @@ def _start_sqlite_web():
             stderr=subprocess.DEVNULL,
         )
     except Exception as e:
-        print(f"[数据库管理] sqlite-web 启动失败: {e}")
-        print(f"[数据库管理] 请先安装: pip install sqlite-web")
+        logger.error(f"sqlite-web 启动失败: {e}")
+        logger.info("请先安装: pip install sqlite-web")
         return
 
     import time
     time.sleep(1)
 
-    _start_db_auth_proxy(DB_PROXY_PORT, DB_BACKEND_PORT, web_password_hash)
+    if _start_db_auth_proxy(DB_PROXY_PORT, DB_BACKEND_PORT, web_password_hash):
+        logger.info(f"数据库管理代理已启动: http://0.0.0.0:{DB_PROXY_PORT}")
+        logger.info("使用管理员账号(admin)登录即可访问")
+        logger.info(f"数据库文件: {DB_PATH}")
 
-    print(f"[数据库管理] 已启动: http://0.0.0.0:{DB_PROXY_PORT}")
-    print(f"[数据库管理] 使用管理员账号(admin)登录即可访问")
-    print(f"[数据库管理] 数据库文件: {DB_PATH}")
 
-
-def _start_db_auth_proxy(proxy_port: int, backend_port: int, password_hash: str):
+def _start_db_auth_proxy(proxy_port: int, backend_port: int, password_hash: str) -> bool:
     import http.server
     import urllib.request
     import urllib.error
@@ -647,17 +744,23 @@ def _start_db_auth_proxy(proxy_port: int, backend_port: int, password_hash: str)
 
     try:
         server = http.server.ThreadingHTTPServer(("0.0.0.0", proxy_port), ProxyHandler)
+        server.socket.setsockopt(__import__("socket").SOL_SOCKET, __import__("socket").SO_REUSEADDR, 1)
+        try:
+            server.socket.setsockopt(__import__("socket").SOL_SOCKET, __import__("socket").SO_REUSEPORT, 1)
+        except (AttributeError, OSError):
+            pass
     except OSError as e:
-        print(f"[数据库管理] 代理端口 {proxy_port} 绑定失败: {e}")
-        return
+        logger.error(f"数据库管理代理端口 {proxy_port} 绑定失败: {e}")
+        return False
 
     def _run_proxy():
         try:
             server.serve_forever()
         except Exception as e:
-            print(f"[数据库管理] 代理服务异常退出: {e}")
+            logger.error(f"数据库管理代理服务异常退出: {e}")
 
     threading.Thread(target=_run_proxy, daemon=True).start()
+    return True
 
 
 if __name__ == "__main__":

@@ -6,31 +6,22 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from server.models import ChatRequest
+from agent.intent_keywords import select_tools_by_intent
 from agent.model_gateway import ModelGateway
-from agent.tool_management import (
-    create_tool_from_chat,
-    update_tool_from_chat,
-    delete_tool_from_chat,
-    list_all_tools,
-    set_tool_secret_from_chat,
-    delete_tool_secret_from_chat,
-    list_tool_secrets_from_chat,
-    get_tool_secret_from_chat,
-    META_TOOL_SPECS,
-    META_TOOL_NAMES,
-)
+from agent.logger import get_logger, set_context, clear_context
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+logger = get_logger("chat")
 
 from server.routes.auth import get_current_user
 
 
 def get_dependencies():
     try:
-        from __main__ import get_agent, get_llm_client, get_tool_registry, get_tool_builder, get_config
+        from __main__ import get_agent, get_llm_client, get_tool_registry, get_config, get_skill_registry
     except ImportError:
-        from server.main import get_agent, get_llm_client, get_tool_registry, get_tool_builder, get_config
-    return get_agent(), get_llm_client(), get_tool_registry(), get_tool_builder(), get_config()
+        from server.main import get_agent, get_llm_client, get_tool_registry, get_config, get_skill_registry
+    return get_agent(), get_llm_client(), get_tool_registry(), get_config(), get_skill_registry()
 
 
 def get_session_store():
@@ -39,6 +30,37 @@ def get_session_store():
     except ImportError:
         from server.main import get_session_store as gss
     return gss()
+
+
+def _build_skill_context(user_id: int, skill_registry) -> str:
+    """构建用户技能上下文，注入系统提示词
+
+    Args:
+        user_id: 用户 ID
+        skill_registry: SkillRegistry 实例
+
+    Returns:
+        str: 技能上下文字符串
+    """
+    if skill_registry is None:
+        return ""
+
+    # 加载用户技能
+    from server.database import get_user_skills, get_enabled_system_skills
+    try:
+        user_skills = get_user_skills(user_id, enabled_only=True)
+        if user_skills:
+            skill_registry.load_user_skills(user_id, user_skills)
+    except Exception:
+        pass
+
+    # 获取启用的系统技能
+    try:
+        enabled_system = get_enabled_system_skills()
+    except Exception:
+        enabled_system = None
+
+    return skill_registry.build_context(user_id, enabled_system)
 
 
 def _resolve_llm_client(user_id: int):
@@ -63,9 +85,47 @@ def _load_session_messages(session_id: str) -> list:
     return []
 
 
-def _save_session_messages(session_id: str, messages: list, title: str = None):
+def _save_session_messages(session_id: str, messages: list, title: str = None, user_id: int = None):
     from server.database import update_session_messages
-    update_session_messages(session_id, messages, title)
+    update_session_messages(session_id, messages, title, user_id)
+
+
+async def _post_process_done(
+    session_id: str, store: dict, message: str,
+    answer: str, full_content: str,
+    search_info: dict, all_thoughts: list,
+    all_tool_calls: list, llm, user_id: int, iteration: int,
+):
+    """后台任务：保存消息、生成标题、记录任务日志"""
+    if session_id:
+        store[session_id]["messages"].append({"role": "user", "content": message})
+        assistant_msg = {"role": "assistant", "content": answer or full_content}
+        if search_info:
+            assistant_msg["search"] = search_info
+        if all_thoughts:
+            assistant_msg["thought"] = "\n\n".join(all_thoughts)
+        if all_tool_calls:
+            assistant_msg["tools"] = all_tool_calls
+        store[session_id]["messages"].append(assistant_msg)
+        title = None
+        if len(store[session_id]["messages"]) <= 2:
+            title = _generate_title(message, answer or full_content, llm)
+            store[session_id]["title"] = title
+        for i, m in enumerate(store[session_id]["messages"]):
+            if m.get("role") == "assistant":
+                logger.debug(f"保存消息 msg[{i}] has_thought={bool(m.get('thought'))} has_tools={bool(m.get('tools'))} thought_len={len(m.get('thought',''))} content_len={len(m.get('content',''))}")
+        _save_session_messages(session_id, store[session_id]["messages"], title, user_id)
+
+        if all_tool_calls:
+            from agent.task_reviewer import log_task_execution
+            failed_tools = [t["name"] for t in all_tool_calls if t.get("error")]
+            success = len(failed_tools) == 0
+            log_task_execution(
+                user_id, message, success,
+                tools_used=[t["name"] for t in all_tool_calls],
+                tools_failed=failed_tools,
+                iterations=iteration + 1,
+            )
 
 
 def _generate_title(user_message: str, assistant_response: str, llm_client) -> str:
@@ -294,7 +354,7 @@ def _do_web_search(query: str, api_key: str, scenario: str = "general") -> str:
 
 
 async def _handle_command(message: str, session_id: str, user_id: int):
-    agent, llm, registry, builder, config = get_dependencies()
+    agent, llm, registry, config, skill_registry = get_dependencies()
     store = get_session_store()
 
     if agent is None:
@@ -304,13 +364,6 @@ async def _handle_command(message: str, session_id: str, user_id: int):
 
     msg = message.strip()
 
-    def _check_perm(action: str):
-        from server.database import get_user_by_id, check_permission
-        user = get_user_by_id(user_id)
-        if not user or not check_permission(user.get("user_type", "user"), "tools", action):
-            return False
-        return True
-
     if msg == "/help" or msg == "help":
         help_text = """**可用命令：**
 
@@ -319,7 +372,7 @@ async def _handle_command(message: str, session_id: str, user_id: int):
 | `/help` | 显示此帮助信息 |
 | `/reset` | 重置当前对话上下文 |
 
-> 工具管理（创建/更新/删除/查看）已支持自然语言交互，直接在对话中描述需求即可。"""
+> 技能管理（创建/更新/删除/查看）已支持自然语言交互，直接在对话中描述需求即可。"""
         yield f"data: {json.dumps({'type': 'token', 'content': help_text})}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
         return
@@ -330,250 +383,6 @@ async def _handle_command(message: str, session_id: str, user_id: int):
             store[session_id]["messages"] = []
             _save_session_messages(session_id, [])
         yield f"data: {json.dumps({'type': 'token', 'content': '对话上下文已重置，可以开始新的对话。'})}\n\n"
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
-        return
-
-    if msg == "/tool list":
-        tools = registry.list_tools()
-        user_tools = {name: info for name, info in tools.items() if name not in META_TOOL_NAMES}
-        if not user_tools:
-            text = "当前没有已安装的工具。\n\n使用 `/tool add` 命令或在设置面板中通过自然语言创建工具。"
-        else:
-            lines = [f"已安装 {len(user_tools)} 个工具："]
-            for name, info in user_tools.items():
-                mode = ""
-                created_at = ""
-                tool_data = _load_tool_json(name)
-                if tool_data:
-                    mode_map = {
-                        "local_execution": "本地执行",
-                        "http_request": "HTTP请求",
-                        "llm_simulated": "LLM模拟",
-                    }
-                    mode = f" ({mode_map.get(tool_data.get('execution_mode', ''), '')})"
-                    created_at = tool_data.get("created_at", "")
-                time_str = f" - 创建于 {created_at}" if created_at else ""
-                lines.append(f"- **{name}**{mode}{time_str}: {info.get('description', '')}")
-            text = "\n".join(lines)
-        yield f"data: {json.dumps({'type': 'token', 'content': text})}\n\n"
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
-        return
-
-    if msg.startswith("/tool add"):
-        if not _check_perm("write"):
-            yield f"data: {json.dumps({'type': 'error', 'content': '权限不足：仅管理员可以创建工具'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-        parts = msg.split(maxsplit=2)
-        description = parts[2].strip() if len(parts) > 2 else ""
-        if not description:
-            yield f"data: {json.dumps({'type': 'token', 'content': '请描述你需要创建的工具功能，例如：\n`/tool add 帮我创建一个可以查询任意城市实时天气的工具`'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-
-        yield f"data: {json.dumps({'type': 'status', 'content': '正在分析工具需求...'})}\n\n"
-
-        existing = [(name, info.get("description", ""))
-                    for name, info in registry.list_tools().items()]
-
-        from agent.main import _check_duplicate_tool
-        dup_check = _check_duplicate_tool(description, existing, llm)
-        if dup_check.get("is_duplicate"):
-            matched = dup_check.get("matched_tool", "未知")
-            reason = dup_check.get("reason", "")
-            yield f"data: {json.dumps({'type': 'token', 'content': f'[重复检测] {reason}\n\n检测到与已有工具 **{matched}** 功能相似。\n\n如需修改已有工具，请使用 `/tool update {matched} <修改描述>`。\n如需强制创建新工具，请在描述中明确说明与已有工具的区别。'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-
-        yield f"data: {json.dumps({'type': 'status', 'content': '正在智能生成工具...'})}\n\n"
-
-        try:
-            smart_result = builder.smart_generate(description)
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'content': f'工具生成失败: {str(e)}'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-
-        if not smart_result.get("success"):
-            need_info = smart_result.get("need_info", False)
-            questions = smart_result.get("questions", [])
-            reason = smart_result.get("reason", "")
-            if need_info and questions:
-                lines = [f"需要补充以下信息：\n"]
-                if reason:
-                    lines.append(f"{reason}\n")
-                for i, q in enumerate(questions, 1):
-                    lines.append(f"  {i}. {q}")
-                lines.append(f"\n请使用 `/tool add 原描述 + 补充信息` 重新创建，例如：")
-                lines.append(f"`/tool add {description}。补充：第1点答案是xxx，第2点答案是xxx`")
-                yield f"data: {json.dumps({'type': 'token', 'content': '\n'.join(lines)})}\n\n"
-            else:
-                yield f"data: {json.dumps({'type': 'token', 'content': f'工具生成未成功: {reason or "请提供更详细的描述"}'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-
-        tool_json = smart_result["tool"]
-        valid, msg = builder.validate_tool_json(tool_json)
-        if not valid:
-            try:
-                tool_json = builder.repair_tool(tool_json, f"校验失败原因：{msg}")
-                tool_json["name"] = tool_json.get("name", "")
-                valid, msg = builder.validate_tool_json(tool_json)
-            except Exception:
-                pass
-            if not valid:
-                yield f"data: {json.dumps({'type': 'error', 'content': f'工具定义校验失败: {msg}'})}\n\n"
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                return
-
-        import os as _os
-        base_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-        tools_dir = _os.path.join(base_dir, "agent", "agent_tools")
-
-        try:
-            builder.save_tool_to_file(tool_json, tools_dir=tools_dir, registry=registry)
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'content': f'保存失败: {str(e)}'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-
-        from agent.main import _ensure_output_dir, _create_executor
-        _ensure_output_dir(tool_json)
-
-        executor = _create_executor(
-            tool_json["name"], tool_json["execution_prompt"],
-            tool_json["execution_mode"],
-            tool_json.get("execution_code", ""),
-            tool_json.get("http_config", {}),
-            llm,
-            tool_json.get("dependencies")
-        )
-        registry.register_tool(
-            name=tool_json["name"],
-            description=tool_json["description"],
-            parameters=tool_json["parameters"],
-            func=executor
-        )
-
-        agent.reset()
-
-        mode_map = {
-            "local_execution": "本地执行",
-            "http_request": "HTTP请求",
-            "llm_simulated": "LLM模拟",
-        }
-        mode_label = mode_map.get(tool_json.get("execution_mode", ""), "")
-        yield f"data: {json.dumps({'type': 'token', 'content': f'工具 **{tool_json["name"]}** 已创建成功！\n\n- 描述：{tool_json["description"]}\n- 执行模式：{mode_label}\n- 参数：{json.dumps(tool_json.get("parameters", {}), ensure_ascii=False)}\n\n对话上下文已重置，新工具立即可用。'})}\n\n"
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
-        return
-
-    if msg.startswith("/tool update"):
-        if not _check_perm("write"):
-            yield f"data: {json.dumps({'type': 'error', 'content': '权限不足：仅管理员可以修改工具'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-        parts = msg.split(maxsplit=3)
-        tool_name = parts[2].strip() if len(parts) > 2 else ""
-        update_desc = parts[3].strip() if len(parts) > 3 else ""
-        if not tool_name:
-            yield f"data: {json.dumps({'type': 'token', 'content': '用法：`/tool update <工具名> <修改描述>`\n\n例如：`/tool update weather 增加湿度参数`'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-        if not update_desc:
-            yield f"data: {json.dumps({'type': 'token', 'content': f'请描述对工具 **{tool_name}** 的修改内容，例如：\n`/tool update {tool_name} 增加湿度参数`'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-
-        import os as _os
-        base_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-        tools_dir = _os.path.join(base_dir, "agent", "agent_tools")
-        filepath = _os.path.join(tools_dir, f"{tool_name}.json")
-        if not _os.path.isfile(filepath):
-            yield f"data: {json.dumps({'type': 'error', 'content': f'工具 **{tool_name}** 不存在，请先使用 `/tool add` 创建。'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-
-        yield f"data: {json.dumps({'type': 'status', 'content': '正在分析修改需求...'})}\n\n"
-
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                original_tool = json.load(f)
-        except Exception:
-            original_tool = {}
-
-        try:
-            tool_json = builder.repair_tool(original_tool, update_desc)
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'content': f'修复失败: {str(e)}'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-
-        tool_json["name"] = tool_name
-        valid, msg = builder.validate_tool_json(tool_json)
-        if not valid:
-            yield f"data: {json.dumps({'type': 'error', 'content': f'修复后校验失败: {msg}'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-
-        try:
-            builder.save_tool_to_file(tool_json, tools_dir=tools_dir, registry=registry)
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'content': f'保存失败: {str(e)}'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-
-        registry.unregister_tool(tool_name)
-
-        from agent.main import _ensure_output_dir, _create_executor
-        _ensure_output_dir(tool_json)
-
-        executor = _create_executor(
-            tool_name, tool_json["execution_prompt"],
-            tool_json["execution_mode"],
-            tool_json.get("execution_code", ""),
-            tool_json.get("http_config", {}),
-            llm,
-            tool_json.get("dependencies")
-        )
-        registry.register_tool(
-            name=tool_name,
-            description=tool_json["description"],
-            parameters=tool_json["parameters"],
-            func=executor
-        )
-
-        agent.reset()
-
-        yield f"data: {json.dumps({'type': 'token', 'content': f'工具 **{tool_name}** 已更新成功！\n\n- 描述：{tool_json["description"]}\n- 参数：{json.dumps(tool_json.get("parameters", {}), ensure_ascii=False)}\n\n对话上下文已重置，更新后的工具立即可用。'})}\n\n"
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
-        return
-
-    if msg.startswith("/tool delete"):
-        if not _check_perm("delete"):
-            yield f"data: {json.dumps({'type': 'error', 'content': '权限不足：仅管理员可以删除工具'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-        parts = msg.split(maxsplit=2)
-        tool_name = parts[2].strip() if len(parts) > 2 else ""
-        if not tool_name:
-            yield f"data: {json.dumps({'type': 'token', 'content': '用法：`/tool delete <工具名>`\n\n例如：`/tool delete weather`'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-
-        import os as _os
-        base_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-        tools_dir = _os.path.join(base_dir, "agent", "agent_tools")
-        filepath = _os.path.join(tools_dir, f"{tool_name}.json")
-        if not _os.path.isfile(filepath):
-            yield f"data: {json.dumps({'type': 'error', 'content': f'工具 **{tool_name}** 不存在。'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-
-        _os.remove(filepath)
-        registry.unregister_tool(tool_name)
-        registry.remove_from_manifest(tool_name)
-
-        yield f"data: {json.dumps({'type': 'token', 'content': f'工具 **{tool_name}** 已删除。'})}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
         return
 
@@ -616,20 +425,6 @@ async def _handle_command(message: str, session_id: str, user_id: int):
         return
 
     return
-
-
-def _load_tool_json(tool_name: str) -> dict:
-    import os as _os
-    base_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-    tools_dir = _os.path.join(base_dir, "agent", "agent_tools")
-    filepath = _os.path.join(tools_dir, f"{tool_name}.json")
-    if _os.path.isfile(filepath):
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            pass
-    return {}
 
 
 def _split_thinking(content: str):
@@ -684,107 +479,23 @@ def _extract_cached_tool_context(messages: list) -> str:
     )
 
 
-_meta_user_ctx = {}
-_meta_registered = False
-
-
-def _ensure_meta_tools(registry, builder, llm, tools_dir, agent):
-    global _meta_registered
-    if _meta_registered:
-        return
-
-    from server.database import log_tool_operation
-
-    def _create_tool(description: str, **kwargs):
-        return create_tool_from_chat(
-            description=description,
-            builder=builder,
-            llm=llm,
-            registry=registry,
-            tools_dir=tools_dir,
-            sandbox=None,
-            agent=agent,
-            user_ctx=_meta_user_ctx,
-            log_func=log_tool_operation,
-        )
-
-    def _update_tool(tool_name: str, update_description: str, **kwargs):
-        return update_tool_from_chat(
-            tool_name=tool_name,
-            update_description=update_description,
-            builder=builder,
-            llm=llm,
-            registry=registry,
-            tools_dir=tools_dir,
-            sandbox=None,
-            agent=agent,
-            user_ctx=_meta_user_ctx,
-            log_func=log_tool_operation,
-        )
-
-    def _delete_tool(tool_name: str, **kwargs):
-        return delete_tool_from_chat(
-            tool_name=tool_name,
-            registry=registry,
-            tools_dir=tools_dir,
-            agent=agent,
-            user_ctx=_meta_user_ctx,
-            log_func=log_tool_operation,
-        )
-
-    def _list_tools(**kwargs):
-        return list_all_tools(registry, tools_dir=tools_dir)
-
-    def _set_tool_secret(key: str, value: str, **kwargs):
-        return set_tool_secret_from_chat(
-            key=key, value=value,
-            user_ctx=_meta_user_ctx,
-            log_func=log_tool_operation,
-        )
-
-    def _delete_tool_secret(key: str, **kwargs):
-        return delete_tool_secret_from_chat(
-            key=key,
-            user_ctx=_meta_user_ctx,
-            log_func=log_tool_operation,
-        )
-
-    def _list_tool_secrets(**kwargs):
-        return list_tool_secrets_from_chat(user_ctx=_meta_user_ctx)
-
-    def _get_tool_secret(key: str, **kwargs):
-        return get_tool_secret_from_chat(key=key, user_ctx=_meta_user_ctx)
-
-    for name, func, desc in [
-        ("create_tool", _create_tool, "创建新的工具"),
-        ("update_tool", _update_tool, "更新已有工具"),
-        ("delete_tool", _delete_tool, "删除指定工具"),
-        ("list_tools", _list_tools, "查看所有已安装的工具"),
-        ("set_tool_secret", _set_tool_secret, "设置工具密钥"),
-        ("delete_tool_secret", _delete_tool_secret, "删除工具密钥"),
-        ("list_tool_secrets", _list_tool_secrets, "查看所有工具密钥"),
-        ("get_tool_secret", _get_tool_secret, "查看工具密钥详情"),
-    ]:
-        try:
-            registry.unregister_tool(name)
-        except Exception:
-            pass
-        registry.register_tool(name=name, description=desc, parameters={}, func=func)
-
-    _meta_registered = True
-
-
 async def _stream_chat(message: str, session_id: str = None, web_search: str = "off", user_id: int = None, show_thought: bool = False):
-    agent, _, registry, builder, _ = get_dependencies()
+    set_context(user_id=user_id, session_id=session_id)
+    agent, _, registry, _, skill_registry = get_dependencies()
     store = get_session_store()
-    tools_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "agent", "agent_tools")
+
+    # 截断消息用于日志
+    msg_preview = message[:80] + "..." if len(message) > 80 else message
+    logger.info(f"收到消息: \"{msg_preview}\" (len={len(message)})")
 
     if user_id is None:
         yield f"data: {json.dumps({'type': 'error', 'content': '用户未登录'})}\n\n"
+        clear_context()
         return
 
     if agent is None or registry is None:
         yield f"data: {json.dumps({'type': 'error', 'content': '服务正在初始化中，请稍后再试'})}\n\n"
+        clear_context()
         return
 
     if message.strip().startswith("/"):
@@ -816,10 +527,13 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
     if session_id:
         messages = _load_session_messages(session_id)
+        # 数据库中没有消息但内存中有，则使用内存中的（避免覆盖已有的会话）
+        if not messages and session_id in store:
+            messages = store[session_id].get("messages", [])
         if messages:
             compressed = _compress_if_needed(messages, llm, cfg)
             if len(compressed) < len(messages):
-                _save_session_messages(session_id, compressed)
+                _save_session_messages(session_id, compressed, user_id=user_id)
                 messages = compressed
         if session_id in store:
             store[session_id]["messages"] = messages
@@ -896,26 +610,6 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
         "5. 对于简单问题，用1-3句话回答即可，不要展开成段落"
     )
 
-    system_prompt += (
-        "\n\n【工具管理指令】\n"
-        "当用户明确要求创建/更新/删除/查看工具时，调用对应函数：\n"
-        "- 创建 → create_tool\n"
-        "- 更新 → update_tool\n"
-        "- 删除 → delete_tool\n"
-        "- 查看 → list_tools\n"
-        "【例外】同一句话中用户明确说了'不需要/不要/不用'创建工具，则不要调用。\n"
-        "【例外】用户只是假设性讨论（'如果做一个...工具'）而未明确要求时，不要调用。\n"
-        "其余情况（信息不足、不确定权限等）一律先调用函数，拿到结果后再回复。\n\n"
-        "【密钥管理指令】\n"
-        "当用户提供了API密钥、Token等敏感信息，或要求设置/查看/删除密钥时，调用对应函数：\n"
-        "- 设置密钥 → set_tool_secret（用户说'设置XX的API密钥为abc123'、'配置百度地图的key是xyz'等）\n"
-        "- 删除密钥 → delete_tool_secret（用户说'删除XX的密钥'）\n"
-        "- 查看所有 → list_tool_secrets（用户说'查看所有密钥'、'有哪些密钥'等）\n"
-        "- 查看指定 → get_tool_secret（用户说'看看XX的密钥'）\n"
-        "密钥将加密存储，工具中可通过 {secret:密钥名} 引用，不会随代码上传泄露。\n"
-        "创建工具时若包含API密钥，应先用 set_tool_secret 存储密钥，再创建工具引用 {secret:密钥名}。"
-    )
-
     if show_thought:
         if needs_prompt_fallback:
             system_prompt += (
@@ -970,6 +664,12 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                 file_context = build_context_prompt(parsed)
                 system_prompt = file_context + "\n\n" + system_prompt
 
+    # 注入技能上下文
+    if skill_registry and user_id:
+        skill_context = _build_skill_context(user_id, skill_registry)
+        if skill_context:
+            system_prompt += "\n" + skill_context
+
     chat_messages = [{"role": "system", "content": system_prompt}]
 
     for msg in messages:
@@ -981,7 +681,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
     if cached_hint:
         chat_messages[0]["content"] = chat_messages[0]["content"] + "\n\n" + cached_hint
 
-    tool_specs = registry.get_filtered_specs(message)
+    tool_specs = select_tools_by_intent(message, registry.get_all_openai_specs(), user_id)
     max_iterations = 10
     all_tool_calls = []
     all_thoughts = []
@@ -1000,45 +700,6 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             user_ctx["user_type"] = db_user.get("user_type", "user")
     except Exception:
         pass
-
-    # 预拦截：pending 删除的确认消息，自动执行删除
-    deletion_context = ""
-    if user_id:
-        from agent.tool_management import _pending_deletions
-        pending_tool = _pending_deletions.get(user_id)
-        if pending_tool:
-            msg_lower = message.lower()
-            tool_in_msg = pending_tool.lower() in msg_lower
-            confirm_words = ["确认", "确定", "好的", "是", "删除"]
-            is_confirm = any(w in msg_lower for w in confirm_words)
-            is_short = len(message.strip()) <= 15
-
-            if is_confirm and (tool_in_msg or is_short):
-                result = delete_tool_from_chat(
-                    tool_name=pending_tool,
-                    registry=registry,
-                    tools_dir=tools_dir,
-                    agent=agent,
-                    user_ctx=user_ctx,
-                    log_func=None,
-                )
-                if result.get("success"):
-                    deletion_context = f"\n\n[系统消息] 工具 {pending_tool} 已成功删除。"
-                    try:
-                        from server.database import log_tool_operation
-                        log_tool_operation("delete", pending_tool, user_ctx)
-                    except Exception:
-                        pass
-                _pending_deletions.pop(user_id, None)
-
-    if deletion_context:
-        chat_messages.append({"role": "system", "content": deletion_context})
-
-    _ensure_meta_tools(registry, builder, llm, tools_dir, agent)
-    _meta_user_ctx.clear()
-    _meta_user_ctx.update(user_ctx)
-    tool_specs = [t for t in tool_specs if t.get("function", {}).get("name") not in META_TOOL_NAMES]
-    tool_specs = list(tool_specs) + META_TOOL_SPECS
 
     try:
         for iteration in range(max_iterations):
@@ -1138,6 +799,10 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
                 return
+            finally:
+                # 确保流式生成器被正确关闭，避免连接泄漏导致光标卡住
+                if hasattr(stream, 'close'):
+                    stream.close()
     
             if reasoning_field is None and not _in_thinking and _stream_buf.strip():
                 yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf})}\n\n"
@@ -1156,27 +821,17 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                         all_thoughts.append(thinking)
     
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
-    
-                if session_id:
-                    store[session_id]["messages"].append({"role": "user", "content": message})
-                    assistant_msg = {"role": "assistant", "content": answer or full_content}
-                    if search_info:
-                        assistant_msg["search"] = search_info
-                    if all_thoughts:
-                        assistant_msg["thought"] = "\n\n".join(all_thoughts)
-                    if all_tool_calls:
-                        assistant_msg["tools"] = all_tool_calls
-                    store[session_id]["messages"].append(assistant_msg)
-                    title = None
-                    if len(store[session_id]["messages"]) <= 2:
-                        title = _generate_title(message, answer or full_content, llm)
-                        store[session_id]["title"] = title
-                    import logging
-                    log = logging.getLogger("chat")
-                    for i, m in enumerate(store[session_id]["messages"]):
-                        if m.get("role") == "assistant":
-                            log.info(f"[SAVE] msg[{i}] role={m['role']} has_thought={bool(m.get('thought'))} has_tools={bool(m.get('tools'))} thought_len={len(m.get('thought',''))} content_len={len(m.get('content',''))}")
-                    _save_session_messages(session_id, store[session_id]["messages"], title)
+
+                # 后处理（标题生成、数据库保存等）放到后台任务，避免阻塞流关闭
+                _captured = {
+                    "session_id": session_id, "store": store, "message": message,
+                    "answer": answer, "full_content": full_content,
+                    "search_info": search_info, "all_thoughts": all_thoughts,
+                    "all_tool_calls": all_tool_calls, "llm": llm,
+                    "user_id": user_id, "iteration": iteration,
+                }
+                asyncio.create_task(_post_process_done(**_captured))
+                clear_context()
                 return
     
             if full_content:

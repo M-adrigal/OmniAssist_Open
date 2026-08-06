@@ -1,5 +1,7 @@
 import json
+import re
 
+from agent.intent_keywords import select_tools_by_intent, TOOL_CATEGORIES
 from agent.model_gateway import ModelGateway
 
 
@@ -27,7 +29,8 @@ SYSTEM_PROMPT_WITH_THOUGHT = """你是一个能使用工具的助手，可以根
 class SimpleAgent:
     """Agent 主循环类，处理多轮对话和工具调用"""
 
-    def __init__(self, llm_client, tool_registry, context_limit='', show_thought=False):
+    def __init__(self, llm_client, tool_registry, context_limit='', show_thought=False,
+                 skill_context="", silent=False):
         """初始化 SimpleAgent
 
         Args:
@@ -35,11 +38,17 @@ class SimpleAgent:
             tool_registry: ToolRegistry 实例
             context_limit: 上下文限制，如 "32k"、"64k"、"128k"，为空则使用模型最大上下文
             show_thought: 是否显示思考过程
+            skill_context: 技能上下文，注入系统提示词
+            silent: 静默模式，不打印终端输出（用于子 Agent）
         """
         self.llm = llm_client
         self.tool_registry = tool_registry
         self.show_thought = show_thought
         self.context_limit = context_limit
+        self.skill_context = skill_context
+        self.silent = silent
+        self.user_id = None  # 当前用户 ID，用于加载用户级配置
+        self._system_prompt = SYSTEM_PROMPT
         self._context_limit_tokens = self._parse_context_limit(context_limit)
         self._gateway = ModelGateway(llm_client.model if hasattr(llm_client, 'model') else "")
         self.messages = []
@@ -91,7 +100,11 @@ class SimpleAgent:
         if self.show_thought and self._gateway.needs_prompt_fallback:
             prompt = SYSTEM_PROMPT_WITH_THOUGHT
         else:
-            prompt = SYSTEM_PROMPT
+            prompt = self._system_prompt
+
+        # 追加技能上下文
+        if self.skill_context:
+            prompt += "\n" + self.skill_context
 
         if self.messages and self.messages[0]["role"] == "system":
             self.messages[0] = {"role": "system", "content": prompt}
@@ -105,6 +118,15 @@ class SimpleAgent:
             enabled: True 开启，False 关闭
         """
         self.show_thought = enabled
+        self._rebuild_system_message()
+
+    def set_skill_context(self, context: str):
+        """设置技能上下文
+
+        Args:
+            context: 技能上下文字符串
+        """
+        self.skill_context = context
         self._rebuild_system_message()
 
     def update_context_limit(self, context_limit: str):
@@ -147,6 +169,24 @@ class SimpleAgent:
             history_msgs = history_msgs[1:]
 
         self.messages = [system_msg] + history_msgs
+
+    def _select_tools(self, user_input: str) -> list:
+        """根据用户意图动态选择相关工具，减少 token 开销
+
+        委托给 intent_keywords.select_tools_by_intent()，
+        支持用户级关键词（加载自 data/intent_keywords/{user_id}.json）。
+
+        Args:
+            user_input: 用户输入文本
+
+        Returns:
+            list: 选中的工具 OpenAI spec 列表
+        """
+        return select_tools_by_intent(
+            user_input,
+            self.tool_registry.get_all_openai_specs(),
+            self.user_id
+        )
 
     @staticmethod
     def compress_messages(messages: list, llm_client, context_limit_tokens: int = 0) -> list:
@@ -203,29 +243,51 @@ class SimpleAgent:
             str: 最终回复
         """
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": user_input}
         ]
 
-        tool_specs = self.tool_registry.get_all_openai_specs()
+        tool_specs = self._select_tools(user_input)
 
         for _ in range(max_iterations):
-            response = self.llm.chat(messages, tools=tool_specs)
+            content = ""
+            tool_calls = None
 
-            if "tool_calls" not in response:
-                return response["content"]
+            for chunk in self.llm.chat_stream(messages, tools=tool_specs):
+                if chunk.get("content"):
+                    content += chunk["content"]
+                    if not self.silent:
+                        print(chunk["content"], end="", flush=True)
 
+                if chunk.get("finish_reason"):
+                    tool_calls = chunk.get("tool_calls")
+                    content = chunk.get("full_content") or content
+
+            if not tool_calls:
+                if not self.silent:
+                    print()
+                return content
+
+            if not self.silent:
+                print()
+            response = {
+                "role": "assistant",
+                "content": content or None,
+                "tool_calls": tool_calls
+            }
             messages.append(response)
 
-            for tool_call in response["tool_calls"]:
+            for tool_call in tool_calls:
                 tool_name = tool_call["function"]["name"]
                 tool_arguments = json.loads(tool_call["function"]["arguments"])
 
-                print(f"[调用工具] {tool_name} 参数: {tool_arguments}")
+                if not self.silent:
+                    print(f"[调用工具] {tool_name} 参数: {tool_arguments}")
 
                 tool_result = self.tool_registry.execute(tool_name, tool_arguments)
 
-                print(f"[工具结果] {tool_result}")
+                if not self.silent:
+                    print(f"[工具结果] {tool_result}")
 
                 messages.append({
                     "role": "tool",
@@ -250,26 +312,65 @@ class SimpleAgent:
 
         self._trim_messages()
 
-        tool_specs = self.tool_registry.get_all_openai_specs()
+        tool_specs = self._select_tools(user_input)
 
         for _ in range(max_iterations):
             gw_cfg = self._gateway.build_params(self.show_thought, temperature=0)
-            response = self.llm.chat(self.messages, tools=tool_specs, **gw_cfg["api_params"])
 
-            if self.show_thought:
-                reasoning = response.get("reasoning_content")
-                if reasoning:
-                    print(f"[思考] {reasoning.strip()}")
-                elif response.get("content"):
-                    print(f"[思考] {response['content'].strip()}")
+            # 使用流式调用，实时打印 token
+            content = ""
+            reasoning_content = ""
+            tool_calls = None
+            first_token = True
 
-            if "tool_calls" not in response:
+            for chunk in self.llm.chat_stream(self.messages, tools=tool_specs, **gw_cfg["api_params"]):
+                if chunk.get("reasoning_content"):
+                    if first_token:
+                        print("[思考] ", end="", flush=True)
+                        first_token = False
+                    rc = chunk["reasoning_content"]
+                    reasoning_content += rc
+                    print(rc, end="", flush=True)
+
+                if chunk.get("content"):
+                    c = chunk["content"]
+                    # 思考结束后换行再输出回答
+                    if reasoning_content and not content:
+                        print("\n")
+                    if first_token:
+                        first_token = False
+                    content += c
+                    print(c, end="", flush=True)
+
+                if chunk.get("finish_reason"):
+                    tool_calls = chunk.get("tool_calls")
+                    reasoning_content = chunk.get("full_reasoning_content") or reasoning_content
+                    content = chunk.get("full_content") or content
+
+            if content and not tool_calls:
+                print()  # 换行
+                response = {"role": "assistant", "content": content}
+                if reasoning_content:
+                    response["reasoning_content"] = reasoning_content
                 self.messages.append(response)
-                return response["content"]
+                return content
 
+            if not tool_calls:
+                print()
+                return content or ""
+
+            # 有工具调用
+            print()  # 换行
+            response = {
+                "role": "assistant",
+                "content": content or None,
+                "tool_calls": tool_calls
+            }
+            if reasoning_content:
+                response["reasoning_content"] = reasoning_content
             self.messages.append(response)
 
-            for tool_call in response["tool_calls"]:
+            for tool_call in tool_calls:
                 tool_name = tool_call["function"]["name"]
                 tool_arguments = json.loads(tool_call["function"]["arguments"])
 

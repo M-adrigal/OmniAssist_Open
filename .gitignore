@@ -58,6 +58,7 @@ Thumbs.db
 logs/
 
 # Test
+tests/
 .pytest_cache/
 coverage/
 .coverage

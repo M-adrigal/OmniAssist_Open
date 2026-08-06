@@ -113,8 +113,13 @@
       75% { transform: translate(-25px, -15px) scale(1.05); }
     }
 
+    /* 亮色模式 - 时段背景 */
     body.time-morning {
       background: linear-gradient(160deg, #fdfbfb 0%, #f5f0e8 30%, #ebedee 100%);
+    }
+
+    body.time-noon {
+      background: linear-gradient(160deg, #f8f9fc 0%, #e8eef4 40%, #dce4ed 100%);
     }
 
     body.time-afternoon {
@@ -129,20 +134,25 @@
       background: linear-gradient(160deg, #0f0f23 0%, #1a1a2e 40%, #16213e 100%);
     }
 
+    /* 暗色模式 - 时段背景 */
     .dark body.time-morning {
-      background: linear-gradient(160deg, #1a1512 0%, #1f1a18 30%, #1a1a2e 100%);
+      background: linear-gradient(160deg, #1c1814 0%, #201c16 30%, #1a1a28 100%);
+    }
+
+    .dark body.time-noon {
+      background: linear-gradient(160deg, #1a1a26 0%, #1e1e2c 40%, #1a2232 100%);
     }
 
     .dark body.time-afternoon {
-      background: linear-gradient(160deg, #0d1b2a 0%, #122438 40%, #1a2332 100%);
+      background: linear-gradient(160deg, #141c28 0%, #18202c 40%, #1a2434 100%);
     }
 
     .dark body.time-evening {
-      background: linear-gradient(160deg, #1a1010 0%, #1f1515 30%, #1a1a2e 100%);
+      background: linear-gradient(160deg, #1c161a 0%, #201a1e 40%, #1a1a2a 100%);
     }
 
     .dark body.time-night {
-      background: linear-gradient(160deg, #050510 0%, #0a0a1a 40%, #0d0d2b 100%);
+      background: linear-gradient(160deg, #080812 0%, #0c0c1a 40%, #0a1020 100%);
     }
 
     .login-container {
@@ -171,8 +181,13 @@
       transition: background 0.8s ease;
     }
 
+    /* 亮色模式 - 插画区时段背景 */
     .login-illustration.time-morning {
       background: linear-gradient(135deg, rgba(255, 236, 210, 0.65) 0%, rgba(252, 182, 159, 0.55) 40%, rgba(248, 205, 218, 0.50) 100%);
+    }
+
+    .login-illustration.time-noon {
+      background: linear-gradient(135deg, rgba(200, 215, 235, 0.55) 0%, rgba(180, 200, 225, 0.50) 100%);
     }
 
     .login-illustration.time-afternoon {
@@ -185,6 +200,27 @@
 
     .login-illustration.time-night {
       background: linear-gradient(135deg, rgba(26, 26, 46, 0.70) 0%, rgba(22, 33, 62, 0.65) 50%, rgba(15, 52, 96, 0.55) 100%);
+    }
+
+    /* 暗色模式 - 插画区时段背景 */
+    .dark .login-illustration.time-morning {
+      background: linear-gradient(135deg, rgba(45, 38, 30, 0.75) 0%, rgba(50, 42, 35, 0.70) 40%, rgba(40, 35, 45, 0.65) 100%);
+    }
+
+    .dark .login-illustration.time-noon {
+      background: linear-gradient(135deg, rgba(38, 42, 50, 0.75) 0%, rgba(42, 46, 55, 0.70) 100%);
+    }
+
+    .dark .login-illustration.time-afternoon {
+      background: linear-gradient(135deg, rgba(28, 35, 48, 0.75) 0%, rgba(32, 40, 55, 0.70) 100%);
+    }
+
+    .dark .login-illustration.time-evening {
+      background: linear-gradient(135deg, rgba(45, 32, 38, 0.75) 0%, rgba(50, 38, 42, 0.70) 60%, rgba(42, 35, 45, 0.65) 100%);
+    }
+
+    .dark .login-illustration.time-night {
+      background: linear-gradient(135deg, rgba(18, 20, 38, 0.80) 0%, rgba(22, 26, 48, 0.75) 50%, rgba(15, 22, 40, 0.70) 100%);
     }
 
     .login-illustration svg {
@@ -384,19 +420,27 @@
       const illustEl = document.querySelector('.login-illustration');
 
       let timeClass = '';
-      if (hour >= 5 && hour < 11) {
-        greetingEl.textContent = '早上好，欢迎回来';
+      let greeting = '';
+      if (hour >= 5 && hour < 8) {
+        greeting = '早上好，欢迎回来';
         timeClass = 'time-morning';
-      } else if (hour >= 11 && hour < 17) {
-        greetingEl.textContent = '下午好，欢迎回来';
+      } else if (hour >= 8 && hour < 11) {
+        greeting = '上午好，欢迎回来';
+        timeClass = 'time-morning';
+      } else if (hour >= 11 && hour < 13) {
+        greeting = '中午好，欢迎回来';
+        timeClass = 'time-noon';
+      } else if (hour >= 13 && hour < 18) {
+        greeting = '下午好，欢迎回来';
         timeClass = 'time-afternoon';
-      } else if (hour >= 17 && hour < 20) {
-        greetingEl.textContent = '傍晚好，欢迎回来';
+      } else if (hour >= 18 && hour < 20) {
+        greeting = '傍晚好，欢迎回来';
         timeClass = 'time-evening';
       } else {
-        greetingEl.textContent = '晚上好，欢迎回来';
+        greeting = '晚上好，欢迎回来';
         timeClass = 'time-night';
       }
+      greetingEl.textContent = greeting;
       illustEl.classList.add(timeClass);
       document.body.classList.add(timeClass);
 

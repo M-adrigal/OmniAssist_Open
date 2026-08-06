@@ -24,6 +24,12 @@
 - **主题切换**：三态循环切换（自动 → 暗色 → 亮色），自动模式跟随操作系统主题偏好
 - **文件管理**：前端可浏览、预览和下载工具生成的文件，点击文件名即可在新标签页中预览（支持 PDF、图片、文本等格式）
 - **上下文压缩**：支持设置上下文 token 上限（如 32k、64k、128k），自动压缩历史消息避免超限
+- **日志系统**：统一格式的结构化日志，支持按天/大小轮转，错误日志分离，线程安全的用户上下文注入，方便问题排查
+- **用户级技能仓库**：系统技能与用户技能物理隔离，用户可创建/修改/删除自定义技能，系统技能仅管理员可维护，同名用户技能覆盖系统技能
+- **意图关键词自优化**：基于用户输入动态匹配意图关键词，支持按用户存储和自动优化，提升工具选择精准度
+- **任务复盘系统**：记录任务执行日志，自动分析失败模式，生成 Skill 优化建议
+- **多用户独立沙箱**：每位用户拥有独立的 venv 虚拟环境，依赖完全隔离，避免多用户共享依赖池导致的版本冲突
+- **子 Agent 调度**：支持多子 Agent 配置文件，按需加载，通过 AgentPool 统一管理
 
 ## 快速开始
 
@@ -160,7 +166,7 @@ Agent 会自动完成以下步骤：
 - **用户认证**：基于 HMAC-SHA256 签名的 Token 认证，30 分钟过期
 - **密码加密**：SHA256 哈希存储，不保存明文
 - **API Key 加密**：敏感信息使用 XOR + SHA256 派生密钥加密存储
-- **执行隔离**：工具代码在独立 venv 虚拟环境和子进程中运行，崩溃不影响主服务
+- **执行隔离**：工具代码在独立 venv 虚拟环境和子进程中运行，崩溃不影响主服务。每位用户拥有独立的沙箱环境，依赖完全隔离
 - **超时保护**：每次执行设有超时限制，防止死循环
 - **模块管控**：自动拦截危险系统模块，仅允许安全的 Python 标准库
 - **路径安全**：文件操作限定在指定目录内，防止路径穿越攻击
@@ -179,7 +185,8 @@ Agent 会自动完成以下步骤：
 │       ├── config.py     # 模型与搜索配置
 │       ├── files.py      # 文件浏览、预览与下载
 │       ├── sessions.py   # 会话管理
-│       ├── tools.py      # 工具管理 API
+│       ├── skills.py       # 技能管理
+│       ├── upload.py     # 文件上传
 │       └── users.py      # 用户管理
 ├── static/               # 前端静态资源
 │   ├── index.html        # 主页面
@@ -192,17 +199,30 @@ Agent 会自动完成以下步骤：
 │   ├── llm.py            # LLM 客户端（OpenAI 兼容）
 │   ├── config.py         # 配置管理（加密存储）
 │   ├── tools.py          # 工具注册与执行
-│   ├── tool_builder.py   # 自然语言工具生成（分析/生成/修复）
-│   ├── tool_management.py # 自然语言工具管理（Meta-Tool：创建/更新/删除/查询）
-│   ├── sandbox.py        # 安全执行沙箱（venv + 子进程）
+│   ├── sandbox.py        # 安全执行沙箱（多用户独立 venv）
+│   ├── sandbox_pool.py   # 沙箱池管理（用户隔离、懒加载）
 │   ├── model_gateway.py  # 多模型参数适配（思考模式/温度等）
-│   ├── pdf_formatter.py  # PDF 文档格式化引擎（ReportLab）
-│   ├── document_formatter.py  # Word 文档格式化引擎（python-docx）
-│   ├── excel_formatter.py     # Excel 文档格式化引擎（openpyxl）
-│   ├── ppt_formatter.py       # PPT 文档格式化引擎（python-pptx）
-│   └── agent_tools/      # 工具定义 JSON 文件
-├── document_output/      # 用户文件输出目录（按用户 ID 隔离）
-├── tool_sandbox/         # 沙箱虚拟环境（自动创建）
+│   ├── logger.py         # 日志系统（格式化、轮转、上下文注入）
+│   ├── skill_registry.py  # 技能系统（系统/用户双仓库、注册、加载）
+│   ├── skill_editor.py   # 用户技能编辑器（CRUD 操作）
+│   ├── intent_keywords.py # 用户级意图关键词管理（动态匹配与自优化）
+│   ├── task_reviewer.py  # 任务复盘系统（日志记录、失败分析、优化建议）
+│   ├── agent_pool.py     # 子 Agent 池（多 Agent 调度与管理）
+│   ├── file_parser.py    # 文件解析器
+│   ├── tool_secrets.py   # 工具密钥管理
+│   └── skills/           # 技能脚本
+│       ├── document/     # 文档生成（含 PDF/Word/Excel/PPT 格式化引擎）
+│       ├── calculator/   # 计算器
+│       ├── datetime/     # 日期时间
+│       ├── weather/      # 天气查询
+│       ├── user/         # 用户自定义技能（按 user_id 隔离）
+│       └── ...           # 其他技能
+├── tests/                # 测试
+│   └── full_test.py      # 综合测试套件
+├── logs/                 # 日志文件（自动创建）
+│   ├── app.log           # 全量日志
+│   └── error.log         # 错误日志
+├── tool_sandbox/         # 沙箱虚拟环境（按用户 ID 隔离）
 ├── requirements.txt      # Python 依赖
 ├── README.md             # 项目说明
 ├── deploy.md             # 部署指南

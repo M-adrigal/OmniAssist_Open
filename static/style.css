@@ -387,14 +387,16 @@ body {
   padding: 0;
 }
 
-/* 流式输出光标 */
+/* 流式输出三点动画 */
 .streaming-cursor::after {
-  content: "▊";
-  animation: blink 1s step-end infinite;
+  content: ".";
+  animation: dots 1.5s steps(1) infinite;
 }
 
-@keyframes blink {
-  50% { opacity: 0; }
+@keyframes dots {
+  0% { content: "."; }
+  33% { content: ".."; }
+  66% { content: "..."; }
 }
 
 /* 输入区域 */
@@ -904,38 +906,53 @@ body {
   gap: 8px;
 }
 
-.tool-card {
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 14px 16px;
+/* Toggle 开关 */
+.toggle-label {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  cursor: pointer;
 }
 
-.tool-card .tool-name {
-  font-weight: 600;
-  font-size: 14px;
-  margin-bottom: 4px;
-  color: var(--accent);
+.toggle-label input {
+  opacity: 0;
+  width: 0;
+  height: 0;
 }
 
-.tool-card .tool-desc {
-  font-size: 13px;
-  color: var(--text-secondary);
-  margin-bottom: 8px;
-  line-height: 1.5;
-}
-
-.tool-card .tool-meta {
-  display: flex;
-  gap: 12px;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.tool-card .tool-meta span {
+.toggle-switch {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   background: var(--bg-tertiary);
-  padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: 11px;
+  transition: all 0.2s;
+  border: 1px solid var(--border);
+}
+
+.toggle-switch::before {
+  content: "";
+  position: absolute;
+  height: 16px;
+  width: 16px;
+  left: 2px;
+  bottom: 2px;
+  background: var(--bg-primary);
+  border-radius: 50%;
+  transition: all 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+
+.toggle-label input:checked + .toggle-switch {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.toggle-label input:checked + .toggle-switch::before {
+  transform: translateX(18px);
 }
 
 /* 文件列表 */
@@ -2454,4 +2471,123 @@ body {
   background: var(--bg-primary);
   border-radius: 16px;
   overflow: hidden;
+}
+
+/* ===== 技能列表 Tab ===== */
+.skill-tab {
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color .2s, border-color .2s;
+}
+.skill-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.skill-tab:hover { color: var(--text); }
+
+/* 技能列表项 */
+.skill-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+  transition: background .15s;
+}
+.skill-item:hover { background: var(--bg-hover); }
+.skill-item .skill-info {
+  flex: 1;
+  min-width: 0;
+}
+.skill-item .skill-name {
+  font-weight: 500;
+  font-size: 14px;
+}
+.skill-item .skill-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.skill-item .skill-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 技能开关按钮 */
+.skill-toggle {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  background: var(--border);
+  border-radius: 11px;
+  cursor: pointer;
+  transition: background .2s;
+  border: none;
+  padding: 0;
+  flex-shrink: 0;
+}
+.skill-toggle.on { background: var(--accent); }
+.skill-toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform .2s;
+}
+.skill-toggle.on::after { transform: translateX(18px); }
+
+/* 预览按钮 */
+.btn-preview {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+  transition: border-color .2s, color .2s;
+}
+.btn-preview:hover { border-color: var(--accent); color: var(--accent); }
+
+/* 技能预览代码块 */
+.skill-preview-script {
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.skill-preview-script h4 {
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--bg-hover);
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.skill-preview-script pre {
+  margin: 0;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 300px;
+  overflow: auto;
+  background: var(--bg);
+  color: var(--text);
 }

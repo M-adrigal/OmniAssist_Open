@@ -1,4 +1,7 @@
 from openai import OpenAI
+from agent.logger import get_logger
+
+logger = get_logger("llm")
 
 
 class LLMClient:
@@ -103,10 +106,20 @@ class LLMClient:
         if extra_body is not None:
             create_kwargs["extra_body"] = extra_body
 
+        import time as _time
+        _start = _time.time()
         response = self.client.chat.completions.create(**create_kwargs)
+        _elapsed = _time.time() - _start
 
         msg = response.choices[0].message
         result = {"role": "assistant", "content": msg.content}
+
+        # 记录 API 调用信息
+        has_tools = bool(tools)
+        token_info = ""
+        if hasattr(response, 'usage') and response.usage:
+            token_info = f", tokens={response.usage.prompt_tokens}(入)+{response.usage.completion_tokens}(出)"
+        logger.info(f"API 请求: model={self.model}, messages={len(messages)}, tools={len(tools) if tools else 0}, 耗时 {_elapsed:.1f}s{token_info}")
 
         if hasattr(msg, "reasoning_content") and msg.reasoning_content:
             result["reasoning_content"] = msg.reasoning_content
@@ -163,47 +176,52 @@ class LLMClient:
         tool_calls = []
         finish_reason = None
 
-        for chunk in stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            finish_reason = chunk.choices[0].finish_reason
+        try:
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                finish_reason = chunk.choices[0].finish_reason
 
-            if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-                reasoning_text = delta.reasoning_content
-                reasoning_content += reasoning_text
-                yield {"reasoning_content": reasoning_text}
+                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                    reasoning_text = delta.reasoning_content
+                    reasoning_content += reasoning_text
+                    yield {"reasoning_content": reasoning_text}
 
-            if delta.content:
-                content += delta.content
-                yield {"content": delta.content}
+                if delta.content:
+                    content += delta.content
+                    yield {"content": delta.content}
 
-            if delta.tool_calls:
-                for tc_delta in delta.tool_calls:
-                    idx = tc_delta.index
-                    while len(tool_calls) <= idx:
-                        tool_calls.append({
-                            "id": "",
-                            "type": "function",
-                            "function": {"name": "", "arguments": ""}
-                        })
-                    if tc_delta.id:
-                        tool_calls[idx]["id"] = tc_delta.id
-                    if tc_delta.function:
-                        if tc_delta.function.name:
-                            tool_calls[idx]["function"]["name"] = tc_delta.function.name
-                        if tc_delta.function.arguments:
-                            tool_calls[idx]["function"]["arguments"] += tc_delta.function.arguments
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        while len(tool_calls) <= idx:
+                            tool_calls.append({
+                                "id": "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""}
+                            })
+                        if tc_delta.id:
+                            tool_calls[idx]["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                tool_calls[idx]["function"]["name"] = tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                tool_calls[idx]["function"]["arguments"] += tc_delta.function.arguments
 
-            if finish_reason:
-                yield {
-                    "content": None,
-                    "finish_reason": finish_reason,
-                    "tool_calls": tool_calls if tool_calls else None,
-                    "full_content": content,
-                    "full_reasoning_content": reasoning_content if reasoning_content else None,
-                }
-                return
+                if finish_reason:
+                    yield {
+                        "content": None,
+                        "finish_reason": finish_reason,
+                        "tool_calls": tool_calls if tool_calls else None,
+                        "full_content": content,
+                        "full_reasoning_content": reasoning_content if reasoning_content else None,
+                    }
+                    return
+        finally:
+            # 确保 OpenAI 流式连接被关闭, 避免因调用方提前 break 导致连接泄漏
+            if hasattr(stream, 'close'):
+                stream.close()
 
 
 if __name__ == "__main__":

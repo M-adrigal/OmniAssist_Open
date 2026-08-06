@@ -27,8 +27,8 @@ python server/main.py
 # 终端模式
 cd agent && python main.py
 
-# 查看已安装工具
-ls agent/agent_tools/
+# 查看已安装技能
+ls agent/skills/
 ```
 
 ## 4. 代码风格与规范
@@ -45,11 +45,10 @@ ls agent/agent_tools/
 - **API 封装**: 统一通过 `API` 对象（`API.get/post/put/del`）发起请求
 - **状态管理**: 全局 `state` 对象，无框架
 
-### 工具定义（`agent/agent_tools/*.json`）
-- 工具名 `snake_case`，描述用中文
+### 工具定义
+- 工具通过 `ToolRegistry` 注册，`func_factory` 回调创建执行器
+- 工具执行逻辑在沙箱中运行，`sandbox.py` 提供隔离环境
 - 参数定义遵循 JSON Schema 规范
-- `execution_mode` 三选一：`local_execution` / `http_request` / `llm_simulated`
-- `response_formatter`（可选）：Python 代码字符串，直接格式化 API 响应绕过 LLM
 
 ## 5. 架构约束
 
@@ -58,16 +57,20 @@ agent/                  # Agent 核心（不依赖 server/）
   agent.py              # SimpleAgent 主循环
   llm.py                # LLMClient（OpenAI 兼容）
   tools.py              # ToolRegistry 工具注册
-  tool_builder.py       # ToolBuilder 自然语言创建工具
-  tool_management.py    # 自然语言工具管理（创建/更新/删除/查询组件注册）
-  sandbox.py            # 沙箱隔离执行（含用户目录路径替换）
+  sandbox.py            # 沙箱隔离执行（含用户目录路径替换、SandboxPool）
   config.py             # 加密配置管理
   model_gateway.py      # 多模型参数适配（思考模式/温度等）
-  pdf_formatter.py      # PDF 文档格式化引擎（ReportLab）
-  document_formatter.py # Word 文档格式化引擎（python-docx）
-  excel_formatter.py    # Excel 文档格式化引擎（openpyxl）
-  ppt_formatter.py      # PPT 文档格式化引擎（python-pptx）
-  agent_tools/          # 工具 JSON 定义文件
+  logger.py             # 日志系统（格式化、轮转、上下文注入）
+  skill_registry.py     # 技能系统（系统/用户双仓库、注册、加载、上下文注入）
+  skill_editor.py       # 用户技能编辑器（CRUD）
+  intent_keywords.py    # 用户级意图关键词管理
+  task_reviewer.py      # 任务复盘系统
+  agent_pool.py         # 子 Agent 池管理
+  file_parser.py        # 文件解析器
+  tool_secrets.py       # 工具密钥管理
+  skills/               # 技能脚本
+    document/           # 文档生成技能（含格式化引擎）
+    calculator/ datetime/ weather/ ...
 server/                 # Web 服务层（依赖 agent/）
   main.py               # FastAPI 应用入口，全局服务初始化
   database.py           # SQLite 操作（线程本地连接，含用户目录管理）
@@ -78,7 +81,8 @@ server/                 # Web 服务层（依赖 agent/）
     config.py           # 系统配置
     files.py            # 文件列表/下载/预览（用户隔离 + 权限控制）
     sessions.py         # 会话管理
-    tools.py            # 工具管理
+    skills.py           # 技能管理
+    upload.py           # 文件上传
     users.py            # 用户管理（创建/删除含文件保留选项）
 static/                 # 前端静态文件（独立，不依赖 server/ 内部）
   index.html            # 主页
@@ -210,31 +214,115 @@ Office 文档（`.docx .xlsx .pptx`）不支持浏览器端预览，仅提供下
 - `data/.agent_config` — 加密的模型配置（0o600 权限）
 - `data/.agent_salt` — 加密盐值（0o600 权限）
 
-### 5.6 自然语言工具管理
+### 5.6 日志系统
 
-工具管理（创建/更新/删除/查看）已集成到对话中，用户通过自然语言即可操作，无需输入 `/tool` 或 `/model` 命令。
+日志系统（`agent/logger.py`）提供统一的结构化日志输出，支持轮转和上下文注入。
 
-**架构**: 工具管理功能通过 Meta-Tool 机制实现。`agent/tool_management.py` 定义了 4 个元工具函数（`create_tool`/`update_tool`/`delete_tool`/`list_tools`），这些函数以 OpenAI function calling 格式注册到 LLM，当用户消息涉及工具管理时，LLM 自动调用对应函数。
+**日志格式**: `[时间戳] [级别] [模块名] [user:N] [sess:xxx] 消息内容`
 
-**关键组件**:
-- `agent/tool_management.py` — 元工具定义与执行逻辑，含权限检查、重复检测、自测、待确认删除跟踪
-- `server/routes/chat.py` — Meta-Tool 全局单例注册、系统提示词注入、删除预拦截
-- `agent/tool_builder.py` — 底层工具生成与校验（被 `create_tool`/`update_tool` 复用）
+**日志级别**: DEBUG / INFO / WARNING / ERROR / CRITICAL
 
-**权限控制**:
-- `create_tool`/`update_tool`/`delete_tool` — 仅管理员可用，非管理员返回权限制止
-- `list_tools` — 所有用户可用
+**日志文件**:
+- `logs/app.log` — 全量日志（INFO 及以上），按天轮转 + 10MB 大小限制，保留 30 天
+- `logs/error.log` — 错误日志（仅 ERROR 及以上），独立存储
 
-**删除确认机制**:
-1. LLM 调用 `delete_tool`，函数返回 `needs_confirmation` 状态，并记录 `_pending_deletions[user_id] = tool_name`
-2. 用户回复确认消息（含"确认/确定/好的/是"等关键词），服务端预拦截自动执行删除，不经过 LLM
-3. 删除完成后清除 `_pending_deletions` 记录
+**上下文注入**: 通过 `set_context(user_id, session_id)` 和 `clear_context()` 实现线程安全的用户/会话上下文注入。
 
-**自测流程**: 工具创建或更新后，自动执行工具函数并用典型参数测试，测试结果包含在返回信息中反馈给用户。
+**模块名约定**:
+| 模块名 | 文件 |
+|--------|------|
+| `agent.se` | `server/main.py` |
+| `agent.au` | `server/routes/auth.py` |
+| `agent.ch` | `server/routes/chat.py` |
+| `agent.db` | `server/database.py` |
+| `agent.ll` | `agent/llm.py` |
+| `agent.sa` | `agent/sandbox.py` |
+| `agent.po` | `agent/agent_pool.py` |
+| `agent.sk` | `agent/skill_registry.py` |
 
-**系统提示词**: chat.py 在每次对话构建时注入精简的工具管理指令，引导 LLM 在用户明确要求时优先调用元工具函数，例外情况（用户明确说"不需要/不要"、假设性讨论）跳过调用。
+**NEVER 规则**:
+- **NEVER** 使用 `print()` 输出调试信息 — 使用 `logger.debug/info/warning/error`
 
-**前端**: 输入框中 `/tool` 和 `/model` 相关斜杠命令已隐藏，仅保留 `/help` 和 `/reset`。工具管理面板（设置 → 工具管理）仍可通过左侧设置抽屉访问。
+### 5.7 用户沙箱隔离
+
+每位用户拥有独立的沙箱虚拟环境，避免多用户共享依赖池导致的版本冲突。
+
+**目录结构**:
+```
+tool_sandbox/
+  1/                    # 用户 ID
+    venv/               # 独立的 Python 虚拟环境
+    deps.json           # 已安装依赖列表
+  2/                    # 另一个用户
+    venv/
+    deps.json
+```
+
+**工作原理**:
+1. **沙箱池** → `sandbox.py` 的 `SandboxPool` 管理所有用户沙箱，懒加载创建
+2. **依赖安装** → 通过 AST 解析脚本中的 `import` 语句，自动提取并安装依赖
+3. **线程安全** → `SandboxPool.get_sandbox(user_id)` 确保线程安全的沙箱获取与释放
+
+**关键函数**:
+- `sandbox.py`: `SandboxPool.get_sandbox(user_id)` / `release_sandbox(user_id)` / `destroy_sandbox(user_id)`
+- `sandbox.py`: `ToolSandbox._parse_imports(code)` — AST 依赖提取
+- `sandbox.py`: `ToolSandbox.install(packages)` — 静默安装
+- `sandbox.py`: `ToolSandbox.install_verbose(packages)` — 带输出安装
+
+### 5.8 技能系统（双仓库）
+
+技能系统支持系统技能和用户技能两套仓库，物理隔离。
+
+**目录结构**:
+```
+agent/skills/
+  calculator/           # 系统技能（只读，仅管理员可维护）
+  document/
+  ...
+  user/                 # 用户技能
+    1/                  # 用户 ID
+      my_skill/         # 用户自定义技能
+    2/
+      my_skill/
+```
+
+**关键规则**:
+- 系统技能由 `skill_registry.py` 从 `agent/skills/{name}/` 加载，仅管理员可创建/修改/删除
+- 用户技能存储在 `agent/skills/user/{user_id}/{name}/`，用户可自由管理
+- 同名用户技能覆盖系统技能（用户优先级更高）
+- 技能开关（enabled/disabled）通过 `skill_registry.py` 的 `toggle_skill()` 控制
+
+**关键文件**:
+- `agent/skill_registry.py` — 技能注册中心（系统/用户双仓库）
+- `agent/skill_editor.py` — 用户技能 CRUD 操作
+- `server/routes/skills.py` — 技能管理 API
+
+### 5.9 意图关键词系统
+
+意图关键词系统（`agent/intent_keywords.py`）用于基于用户输入动态匹配工具，减少 LLM 请求的 token 开销。
+
+**工作原理**:
+1. 每个用户维护独立的意图关键词配置（JSON 文件）
+2. 用户输入时，先匹配关键词，再注入相关工具到 LLM 上下文
+3. 支持动态优化：任务复盘后可自动更新关键词
+
+**关键函数**:
+- `intent_keywords.py`: `match_intent(user_id, message)` — 意图匹配
+- `intent_keywords.py`: `update_keywords(user_id, intent, keywords)` — 更新关键词
+
+### 5.10 任务复盘系统
+
+任务复盘系统（`agent/task_reviewer.py`）记录任务执行日志，分析失败模式，生成优化建议。
+
+**工作原理**:
+1. 每次工具调用完成后，记录执行日志（JSONL 格式）
+2. 分析失败模式：超时、依赖缺失、API 错误等
+3. 生成 Skill 优化建议，自动更新意图关键词
+
+**关键函数**:
+- `task_reviewer.py`: `log_task_execution(user_id, session_id, tools)` — 记录任务日志
+- `task_reviewer.py`: `analyze_failures(user_id)` — 分析失败模式
+- `task_reviewer.py`: `generate_suggestions(user_id)` — 生成优化建议
 
 ## 6. NEVER 规则
 
@@ -243,37 +331,30 @@ Office 文档（`.docx .xlsx .pptx`）不支持浏览器端预览，仅提供下
 3. **NEVER** 直接操作 `data/users.db` 数据库文件 — 必须通过 `server/database.py` 的函数
 4. **NEVER** 直接用 SQL 修改用户密码 — 密码经过加盐哈希，直接覆盖会导致原密码不可恢复；应通过 `database.py` 的 `update_user_password()` 或 Web 界面修改
 5. **NEVER** 在工具 `execution_code` 中执行危险操作（文件删除、系统命令、网络外连）— 沙箱会拦截，但不应依赖沙箱
-6. **NEVER** 修改 `agent/agent_tools/` 中已有工具的名称（`name` 字段）— 可能破坏已有会话的工具调用记录
+6. **NEVER** 修改 `agent/skills/` 中已有技能的名称（`name` 字段）— 可能破坏已有会话的工具调用记录
 7. **NEVER** 在前端引入 npm 依赖或构建工具 — 保持原生 JS 零依赖
-8. **NEVER** 在生产代码中保留 `print()` 调试输出 — 使用 `logging` 模块或移除
+8. **NEVER** 在生产代码中保留 `print()` 调试输出 — 使用 `agent.logger` 模块的 `get_logger()` 获取日志器，按级别输出
 9. **NEVER** 修改 `document_output/` 的目录结构或命名规则 — 沙箱路径替换、文件列表 API、前端渲染均依赖 `{user_id}/{type_output}/` 结构
+10. **NEVER** 修改 `agent/skills/` 中系统技能的脚本文件 — 系统技能仅管理员可维护，用户自定义技能应存储在 `agent/skills/user/{user_id}/` 下
 
-## 7. 测试要求
+## 7. 测试
 
-**[待补充]** 项目当前无测试框架。
-
-建议：
-- 后端 API 测试：`pytest` + `httpx`（FastAPI 官方推荐）
-- Agent 核心测试：`pytest`，mock LLM 响应
-- 工具执行测试：针对每个 `agent_tools/*.json` 编写参数化测试
+测试文件位于 `tests/full_test.py`，覆盖 13 个模块的综合测试套件。
 
 ```bash
-# 建议添加的开发依赖
-pip install pytest httpx
+# 运行测试
+python tests/full_test.py
 ```
 
 ## 8. AI 行为指引
 
-- **修改前先阅读**: 理解相关模块的完整上下文后再动手，特别是 `tool_builder.py` 和 `tools.py` 的工具加载链路
-- **新增工具**: 在 `agent/agent_tools/` 下创建 JSON 文件即可，服务重启后自动加载，无需改代码。也可通过自然语言对话创建（LLM 自动调用 `create_tool` 元工具）
-- **工具管理**: 创建/更新/删除/查询工具已集成自然语言交互。`tool_management.py` 定义元工具函数，`chat.py` 通过 Meta-Tool 机制注册到 LLM。修改工具管理逻辑时需同步更新 `META_TOOL_SPECS` 和系统提示词
-- **工具管理权限**: 创建/更新/删除仅管理员可用（在 `create_tool`/`update_tool`/`delete_tool` 内检查），普通用户调用返回权限制止。查看工具全员可用
-- **删除确认**: `delete_tool` 首次调用返回确认提示并记录 `_pending_deletions[user_id]`，用户回复确认后由 `chat.py` 预拦截自动执行，不经过 LLM
-- **工具重复检测**: `create_tool` 检测到相似工具时给出警告但不阻止创建，允许用户在同一领域创建不同工具
-- **系统提示词**: 工具管理指令已精简，通过"明确要求才调用 + 例外跳过"策略避免 LLM 在模糊场景下过度调用。修改时避免使用"绝对禁止/违反此规则"等过于绝对的措辞
+- **修改前先阅读**: 理解相关模块的完整上下文后再动手，特别是 `tools.py` 的工具注册链路和 `sandbox.py` 的安全机制
+- **技能系统**: 技能脚本位于 `agent/skills/`，通过 `skill_registry.py` 注册、加载和上下文注入
 - **新增 API 路由**: 在 `server/routes/` 下创建模块，并在 `__init__.py` 的 `routers` 列表中注册
 - **不确定时**: 先询问用户，不要猜测 API 端点、参数格式或业务逻辑
 - **修改后验证**: 确保 `python server/main.py` 能正常启动，检查终端无 import 错误
+- **调试输出**: 使用 `from agent.logger import get_logger` + `logger = get_logger(__name__)` 替代 `print()`，日志自动写入 `logs/app.log`
+- **日志级别**: DEBUG 用于详细调试信息，INFO 用于关键流程，WARNING 用于异常但可恢复，ERROR 用于错误
 - **数据库变更**: 如需新增表或字段，在 `database.py` 的 `init_db()` 中添加 `CREATE TABLE IF NOT EXISTS`
 - **提交规范**: commit message 使用中文，格式 `type: 简短描述`（如 `feat:`, `fix:`, `refactor:`）
 - **文件操作**: 所有文档输出路径遵循 `document_output/{user_id}/{type}/` 结构，沙箱会自动替换路径

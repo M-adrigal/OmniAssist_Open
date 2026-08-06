@@ -116,3 +116,20 @@ class CurrentUserResponse(BaseModel):
     username: str
     user_type: str
     description: str
+
+
+class SkillCreate(BaseModel):
+    name: str
+    content: str = ""  # SKILL.md 内容
+    scripts: str = "[]"  # JSON 字符串，脚本数组
+
+
+class SkillUpdate(BaseModel):
+    content: Optional[str] = None
+    scripts: Optional[str] = None
+    enabled: Optional[int] = None
+
+
+class SkillToggle(BaseModel):
+    name: str
+    enabled: bool

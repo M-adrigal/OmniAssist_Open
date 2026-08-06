@@ -192,12 +192,27 @@ sudo certbot renew --dry-run
 ## 11. 日常维护
 
 ### 查看日志
-```bash
-# 服务日志
-sudo journalctl -u agent -f
 
-# Nginx 访问日志
-sudo tail -f /var/log/nginx/access.log
+服务内置了日志系统，日志文件位于 `logs/` 目录：
+
+```bash
+# 应用日志（全量，INFO 及以上）
+tail -f /home/agent/Lightweight_agent_service/logs/app.log
+
+# 错误日志（仅 ERROR 级别）
+tail -f /home/agent/Lightweight_agent_service/logs/error.log
+```
+
+日志格式：`[时间戳] [级别] [模块名] [user:N] [sess:xxx] 消息内容`
+
+日志配置：
+- **轮转策略**：按天轮转 + 单文件 10MB 上限
+- **保留时间**：30 天自动清理
+- **错误分离**：ERROR 级别日志同时写入独立的 `error.log`
+
+```bash
+# 服务日志（systemd 方式）
+sudo journalctl -u agent -f
 sudo tail -f /var/log/nginx/error.log
 ```
 
@@ -212,11 +227,11 @@ sudo systemctl restart agent
 
 ### 备份数据
 ```bash
-# 备份数据库、配置和工具
+# 备份数据库、配置、文档和日志
 tar -czf agent-backup-$(date +%Y%m%d).tar.gz \
     data/ \
-    agent/agent_tools/ \
-    document_output/
+    document_output/ \
+    logs/
 ```
 
 ### 用户管理
@@ -283,9 +298,9 @@ top -o %MEM
 工具的 Python 依赖（如 `python-docx`、`openpyxl`、`reportlab` 等）运行在独立的沙箱虚拟环境中，与主服务隔离。
 
 **工作原理**：
-- 沙箱 venv 位于 `tool_sandbox/venv/`，首次启动时自动创建
-- 服务启动时会扫描所有工具定义，预热安装依赖（`_prewarm_sandbox`）
-- 工具首次调用时若检测到 `ModuleNotFoundError`，会自动重试安装缺失的包
+- 每位用户拥有独立的沙箱 venv，位于 `tool_sandbox/{user_id}/venv/`
+- 首次使用时自动创建用户沙箱，通过 AST 解析提取脚本依赖并自动安装
+- 沙箱池（SandboxPool）负责管理用户沙箱的懒加载和线程安全调度
 
 **常见问题**：
 
@@ -293,11 +308,11 @@ top -o %MEM
 # 1. 确保 python3-venv 已安装（沙箱需要创建虚拟环境）
 sudo apt install -y python3-venv
 
-# 2. 手动检查沙箱 venv 是否正常
-cd /home/agent/Lightweight_agent_service
-python3 -c "from agent.sandbox import ToolSandbox; s = ToolSandbox(); print('沙箱 OK:', s.venv_python)"
+# 2. 查看用户沙箱列表
+ls -la /home/agent/Lightweight_agent_service/tool_sandbox/
 
-# 3. 手动预热沙箱依赖（如果自动预热失败）
+# 3. 手动检查某用户沙箱是否正常
+ls -la /home/agent/Lightweight_agent_service/tool_sandbox/1/venv/bin/python
 python3 -c "
 from agent.sandbox import ToolSandbox
 import json, os

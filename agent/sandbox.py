@@ -3,6 +3,10 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
+from agent.logger import get_logger
+
+logger = get_logger("sandbox")
 
 
 class ToolSandbox:
@@ -39,13 +43,13 @@ class ToolSandbox:
             )
             return True
         except subprocess.TimeoutExpired:
-            print(f"[沙箱] 创建虚拟环境超时，请检查系统资源")
-            print(f"[沙箱] 工具执行功能将不可用，但对话功能不受影响")
+            logger.error(f"创建虚拟环境超时，请检查系统资源")
+            logger.warning("工具执行功能将不可用，但对话功能不受影响")
             return False
         except Exception as e:
-            print(f"[沙箱] 创建虚拟环境失败: {e}")
-            print(f"[沙箱] 提示：请确保 Python 已安装 venv 模块（python3 -m venv）")
-            print(f"[沙箱] 工具执行功能将不可用，但对话功能不受影响")
+            logger.error(f"创建虚拟环境失败: {e}")
+            logger.warning("提示：请确保 Python 已安装 venv 模块（python3 -m venv）")
+            logger.warning("工具执行功能将不可用，但对话功能不受影响")
             return False
 
     def _load_installed_deps(self):
@@ -109,7 +113,7 @@ class ToolSandbox:
 
         if not os.path.exists(self.venv_python):
             if not self._ensure_venv():
-                print(f"[沙箱] 虚拟环境不可用，无法安装依赖")
+                logger.error(f"虚拟环境不可用，无法安装依赖")
                 return False
         try:
             subprocess.check_call(
@@ -118,10 +122,10 @@ class ToolSandbox:
                 timeout=120
             )
         except subprocess.TimeoutExpired:
-            print(f"[沙箱] pip install 超时: {to_install}")
+            logger.error(f"pip install 超时: {to_install}")
             return False
         except Exception as e:
-            print(f"[沙箱] pip install 失败: {e}")
+            logger.error(f"pip install 失败: {e}")
             return False
         for p in to_install:
             self._deps_installed.add(p)
@@ -133,7 +137,6 @@ class ToolSandbox:
             return
         to_install = [p for p in packages if p not in self._deps_installed]
         if not to_install:
-            print("所有依赖已安装，无需重复安装。")
             return
 
         venv_packages = self._get_venv_installed_packages()
@@ -147,32 +150,27 @@ class ToolSandbox:
             self._save_installed_deps()
 
         if not to_install:
-            print("所有依赖已安装，无需重复安装。")
             return
 
         if not os.path.exists(self.venv_python):
             if not self._ensure_venv():
-                print("[沙箱] 虚拟环境不可用，无法安装依赖")
+                logger.error("虚拟环境不可用，无法安装依赖")
                 return
-        print(f"正在安装依赖: {', '.join(to_install)}")
-        print("-" * 40)
+        logger.info(f"安装依赖: {', '.join(to_install)}")
         try:
             subprocess.check_call(
                 [self.venv_python, "-m", "pip", "install", "--no-cache-dir"] + to_install,
                 timeout=120
             )
         except subprocess.TimeoutExpired:
-            print("-" * 40)
-            print(f"[沙箱] pip install 超时: {to_install}")
+            logger.error(f"pip install 超时: {to_install}")
             self._cleanup_failed_install(to_install, pre_existing)
             raise
         except Exception as e:
-            print("-" * 40)
-            print(f"[沙箱] pip install 失败: {e}")
+            logger.error(f"pip install 失败: {e}")
             self._cleanup_failed_install(to_install, pre_existing)
             raise
-        print("-" * 40)
-        print("依赖安装完成。")
+        logger.info("依赖安装完成")
         for p in to_install:
             self._deps_installed.add(p)
         self._save_installed_deps()
@@ -200,23 +198,28 @@ class ToolSandbox:
             packages = [p for p in packages if p not in pre_existing]
         if not packages:
             return
-        print(f"正在清理安装失败的依赖: {', '.join(packages)}")
+        logger.warning(f"清理安装失败的依赖: {', '.join(packages)}")
         try:
             subprocess.check_call(
                 [self.venv_python, "-m", "pip", "uninstall", "-y", "-q"] + packages,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 timeout=30
             )
-            print("清理完成。")
+            logger.info("清理完成")
         except Exception:
-            print("清理失败，可能需要手动清理。")
+            logger.warning("清理失败，可能需要手动清理")
 
     def execute(self, code: str, params: dict, timeout: int = 30, user_id: int = None) -> str:
         if user_id is not None:
+            # 替换所有引用 document_output 的路径，在 document_output 后插入 /{user_id}
             code = code.replace("'document_output/'", f"'document_output/{user_id}/'")
             code = code.replace('"document_output/"', f'"document_output/{user_id}/"')
             code = code.replace("'document_output'", f"'document_output/{user_id}'")
             code = code.replace('"document_output"', f'"document_output/{user_id}"')
+            # 处理带文件名的路径：'document_output/xxx' → 'document_output/{user_id}/xxx'
+            import re as _re
+            code = _re.sub(r"('document_output)/([^'])", rf"'\1/{user_id}/\2", code)
+            code = _re.sub(r'("document_output)/([^"])', rf'"\1/{user_id}/\2', code)
         wrapper = self._build_wrapper(code, params)
         base_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(base_dir)
@@ -267,12 +270,11 @@ class ToolSandbox:
     }
     _BLOCKED_MODULES = {
         "subprocess", "shutil", "ctypes", "socket",
-        "http", "urllib", "requests", "popen", "signal", "pty",
+        "http", "requests", "popen", "signal", "pty",
         "fcntl", "posix", "grp", "pwd", "spwd", "crypt",
-        "multiprocessing", "threading", "concurrent",
-        "asyncio", "select", "selectors", "ssl", "email",
+        "multiprocessing", "asyncio", "select", "selectors", "ssl",
         "smtplib", "imaplib", "poplib", "ftplib", "telnetlib",
-        "pickle", "shelve", "marshal",
+        "shelve", "marshal",
     }
 
     @staticmethod
@@ -365,6 +367,18 @@ class ToolSandbox:
             "        raise ImportError(f'模块 {name} 已被沙箱禁用')\n"
             "    return _orig_import(name, *args, **kwargs)\n"
             "builtins.__import__ = _safe_import\n"
+            # 预置 urllib.request mock，防止报告生成库(reportlab)导入时触发 http/socket 等网络模块加载
+            "import sys as _sys\n"
+            "class _MockUrllibRequest:\n"
+            "    urlopen = None\n"
+            "    Request = None\n"
+            "    OpenerDirector = None\n"
+            "    build_opener = None\n"
+            "    install_opener = None\n"
+            "    pathname2url = None\n"
+            "    url2pathname = None\n"
+            "    getproxies = None\n"
+            "_sys.modules['urllib.request'] = _MockUrllibRequest()\n"
             "_orig_unlink = _os.unlink\n"
             "_orig_remove = _os.remove\n"
             "_DANGEROUS_OS = ['system', 'popen', 'execv', 'execve', 'spawnl', 'spawnle', 'spawnlp', 'spawnlpe', 'spawnv', 'spawnve', 'spawnvp', 'spawnvpe', 'remove', 'rmdir', 'removedirs', 'renames', 'chmod', 'chown', 'link', 'symlink', 'kill', 'killpg', 'setuid', 'setgid', 'fork', 'forkpty', 'unlink']\n"
@@ -390,9 +404,15 @@ class ToolSandbox:
             "    " + line if line.strip() else ""
             for line in self._split_code_lines(code.strip())
         )
+
+        # 构建 execute() 调用参数
+        call_args = ", ".join(f"{k}={k}" for k in params)
+        execute_call = f"    result = execute({call_args})" if call_args else "    result = execute()"
+
         wrapper += (
             "try:\n"
             f"{indented_code}\n"
+            f"{execute_call}\n"
             "    _out = str(locals().get('result', '代码执行完成但未找到 result 变量'))\n"
             "except Exception as _e:\n"
             "    import traceback as _tb\n"
@@ -402,3 +422,45 @@ class ToolSandbox:
             "print(_out)\n"
         )
         return wrapper
+
+
+class SandboxPool:
+    """每用户独立沙箱池
+
+    为每个用户创建独立的 ToolSandbox 实例，依赖环境完全隔离：
+    - 目录结构：tool_sandbox/user_{user_id}/venv/
+    - 懒加载：首次使用时创建，后续复用
+    - 线程安全：加锁保护 _sandboxes 字典
+    """
+
+    def __init__(self, base_dir: str = None):
+        if base_dir is None:
+            base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "tool_sandbox")
+            base_dir = os.path.abspath(base_dir)
+        self.base_dir = base_dir
+        self._sandboxes: dict[int, ToolSandbox] = {}
+        self._lock = threading.Lock()
+
+    def get(self, user_id: int) -> ToolSandbox:
+        """获取或创建用户专属沙箱
+
+        Args:
+            user_id: 用户 ID
+
+        Returns:
+            ToolSandbox: 用户专属沙箱实例
+        """
+        with self._lock:
+            if user_id not in self._sandboxes:
+                sandbox_dir = os.path.join(self.base_dir, f"user_{user_id}")
+                self._sandboxes[user_id] = ToolSandbox(sandbox_dir)
+            return self._sandboxes[user_id]
+
+    def remove(self, user_id: int):
+        """移除用户沙箱（不删除磁盘文件）
+
+        Args:
+            user_id: 用户 ID
+        """
+        with self._lock:
+            self._sandboxes.pop(user_id, None)
