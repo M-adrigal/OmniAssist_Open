@@ -2,7 +2,7 @@
 
 ## 1. 项目概述
 
-轻量级 AI Agent 框架，支持自然语言动态创建工具、多用户管理、流式对话。提供 Web 界面和终端两种交互方式。
+轻量级 AI Agent 框架，支持技能系统（Skill）、多 Agent 池、自然语言动态创建技能、多用户管理、流式对话。提供 Web 界面和终端两种交互方式。
 
 **默认管理员账号**: `admin` / `admin123`（首次登录强制修改密码）
 
@@ -45,32 +45,43 @@ ls agent/skills/
 - **API 封装**: 统一通过 `API` 对象（`API.get/post/put/del`）发起请求
 - **状态管理**: 全局 `state` 对象，无框架
 
-### 工具定义
-- 工具通过 `ToolRegistry` 注册，`func_factory` 回调创建执行器
-- 工具执行逻辑在沙箱中运行，`sandbox.py` 提供隔离环境
-- 参数定义遵循 JSON Schema 规范
+### 技能定义（`agent/skills/`）
+- 每个技能是一个文件夹，包含 `SKILL.md`（YAML frontmatter + Markdown 指令）和 `scripts/` 目录
+- 脚本通过 AST 自动解析，从 `execute()` 函数签名和 docstring 生成工具定义，无需手写 JSON Schema
+- 技能分为系统技能（`agent/skills/{name}/`）和用户技能（`agent/skills/user/{user_id}/{name}/`）
 
 ## 5. 架构约束
 
 ```
 agent/                  # Agent 核心（不依赖 server/）
   agent.py              # SimpleAgent 主循环
+  agent_pool.py         # 子 Agent 池管理（多 Agent 委派与调度）
   llm.py                # LLMClient（OpenAI 兼容）
   tools.py              # ToolRegistry 工具注册
   sandbox.py            # 沙箱隔离执行（含用户目录路径替换、SandboxPool）
   config.py             # 加密配置管理
   model_gateway.py      # 多模型参数适配（思考模式/温度等）
   logger.py             # 日志系统（格式化、轮转、上下文注入）
-  skill_registry.py     # 技能系统（系统/用户双仓库、注册、加载、上下文注入）
+  skill_registry.py     # 技能注册中心（系统/用户双仓库、脚本发现、上下文注入）
   skill_editor.py       # 用户技能编辑器（CRUD）
   intent_keywords.py    # 用户级意图关键词管理
-  task_reviewer.py      # 任务复盘系统
-  agent_pool.py         # 子 Agent 池管理
-  file_parser.py        # 文件解析器
+  task_reviewer.py      # 任务复盘系统（执行日志、失败分析、优化建议）
+  file_parser.py        # 文件解析器（支持多种格式）
   tool_secrets.py       # 工具密钥管理
+  profiles/             # Agent 配置文件（YAML）
+    analyst.yaml        # 数据分析 Agent
+    document.yaml       # 文档生成 Agent
+    researcher.yaml     # 研究搜索 Agent
   skills/               # 技能脚本
     document/           # 文档生成技能（含格式化引擎）
-    calculator/ datetime/ weather/ ...
+    calculator/         # 计算器
+    datetime/           # 日期时间
+    weather/            # 天气查询
+    web-fetch/          # 网页抓取
+    gold-price/         # 金价查询
+    lunar-converter/    # 农历转换
+    chinese-counter/    # 中文字数统计
+    user/               # 用户自定义技能
 server/                 # Web 服务层（依赖 agent/）
   main.py               # FastAPI 应用入口，全局服务初始化
   database.py           # SQLite 操作（线程本地连接，含用户目录管理）
@@ -81,7 +92,7 @@ server/                 # Web 服务层（依赖 agent/）
     config.py           # 系统配置
     files.py            # 文件列表/下载/预览（用户隔离 + 权限控制）
     sessions.py         # 会话管理
-    skills.py           # 技能管理
+    skills.py           # 技能管理 API
     upload.py           # 文件上传
     users.py            # 用户管理（创建/删除含文件保留选项）
 static/                 # 前端静态文件（独立，不依赖 server/ 内部）
@@ -89,12 +100,13 @@ static/                 # 前端静态文件（独立，不依赖 server/ 内部
   login.html            # 登录页
   app.js                # 前端逻辑
   style.css             # 样式
+  favicon.svg           # 网站图标
 ```
 
 - **依赖方向**: `server/` → `agent/`，不可反向
 - **`agent/` 可独立运行**（终端模式），不依赖 FastAPI
 - **数据库**: 仅通过 `server/database.py` 访问，使用 `_get_connection()` 获取线程本地连接
-- **工具注册**: 通过 `ToolRegistry.load_tools_from_dir()` 从 JSON 文件加载，`func_factory` 回调创建执行器
+- **工具注册**: 通过 `skill_registry.py` 从 `agent/skills/` 加载脚本，AST 自动解析生成工具定义，`ToolRegistry.register_tool()` 注册执行器
 - **前端路由**: 登录页 `/static/login.html`，主页 `/static/index.html`，API 前缀 `/api/`
 
 ### 5.1 文档输出与用户文件隔离
@@ -336,20 +348,43 @@ agent/skills/
 8. **NEVER** 在生产代码中保留 `print()` 调试输出 — 使用 `agent.logger` 模块的 `get_logger()` 获取日志器，按级别输出
 9. **NEVER** 修改 `document_output/` 的目录结构或命名规则 — 沙箱路径替换、文件列表 API、前端渲染均依赖 `{user_id}/{type_output}/` 结构
 10. **NEVER** 修改 `agent/skills/` 中系统技能的脚本文件 — 系统技能仅管理员可维护，用户自定义技能应存储在 `agent/skills/user/{user_id}/` 下
+11. **NEVER** 移除 `chat.py` 中的 `MAX_MESSAGE_LENGTH`（10000）和 `sessions.py` 中的 `MAX_TITLE_LENGTH`（200）输入校验 — 防止资源耗尽攻击
+12. **NEVER** 移除 `chat_stream` 中的 `get_session()` 会话存在性检查 — 不存在会话必须返回 404
+13. **NEVER** 移除 `.session-messages` 的 `display: flex; flex-direction: column` CSS — 用户消息右对齐（`align-self: flex-end`）依赖父容器为 flex 容器
 
 ## 7. 测试
 
-测试文件位于 `tests/full_test.py`，覆盖 13 个模块的综合测试套件。
+测试脚本位于 `tests/scripts/`，覆盖 API 冒烟、并发压力、安全边界和暴力测试：
 
 ```bash
-# 运行测试
-python tests/full_test.py
+# 一键全量测试（~4万 token）
+bash tests/scripts/run_all.sh
+
+# 快速模式（跳过 LLM 调用，0 token）
+bash tests/scripts/run_all.sh --fast
+
+# 按需单独运行
+bash tests/scripts/run_all.sh --smoke       # 冒烟测试（API 全链路）
+bash tests/scripts/run_all.sh --concurrent  # 并发压力测试
+bash tests/scripts/run_all.sh --security    # 安全边界测试
+bash tests/scripts/run_all.sh --stress      # 暴力测试（专找 Bug）
+```
+
+测试方案文档：`tests/test_plan.md`（120+ 用例，覆盖 API/前端/安全/集成/压力 5 个维度）
+
+```bash
+# 建议添加的开发依赖
+pip install pytest httpx
 ```
 
 ## 8. AI 行为指引
 
-- **修改前先阅读**: 理解相关模块的完整上下文后再动手，特别是 `tools.py` 的工具注册链路和 `sandbox.py` 的安全机制
-- **技能系统**: 技能脚本位于 `agent/skills/`，通过 `skill_registry.py` 注册、加载和上下文注入
+- **修改前先阅读**: 理解相关模块的完整上下文后再动手，特别是 `tools.py` 的工具注册链路、`skill_registry.py` 的技能加载机制和 `sandbox.py` 的安全机制
+- **技能系统**: 技能脚本位于 `agent/skills/`，通过 `skill_registry.py` 注册、加载和上下文注入。用户技能通过 `skill_editor.py` 管理（CRUD），存储在 `agent/skills/user/{user_id}/` 下
+- **Agent 池**: 子 Agent 定义在 `agent/profiles/*.yaml`，通过 `agent_pool.py` 管理和调度，以 Agent-as-Tool 模式注册到主 Agent 工具列表
+- **意图关键词**: 用户级关键词配置由 `intent_keywords.py` 管理，用于按需选择工具减少 token 开销
+- **任务复盘**: `task_reviewer.py` 记录每次工具调用日志，支持失败分析和自动生成优化建议
+- **工具密钥**: `tool_secrets.py` 管理工具级 API Key，支持加密存储和会话隔离
 - **新增 API 路由**: 在 `server/routes/` 下创建模块，并在 `__init__.py` 的 `routers` 列表中注册
 - **不确定时**: 先询问用户，不要猜测 API 端点、参数格式或业务逻辑
 - **修改后验证**: 确保 `python server/main.py` 能正常启动，检查终端无 import 错误
@@ -367,3 +402,7 @@ python tests/full_test.py
 - **思考过程**: 使用 `<thinking>...</thinking>` 标签包裹，自然独白风格。后端 `_split_thinking()` 解析后分别存储 `thought` 和 `content`，前端实时流式展示并过滤标签
 - **登录页**: 支持毛玻璃效果（`backdrop-filter`）、浮动动画光斑（`.bg-orb`）、时段渐变背景（4 个时段 × 亮/暗双模式）。主题切换为三态循环（自动 → 暗色 → 亮色），自动模式跟随系统偏好
 - **消息布局顺序**: 思考过程 → 联网搜索 → 工具调用 → 回答。联网搜索结果延迟到思考结束后显示
+- **输入校验**: `chat.py` 的 `chat_stream` 入口校验消息长度（`MAX_MESSAGE_LENGTH=10000`，超长返回 413）和会话存在性（`get_session()` 不存在返回 404），`sessions.py` 的创建/改名接口校验标题长度（`MAX_TITLE_LENGTH=200`）
+- **前端 DOM 隔离**: 每个会话使用独立的 `.session-messages` 容器（`showSessionContainer`/`removeSessionContainer`），切换会话时 show/hide 而非销毁 DOM。`.session-messages` 必须为 flex 容器（`display: flex; flex-direction: column`），否则用户消息右对齐失效
+- **并发操作锁**: `switchSession` 使用 `_switchLock` + `_switchSeqId` 防止并发切换混乱，`deleteSession` 使用 `_deleteLock` 防止并发删除
+- **测试脚本**: 测试位于 `tests/scripts/`，修改前端逻辑后应运行 `bash tests/scripts/run_all.sh --fast` 验证 API 层无回归

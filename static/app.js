@@ -38,6 +38,10 @@ let state = {
   sessions: [],
   currentSessionId: null,
   isStreaming: false,
+  streamingSessionId: null,
+  backgroundStreamSessionId: null,
+  completedBgSessions: new Set(),
+  sessionContainers: {},  // { sessionId: { element: HTMLElement, stream: object|null } }
   commandMode: false,
   commandFilter: '',
   selectedCommandIdx: -1,
@@ -46,10 +50,115 @@ let state = {
   webSearch: 'off',
   showThought: false,
   attachedFiles: [],
+  taskStatuses: {},  // { sessionId: { status, user_message, started_at, completed_at } }
+  acknowledgedTasks: new Set(),  // 已查看过的完成任务 session_id
+  subscribingSessionId: null,  // 正在订阅后台任务的 session_id
 };
+
+// ===== 已读任务持久化（刷新后不再重复弹出完成气泡）=====
+const _ACK_KEY = 'omni_acknowledged_tasks';
+function _loadAcknowledged() {
+  try {
+    const raw = localStorage.getItem(_ACK_KEY);
+    if (raw) state.acknowledgedTasks = new Set(JSON.parse(raw));
+  } catch (e) { /* 忽略解析错误 */ }
+}
+function _saveAcknowledged() {
+  try {
+    localStorage.setItem(_ACK_KEY, JSON.stringify(Array.from(state.acknowledgedTasks)));
+  } catch (e) { /* 忽略写入错误（隐私模式等） */ }
+}
 
 function $(sel) { return document.querySelector(sel); }
 function $$(sel) { return document.querySelectorAll(sel); }
+
+// ===== Session 容器管理（Per-Session DOM 隔离） =====
+function getActiveContainer() {
+  const sid = state.currentSessionId || '__default__';
+  let sc = state.sessionContainers[sid];
+  if (!sc) {
+    const wrap = $('#chat-messages');
+    // 移除初始欢迎页（index.html 中的静态内容）
+    const initWelcome = wrap.querySelector(':scope > .welcome-message');
+    if (initWelcome) initWelcome.remove();
+    // 隐藏所有已有容器
+    Object.values(state.sessionContainers).forEach(c => c.element.style.display = 'none');
+    const el = document.createElement('div');
+    el.className = 'session-messages';
+    el.dataset.sessionId = sid;
+    el.innerHTML = `
+      <div class="welcome-message">
+        <h1>OmniAssist</h1>
+        <p>计时算文查网，一站式全能辅助</p>
+        <p style="margin-top:8px;font-size:13px;">输入消息开始对话，工具管理现已支持自然语言交互</p>
+      </div>`;
+    wrap.appendChild(el);
+    sc = { element: el, stream: null };
+    state.sessionContainers[sid] = sc;
+  }
+  return sc;
+}
+
+function showSessionContainer(sessionId) {
+  const sid = sessionId || '__default__';
+  const wrap = $('#chat-messages');
+  // 移除初始欢迎页（index.html 中的静态内容）
+  const initWelcome = wrap.querySelector(':scope > .welcome-message');
+  if (initWelcome) initWelcome.remove();
+  // 隐藏所有容器
+  Object.values(state.sessionContainers).forEach(c => c.element.style.display = 'none');
+  // 确保目标容器存在
+  if (!state.sessionContainers[sid]) {
+    const el = document.createElement('div');
+    el.className = 'session-messages';
+    el.dataset.sessionId = sid;
+    el.innerHTML = `
+      <div class="welcome-message">
+        <h1>OmniAssist</h1>
+        <p>计时算文查网，一站式全能辅助</p>
+        <p style="margin-top:8px;font-size:13px;">输入消息开始对话，工具管理现已支持自然语言交互</p>
+      </div>`;
+    wrap.appendChild(el);
+    state.sessionContainers[sid] = { element: el, stream: null };
+  }
+  state.sessionContainers[sid].element.style.display = '';
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+function removeSessionContainer(sessionId) {
+  const sid = sessionId || '__default__';
+  const sc = state.sessionContainers[sid];
+  if (sc) {
+    sc.element.remove();
+    delete state.sessionContainers[sid];
+  }
+}
+
+function getSessionStream(sessionId) {
+  const sc = state.sessionContainers[sessionId];
+  return sc ? sc.stream : null;
+}
+
+function setSessionStream(sessionId, stream) {
+  const sid = sessionId || '__default__';
+  let sc = state.sessionContainers[sid];
+  if (!sc) {
+    // 确保容器存在
+    showSessionContainer(sid);
+    sc = state.sessionContainers[sid];
+  }
+  sc.stream = stream;
+}
+
+// 切换锁：防止并发切换导致 DOM 状态混乱
+let _switchLock = false;
+let _switchAbortController = null;
+let _switchSeqId = 0;
+
+function scrollToBottom() {
+  const wrap = $('#chat-messages');
+  wrap.scrollTop = wrap.scrollHeight;
+}
 
 function showToast(msg, type = 'info') {
   const toast = $('#toast');
@@ -69,9 +178,13 @@ function showConfirmDialog(title, message, confirmText = '确认', danger = true
     confirmBtn.className = danger ? 'btn-danger' : 'btn-primary';
 
     const cleanup = () => {
-      modal.classList.add('hidden');
-      confirmBtn.removeEventListener('click', onConfirm);
-    };
+	      modal.classList.add('hidden');
+	      confirmBtn.removeEventListener('click', onConfirm);
+	      modal.querySelectorAll('.modal-close').forEach(btn => {
+	        btn.removeEventListener('click', onCancel);
+	      });
+	      modal.querySelector('.modal-overlay').removeEventListener('click', onCancel);
+	    };
 
     const onConfirm = () => {
       cleanup();
@@ -121,12 +234,25 @@ async function loadSessions() {
 
 function renderSessions() {
   const list = $('#session-list');
-  list.innerHTML = state.sessions.map(s => `
+  list.innerHTML = state.sessions.map(s => {
+    // 当前正在查看的 session 不显示任何任务状态徽标（进度直接体现在对话区）
+    const isCurrent = s.id === state.currentSessionId;
+    const taskInfo = state.taskStatuses[s.id];
+    const isRunning = !isCurrent && taskInfo && taskInfo.status === 'running';
+    const isCompleted = !isCurrent && taskInfo && taskInfo.status === 'completed'
+      && !state.acknowledgedTasks.has(s.id);
+    const showBadge = !isCurrent && (state.completedBgSessions.has(s.id) || isCompleted);
+    let badgeHtml = '';
+    if (isRunning) badgeHtml += '<span class="badge-running" title="任务执行中"><span class="spinner-dot"></span></span>';
+    else if (showBadge) badgeHtml += '<span class="badge-done" title="任务已完成">✓</span>';
+    return `
     <div class="session-item${s.id === state.currentSessionId ? ' active' : ''}" data-id="${s.id}">
       <span class="title">${escapeHtml(s.title || '新对话')}</span>
+      ${badgeHtml}
       <button class="btn-delete" data-action="delete-session" data-id="${s.id}">&times;</button>
     </div>
-  `).join('');
+    `;
+  }).join('');
 
   list.querySelectorAll('.session-item').forEach(el => {
     el.addEventListener('click', (e) => {
@@ -138,6 +264,69 @@ function renderSessions() {
       switchSession(el.dataset.id);
     });
   });
+}
+
+// ===== 任务状态轮询 =====
+let _taskPollingTimer = null;
+let _taskPollTick = 5000;
+
+async function pollTaskStatus() {
+  try {
+    const statuses = await API.get('/api/sessions/task-status/all');
+    const oldStatuses = state.taskStatuses;
+    state.taskStatuses = statuses || {};
+
+    let needsRender = false;
+    let hasRunning = false;
+    for (const [sid, info] of Object.entries(state.taskStatuses)) {
+      const oldInfo = oldStatuses[sid];
+      if (info.status === 'running') {
+        hasRunning = true;
+        // 重新运行后允许再次通知完成（清除旧的已读标记与气泡）
+        if (state.acknowledgedTasks.has(sid)) { state.acknowledgedTasks.delete(sid); _saveAcknowledged(); }
+        state.completedBgSessions.delete(sid);
+        // 运行中的任务：状态从无到有时需要刷新（让其他 session 出现转圈）
+        if (!oldInfo) needsRender = true;
+        continue;
+      }
+      // 任务完成
+      if (info.status === 'completed') {
+        if (state.acknowledgedTasks.has(sid)) {
+          // 已读过的（含刷新前已查看过的），不再弹气泡
+          state.completedBgSessions.delete(sid);
+        } else if (sid === state.currentSessionId) {
+          // 正在查看该 session，用户已经看到结果，直接标记为已读，不留气泡
+          state.acknowledgedTasks.add(sid);
+          _saveAcknowledged();
+          state.completedBgSessions.delete(sid);
+        } else {
+          // 其他 session 完成：弹出完成气泡（直到用户点进去查看）
+          state.completedBgSessions.add(sid);
+        }
+        // 仅在状态发生变化时刷新（首次出现 completed 也算变化）
+        if (!oldInfo || oldInfo.status !== 'completed') needsRender = true;
+      }
+    }
+    // 清理已不存在的任务
+    for (const sid of Object.keys(oldStatuses)) {
+      if (!(sid in state.taskStatuses)) {
+        needsRender = true;
+      }
+    }
+    if (needsRender) {
+      renderSessions();
+    }
+    // 有任务运行时提高轮询频率，让完成气泡更及时
+    _taskPollTick = hasRunning ? 2000 : 5000;
+  } catch (e) {
+    // 忽略轮询错误
+  }
+  _taskPollingTimer = setTimeout(pollTaskStatus, _taskPollTick);
+}
+
+function startTaskPolling() {
+  if (_taskPollingTimer) clearTimeout(_taskPollingTimer);
+  pollTaskStatus();
 }
 
 let _searchTimer = null;
@@ -168,58 +357,217 @@ async function createSession() {
   }
 }
 
+let _deleteLock = false;
+
 async function deleteSession(id) {
-  const confirmed = await showConfirmDialog('删除对话', '确定要删除这个对话吗？此操作不可撤销。', '删除');
-  if (!confirmed) return;
+  // 删除锁：防止并发删除导致状态混乱
+  if (_deleteLock) {
+    console.log('[deleteSession] 删除操作进行中，忽略重复请求');
+    return;
+  }
+  _deleteLock = true;
+
   try {
-    await API.del(`/api/sessions/${id}`);
+    const confirmed = await showConfirmDialog('删除对话', '确定要删除这个对话吗？此操作不可撤销。', '删除');
+    if (!confirmed) return;
+
+    // 带超时的删除请求
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    try {
+      const res = await fetch(`/api/sessions/${id}`, { method: 'DELETE', signal: controller.signal });
+      clearTimeout(timer);
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || res.statusText);
+      }
+    } catch (e) {
+      clearTimeout(timer);
+      if (e.name === 'AbortError') {
+        showToast('删除超时，请稍后重试', 'error');
+        return;
+      }
+      throw e;
+    }
+
     if (state.currentSessionId === id) {
       state.currentSessionId = null;
       clearMessages();
     }
+    // 清理该 session 的任务状态，避免残留徽标
+    delete state.taskStatuses[id];
+    state.completedBgSessions.delete(id);
+    state.acknowledgedTasks.delete(id);
+    _saveAcknowledged();
+    // 安全移除容器（忽略不存在的容器）
+    try {
+      removeSessionContainer(id);
+    } catch (e) {
+      console.warn('移除 session 容器失败:', e);
+    }
     await loadSessions();
     showToast('会话已删除', 'success');
   } catch (e) {
+    console.error('删除会话失败:', e);
     showToast('删除失败: ' + e.message, 'error');
+  } finally {
+    _deleteLock = false;
   }
 }
 
 async function switchSession(id) {
-  state.currentSessionId = id;
-  renderSessions();
-  clearAttachedFiles();
-  clearMessages();
+  // 取消上一次未完成的切换请求（必须在锁检查之前，确保旧请求被中止）
+  if (_switchAbortController) {
+    _switchAbortController.abort();
+    _switchAbortController = null;
+    // 旧请求已取消，强制释放锁，防止死锁（旧请求 finally 中因序列号不匹配不会释放锁）
+    _switchLock = false;
+  }
+
+  // 切换锁：防止并发切换导致 DOM 状态混乱
+  if (_switchLock) {
+    console.log('[switchSession] 切换被锁定，已取消前次请求，请稍后重试');
+    return;
+  }
+  _switchLock = true;
+
+  // 分配序列号，用于丢弃过期结果
+  const mySeqId = ++_switchSeqId;
+  _switchAbortController = new AbortController();
+  const switchSignal = _switchAbortController.signal;
+
   try {
-    const s = await API.get(`/api/sessions/${id}`);
-    if (s.messages && s.messages.length > 0) {
-      s.messages.forEach(m => renderHistoryMessage(m));
+    console.log(`[switchSession] #${mySeqId} 切换到 session: ${id}`);
+
+    // 如果当前正在流式输出的 session 被切走，标记为后台运行
+    if (state.isStreaming && state.currentSessionId === state.streamingSessionId) {
+      console.log(`[switchSession] #${mySeqId} session ${state.currentSessionId} 转入后台运行`);
+      state.backgroundStreamSessionId = state.currentSessionId;
     }
-    const filesData = await API.get(`/api/files/uploads?session_id=${id}`);
-    if (filesData.files && filesData.files.length > 0) {
-      const iconMap = { text: 'T', pdf: 'P', docx: 'W', xlsx: 'E', pptx: 'S', csv: 'C' };
-      const tags = filesData.files.map(f => {
-        const icon = iconMap[f.type] || 'F';
-        return `<span class="msg-attach-tag"><span class="tag-icon">${icon}</span>${escapeHtml(f.filename)}</span>`;
-      }).join('');
-      const attachHtml = `<div class="msg-attachments">${tags}</div>`;
-      const container = $('#chat-messages');
-      const userMsgs = container.querySelectorAll('.message.user');
-      if (userMsgs.length > 0) {
-        const lastUserMsg = userMsgs[userMsgs.length - 1];
-        const areaEl = lastUserMsg.querySelector('.answer-area');
-        if (areaEl && !areaEl.querySelector('.msg-attachments')) {
-          areaEl.insertAdjacentHTML('beforeend', attachHtml);
+    // 清除目标 session 的完成气泡和已查看标记
+    if (state.completedBgSessions.has(id)) {
+      state.completedBgSessions.delete(id);
+    }
+    // 标记该 session 的任务为已查看（无论是否已完成）
+    const _taskInfoPre = state.taskStatuses[id];
+    if (_taskInfoPre && _taskInfoPre.status !== 'running') {
+      state.acknowledgedTasks.add(id);
+      _saveAcknowledged();
+    }
+    state.currentSessionId = id;
+    renderSessions();
+    clearAttachedFiles();
+
+    // 显示目标 session 的容器（保留已有内容，不销毁 DOM）
+    showSessionContainer(id);
+
+    // 如果目标 session 正在运行流式任务，容器中已有实时内容，直接返回
+    if (id === state.streamingSessionId && state.isStreaming) {
+      console.log(`[switchSession] #${mySeqId} session ${id} 正在流式运行，保留容器内容`);
+      return;
+    }
+
+    // 如果容器已有内容（非欢迎页），说明已加载过，不重复加载
+    const sc = state.sessionContainers[id];
+    const hasContent = sc && sc.element.querySelector('.message');
+    console.log(`[switchSession] #${mySeqId} hasContent=${hasContent}, containerExists=${!!sc}`);
+    if (hasContent) {
+      return;
+    }
+
+    // 如果该 session 有正在运行的后台任务，订阅事件流（重连）
+    const taskInfo = state.taskStatuses[id];
+    if (taskInfo && taskInfo.status === 'running') {
+      console.log(`[switchSession] #${mySeqId} session ${id} has running task, subscribing`);
+      state.acknowledgedTasks.add(id);
+      subscribeToTask(id);
+      return;
+    }
+
+    // 从服务器加载历史消息（使用 switchSignal 确保切换时取消请求）
+    const fetchWithTimeout = async (url, timeout = 8000) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeout);
+      // 监听 switchSignal，当用户切换时取消请求
+      const onSwitchAbort = () => controller.abort();
+      switchSignal.addEventListener('abort', onSwitchAbort, { once: true });
+      try {
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(timer);
+        if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+        return res.json();
+      } catch (e) {
+        clearTimeout(timer);
+        throw e;
+      } finally {
+        switchSignal.removeEventListener('abort', onSwitchAbort);
+      }
+    };
+
+    try {
+      // 检查是否已被新切换取消
+      if (switchSignal.aborted) {
+        console.log(`[switchSession] #${mySeqId} 已被取消（切换前）`);
+        return;
+      }
+
+      console.log(`[switchSession] #${mySeqId} 从服务器加载 session ${id} 的消息`);
+      const [s, filesData] = await Promise.all([
+        fetchWithTimeout(`/api/sessions/${id}`),
+        fetchWithTimeout(`/api/files/uploads?session_id=${id}`),
+      ]);
+
+      // 检查是否已被新切换取消，或序列号已过期
+      if (switchSignal.aborted || mySeqId !== _switchSeqId) {
+        console.log(`[switchSession] #${mySeqId} 结果已过期，丢弃 (current=#${_switchSeqId})`);
+        return;
+      }
+
+      if (s.messages && s.messages.length > 0) {
+        const containerEl = sc.element;
+        // 清除欢迎页
+        const welcome = containerEl.querySelector('.welcome-message');
+        if (welcome) welcome.remove();
+        s.messages.forEach(m => renderHistoryMessage(m, containerEl));
+        console.log(`[switchSession] #${mySeqId} 已渲染 ${s.messages.length} 条历史消息`);
+      }
+      if (filesData.files && filesData.files.length > 0) {
+        const containerEl = sc.element;
+        const iconMap = { text: 'T', pdf: 'P', docx: 'W', xlsx: 'E', pptx: 'S', csv: 'C' };
+        const tags = filesData.files.map(f => {
+          const icon = iconMap[f.type] || 'F';
+          return `<span class="msg-attach-tag"><span class="tag-icon">${icon}</span>${escapeHtml(f.filename)}</span>`;
+        }).join('');
+        const attachHtml = `<div class="msg-attachments">${tags}</div>`;
+        const userMsgs = containerEl.querySelectorAll('.message.user');
+        if (userMsgs.length > 0) {
+          const lastUserMsg = userMsgs[userMsgs.length - 1];
+          const areaEl = lastUserMsg.querySelector('.answer-area');
+          if (areaEl && !areaEl.querySelector('.msg-attachments')) {
+            areaEl.insertAdjacentHTML('beforeend', attachHtml);
+          }
         }
       }
+    } catch (e) {
+      if (e.name === 'AbortError') {
+        console.log(`[switchSession] #${mySeqId} 请求超时或被取消`);
+        return;
+      }
+      console.error('加载会话消息失败:', e);
+      showToast('加载会话失败: ' + e.message, 'error');
     }
-  } catch (e) {
-    console.error('加载会话消息失败:', e);
+  } finally {
+    // 只有当前序列号匹配时才释放锁
+    if (mySeqId === _switchSeqId) {
+      _switchLock = false;
+      console.log(`[switchSession] #${mySeqId} 锁已释放`);
+    }
   }
 }
 
 function clearMessages() {
-  const container = $('#chat-messages');
-  container.innerHTML = `
+  const sc = getActiveContainer();
+  sc.element.innerHTML = `
     <div class="welcome-message">
       <h1>OmniAssist</h1>
       <p>计时算文查网，一站式全能辅助</p>
@@ -228,8 +576,8 @@ function clearMessages() {
 }
 
 // ===== 消息渲染 =====
-function appendMessage(role, content, attachments) {
-  const container = $('#chat-messages');
+function appendMessage(role, content, attachments, targetContainer) {
+  const container = targetContainer || getActiveContainer().element;
   const welcome = container.querySelector('.welcome-message');
   if (welcome) welcome.remove();
 
@@ -249,11 +597,12 @@ function appendMessage(role, content, attachments) {
     <div class="message-body"><div class="answer-area">${renderContent(content)}${attachHtml}</div></div>
   `;
   container.appendChild(div);
-  container.scrollTop = container.scrollHeight;
+  scrollToBottom();
   return div;
 }
 
-function renderHistoryMessage(m) {
+function renderHistoryMessage(m, targetContainer) {
+  const container = targetContainer || getActiveContainer().element;
   const role = typeof m === 'string' ? 'user' : (m.role || 'user');
   const content = typeof m === 'string' ? m : (m.content || '');
   const compressedMeta = (m && m.compressed_metadata) || null;
@@ -276,16 +625,15 @@ function renderHistoryMessage(m) {
   }
 
   if (role === 'system' && compressedMeta && compressedMeta.rounds && compressedMeta.rounds.length > 0) {
-    renderCompressedHistory(content, compressedMeta);
+    renderCompressedHistory(content, compressedMeta, container);
     return;
   }
 
   if (role === 'user' || !hasMeta) {
-    appendMessage(role, content);
+    appendMessage(role, content, null, container);
     return;
   }
 
-  const container = $('#chat-messages');
   const welcome = container.querySelector('.welcome-message');
   if (welcome) welcome.remove();
 
@@ -353,7 +701,7 @@ function renderHistoryMessage(m) {
     </div>
   `;
   container.appendChild(div);
-  container.scrollTop = container.scrollHeight;
+  scrollToBottom();
 
   if (search) {
     const searchHeader = div.querySelector('.search-header');
@@ -423,15 +771,15 @@ function renderHistoryMessage(m) {
   return div;
 }
 
-function renderCompressedHistory(summaryContent, meta) {
-  const container = $('#chat-messages');
+function renderCompressedHistory(summaryContent, meta, targetContainer) {
+  const container = targetContainer || getActiveContainer().element;
   const welcome = container.querySelector('.welcome-message');
   if (welcome) welcome.remove();
 
   const div = document.createElement('div');
   div.className = 'message system';
 
-  const roundsHtml = meta.rounds.map((r, i) => {
+  const roundsHtml = meta.rounds.map((r) => {
     const metaPart = r.meta;
     const hasThought = metaPart && metaPart.thought;
     const hasTools = metaPart && metaPart.tools && metaPart.tools.length > 0;
@@ -551,12 +899,12 @@ function renderCompressedHistory(summaryContent, meta) {
     }
   });
 
-  container.scrollTop = container.scrollHeight;
+  scrollToBottom();
   return div;
 }
 
 function createStreamingMessage() {
-  const container = $('#chat-messages');
+  const container = getActiveContainer().element;
   const welcome = container.querySelector('.welcome-message');
   if (welcome) welcome.remove();
 
@@ -567,7 +915,7 @@ function createStreamingMessage() {
     <div class="content streaming-cursor"></div>
   `;
   container.appendChild(div);
-  container.scrollTop = container.scrollHeight;
+  scrollToBottom();
   return div.querySelector('.content');
 }
 
@@ -721,7 +1069,7 @@ function copyCodeBlock(btn) {
 let abortController = null;
 
 function createAssistantContainer() {
-  const container = $('#chat-messages');
+  const container = getActiveContainer().element;
   const welcome = container.querySelector('.welcome-message');
   if (welcome) welcome.remove();
 
@@ -750,7 +1098,7 @@ function createAssistantContainer() {
     </div>
   `;
   container.appendChild(div);
-  container.scrollTop = container.scrollHeight;
+  scrollToBottom();
 
   const stream = {
     container: div,
@@ -790,6 +1138,12 @@ function createAssistantContainer() {
   if (state.showThought) {
     stream.thinkEl.classList.remove('hidden');
     stream.thinkStartTime = Date.now();
+  }
+
+  // 保存 stream 引用到 session 容器，以便切换时保持状态
+  const sid = state.currentSessionId || '__default__';
+  if (state.sessionContainers[sid]) {
+    state.sessionContainers[sid].stream = stream;
   }
 
   return stream;
@@ -894,8 +1248,7 @@ function renderSearchArea(stream) {
     });
   }
 
-  const container = $('#chat-messages');
-  container.scrollTop = container.scrollHeight;
+  scrollToBottom();
 }
 
 function updateThinkArea(stream) {
@@ -914,8 +1267,7 @@ function updateThinkArea(stream) {
   stream.thinkContentEl.innerHTML = html;
   stream.thinkContentEl.scrollTop = stream.thinkContentEl.scrollHeight;
 
-  const container = $('#chat-messages');
-  container.scrollTop = container.scrollHeight;
+  scrollToBottom();
 }
 
 function finalizeThinkArea(stream) {
@@ -937,14 +1289,209 @@ function finalizeThinkArea(stream) {
 function updateAnswerArea(stream) {
   stream.answerEl.innerHTML = renderContent(stream.answerContent);
   stream.answerEl.classList.add('streaming-cursor');
-  const container = $('#chat-messages');
-  container.scrollTop = container.scrollHeight;
+  scrollToBottom();
+}
+
+// ===== 可复用的 SSE 事件处理 =====
+
+function handleStreamEvent(stream, parsed) {
+  // 返回: 'done' | 'error' | null
+  if (parsed.type === 'error') {
+    stream.answerEl.textContent = '\u9519\u8bef: ' + parsed.content;
+    stream.answerEl.classList.remove('streaming-cursor');
+    showToast(parsed.content, 'error');
+    return 'error';
+  }
+  if (parsed.type === 'web_search') {
+    stream.searchData = {
+      query: parsed.query,
+      scenario: parsed.scenario,
+      results: parsed.results,
+    };
+    if (!stream.thinkStartTime) stream.thinkStartTime = Date.now();
+    stream.thinkContent += `\n\u8054\u7f51\u641c\u7d22: ${parsed.query}\n\u573a\u666f: ${parsed.scenario}\n`;
+    updateThinkArea(stream);
+    return null;
+  }
+  if (parsed.type === 'thought') {
+    if (!stream.thinkStartTime) stream.thinkStartTime = Date.now();
+    stream.thinkContent += parsed.content;
+    updateThinkArea(stream);
+    return null;
+  }
+  if (parsed.type === 'tool_call') {
+    if (!stream.thinkStartTime) stream.thinkStartTime = Date.now();
+    stream.tools.push({
+      name: parsed.name,
+      arguments: parsed.arguments || {},
+      result: null,
+      error: false,
+    });
+    stream.hasTools = true;
+    stream.thinkContent += `\n\u8c03\u7528\u5de5\u5177: ${parsed.name}\n\u53c2\u6570: ${JSON.stringify(parsed.arguments, null, 2)}\n`;
+    updateThinkArea(stream);
+    return null;
+  }
+  if (parsed.type === 'tool_result') {
+    const tool = stream.tools.find(t => t.name === parsed.name && t.result === null);
+    if (tool) {
+      tool.result = parsed.content || '';
+      tool.error = tool.result.startsWith('[\u6c99\u7bb1\u6267\u884c\u5931\u8d25]') ||
+                   tool.result.startsWith('[\u6c99\u7bb1\u6267\u884c\u8d85\u65f6]') ||
+                   tool.result.startsWith('[\u6c99\u7bb1\u5f02\u5e38]') ||
+                   tool.result.startsWith('[\u5de5\u5177\u6267\u884c\u5f02\u5e38]');
+    }
+    stream.thinkContent += `\u5de5\u5177\u7ed3\u679c: ${parsed.content || '(\u7a7a)'}\n`;
+    updateThinkArea(stream);
+    return null;
+  }
+  if (parsed.type === 'tool_summary') {
+    renderToolSummary(stream, parsed.tools);
+    return null;
+  }
+  if ((parsed.type === 'content' || parsed.type === 'token') && parsed.content) {
+    if (!stream.thinkDone && stream.thinkStartTime) {
+      finalizeThinkArea(stream);
+    }
+    stream.answerContent += parsed.content;
+    updateAnswerArea(stream);
+    return null;
+  }
+  if (parsed.type === 'done') {
+    stream.answerEl.classList.remove('streaming-cursor');
+    if (!stream.answerContent) {
+      stream.answerEl.textContent = parsed.content || '(\u65e0\u54cd\u5e94)';
+    }
+    if (stream.thinkStartTime && !stream.thinkDone) {
+      finalizeThinkArea(stream);
+    }
+    if (stream.searchData && stream.searchEl.classList.contains('hidden')) {
+      renderSearchArea(stream);
+    }
+    return 'done';
+  }
+  return null;
+}
+
+async function readSSEStream(res, stream) {
+  // 读取 SSE 流，返回 'done' | 'error' | null
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice(6).trim();
+      if (!data || data === '[DONE]') continue;
+
+      try {
+        const parsed = JSON.parse(data);
+        const result = handleStreamEvent(stream, parsed);
+        if (result === 'done' || result === 'error') {
+          return result;
+        }
+      } catch (e) {
+        // ignore parse errors
+      }
+    }
+  }
+
+  // 流结束但没有显式 done 事件
+  stream.answerEl.classList.remove('streaming-cursor');
+  if (!stream.answerContent) {
+    stream.answerEl.textContent = '(\u65e0\u54cd\u5e94)';
+  }
+  return null;
+}
+
+// ===== 订阅正在运行的后台任务（用于切换 session 后重连） =====
+
+async function subscribeToTask(sessionId) {
+  const taskInfo = state.taskStatuses[sessionId];
+  if (!taskInfo) return;
+
+  // 添加用户消息到 DOM
+  const sc = state.sessionContainers[sessionId];
+  if (sc) {
+    const welcome = sc.element.querySelector('.welcome-message');
+    if (welcome) welcome.remove();
+    appendMessage('user', taskInfo.user_message, null, sc.element);
+  }
+
+  // 创建助手容器（确保 currentSessionId 正确）
+  const prevSessionId = state.currentSessionId;
+  state.currentSessionId = sessionId;
+  const stream = createAssistantContainer();
+  state.currentSessionId = prevSessionId;
+
+  // 不设置 state.isStreaming — 允许用户在其他 session 发送消息
+  // 仅标记当前正在订阅任务
+  state.subscribingSessionId = sessionId;
+  if (state.currentSessionId === sessionId) {
+    $('#btn-send').classList.add('streaming');
+    $('#btn-send').title = '\u4efb\u52a1\u6267\u884c\u4e2d';
+  }
+
+  try {
+    const res = await fetch(`/api/chat/subscribe/${sessionId}`);
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || res.statusText);
+    }
+
+    await readSSEStream(res, stream);
+
+    // 后续处理：本地立即落状态
+    if (state.taskStatuses[sessionId]) {
+      state.taskStatuses[sessionId].status = 'completed';
+    }
+    if (state.currentSessionId !== sessionId) {
+      state.completedBgSessions.add(sessionId);
+    } else {
+      state.acknowledgedTasks.add(sessionId);
+      _saveAcknowledged();
+      state.completedBgSessions.delete(sessionId);
+    }
+    await loadSessions();
+    if (state.sessionContainers[sessionId]) {
+      state.sessionContainers[sessionId].stream = null;
+    }
+  } catch (e) {
+    console.error('\u8ba2\u9605\u4efb\u52a1\u5931\u8d25:', e);
+    stream.answerEl.textContent = '\u8ba2\u9605\u5931\u8d25: ' + e.message;
+    stream.answerEl.classList.remove('streaming-cursor');
+  } finally {
+    state.subscribingSessionId = null;
+    if (state.currentSessionId === sessionId) {
+      $('#btn-send').classList.remove('streaming');
+      $('#btn-send').title = '\u53d1\u9001';
+    }
+  }
 }
 
 async function sendMessage() {
   const input = $('#chat-input');
   const message = input.value.trim();
-  if (!message || state.isStreaming) return;
+  if (!message) return;
+  // 只阻止在当前正在流式输出的 session 发送消息（允许在其他 session 发送）
+  if (state.isStreaming && state.streamingSessionId === state.currentSessionId) {
+    showToast('当前任务正在执行中，请等待完成或点击发送按钮暂停', 'warning');
+    return;
+  }
+  // 检查当前 session 是否有后台运行的任务
+  const _taskInfo = state.taskStatuses[state.currentSessionId];
+  if (_taskInfo && _taskInfo.status === 'running') {
+    showToast('该会话有正在执行的任务，请等待完成', 'warning');
+    return;
+  }
 
   if (/^\/agent\s+thought\s+(on|off)/i.test(message)) {
     showToast('请使用输入框下方的「思考过程」按钮来切换', 'info');
@@ -970,7 +1517,7 @@ async function sendMessage() {
 
   const currentAttachments = [...state.attachedFiles];
   if (currentAttachments.length > 0) {
-    const lastMsg = $('#chat-messages').lastElementChild;
+    const lastMsg = getActiveContainer().element.lastElementChild;
     if (lastMsg && lastMsg.classList.contains('user')) {
       const iconMap = { text: 'T', pdf: 'P', docx: 'W', xlsx: 'E', pptx: 'S', csv: 'C' };
       const tags = currentAttachments.map(f => {
@@ -987,10 +1534,22 @@ async function sendMessage() {
 
   const stream = createAssistantContainer();
   state.isStreaming = true;
+  state.streamingSessionId = state.currentSessionId;
   $('#btn-send').classList.add('streaming');
   $('#btn-send').title = '停止生成';
 
   abortController = new AbortController();
+  const streamSessionId = state.currentSessionId;
+
+  // 乐观标记为运行中：立刻切走时也能看到转圈，不用等轮询
+  state.taskStatuses[streamSessionId] = {
+    status: 'running',
+    user_message: message,
+    started_at: Date.now() / 1000,
+  };
+  state.acknowledgedTasks.delete(streamSessionId);
+  state.completedBgSessions.delete(streamSessionId);
+  _saveAcknowledged();
 
   try {
     const res = await fetch('/api/chat/stream', {
@@ -1005,152 +1564,81 @@ async function sendMessage() {
       signal: abortController.signal,
     });
 
+    if (res.status === 409) {
+      const err = await res.json();
+      showToast(err.detail || '该会话有正在执行的任务', 'warning');
+      // 移除空的助手容器
+      stream.container.remove();
+      return;
+    }
+
     if (!res.ok) {
       const err = await res.json();
       throw new Error(err.detail || res.statusText);
     }
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+    await readSSEStream(res, stream);
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6).trim();
-        if (!data || data === '[DONE]') continue;
-
-        try {
-          const parsed = JSON.parse(data);
-
-          if (parsed.type === 'error') {
-            stream.answerEl.textContent = '错误: ' + parsed.content;
-            stream.answerEl.classList.remove('streaming-cursor');
-            showToast(parsed.content, 'error');
-            return;
-          }
-
-          if (parsed.type === 'web_search') {
-            stream.searchData = {
-              query: parsed.query,
-              scenario: parsed.scenario,
-              results: parsed.results,
-            };
-            if (!stream.thinkStartTime) {
-              stream.thinkStartTime = Date.now();
-            }
-            stream.thinkContent += `\n联网搜索: ${parsed.query}\n场景: ${parsed.scenario}\n`;
-            updateThinkArea(stream);
-            continue;
-          }
-
-          if (parsed.type === 'thought') {
-            if (!stream.thinkStartTime) {
-              stream.thinkStartTime = Date.now();
-            }
-            stream.thinkContent += parsed.content;
-            updateThinkArea(stream);
-            continue;
-          }
-
-          if (parsed.type === 'tool_call') {
-            if (!stream.thinkStartTime) {
-              stream.thinkStartTime = Date.now();
-            }
-            stream.tools.push({
-              name: parsed.name,
-              arguments: parsed.arguments || {},
-              result: null,
-              error: false,
-            });
-            stream.hasTools = true;
-            stream.thinkContent += `\n调用工具: ${parsed.name}\n参数: ${JSON.stringify(parsed.arguments, null, 2)}\n`;
-            updateThinkArea(stream);
-            continue;
-          }
-
-          if (parsed.type === 'tool_result') {
-            const tool = stream.tools.find(t => t.name === parsed.name && t.result === null);
-            if (tool) {
-              tool.result = parsed.content || '';
-              tool.error = tool.result.startsWith('[沙箱执行失败]') ||
-                           tool.result.startsWith('[沙箱执行超时]') ||
-                           tool.result.startsWith('[沙箱异常]') ||
-                           tool.result.startsWith('[工具执行异常]');
-            }
-            stream.thinkContent += `工具结果: ${parsed.content || '(空)'}\n`;
-            updateThinkArea(stream);
-            continue;
-          }
-
-          if (parsed.type === 'tool_summary') {
-            renderToolSummary(stream, parsed.tools);
-            continue;
-          }
-
-          if ((parsed.type === 'content' || parsed.type === 'token') && parsed.content) {
-            if (!stream.thinkDone && stream.thinkStartTime) {
-              finalizeThinkArea(stream);
-            }
-            stream.answerContent += parsed.content;
-            updateAnswerArea(stream);
-          }
-
-          if (parsed.type === 'done') {
-            stream.answerEl.classList.remove('streaming-cursor');
-            if (!stream.answerContent) {
-              stream.answerEl.textContent = parsed.content || '(无响应)';
-            }
-            if (stream.thinkStartTime && !stream.thinkDone) {
-              finalizeThinkArea(stream);
-            }
-            if (stream.searchData && stream.searchEl.classList.contains('hidden')) {
-              renderSearchArea(stream);
-            }
-          }
-        } catch (e) {
-          // ignore parse errors
-        }
-      }
+    // 后续处理：本地立即落状态，不等轮询
+    if (state.taskStatuses[streamSessionId]) {
+      state.taskStatuses[streamSessionId].status = 'completed';
     }
-
-    stream.answerEl.classList.remove('streaming-cursor');
-    if (!stream.answerContent) {
-      stream.answerEl.textContent = '(无响应)';
+    if (streamSessionId === state.currentSessionId) {
+      // 用户就在这个 session，结果已可见，不留气泡
+      state.acknowledgedTasks.add(streamSessionId);
+      _saveAcknowledged();
+      state.completedBgSessions.delete(streamSessionId);
+    } else {
+      state.completedBgSessions.add(streamSessionId);
     }
-
-    if (state.currentSessionId) {
-      await loadSessions();
+    if (state.backgroundStreamSessionId === streamSessionId) {
+      state.backgroundStreamSessionId = null;
+    }
+    await loadSessions();
+    if (state.sessionContainers[streamSessionId]) {
+      state.sessionContainers[streamSessionId].stream = null;
     }
   } catch (e) {
     if (e.name === 'AbortError') {
       stream.answerEl.classList.remove('streaming-cursor');
       if (!stream.answerContent) {
-        stream.answerEl.textContent = '(已停止生成)';
+        stream.answerEl.textContent = '(\u5df2\u505c\u6b62\u751f\u6210)';
       }
       return;
     }
-    stream.answerEl.textContent = '请求失败: ' + e.message;
+    stream.answerEl.textContent = '\u8bf7\u6c42\u5931\u8d25: ' + e.message;
     stream.answerEl.classList.remove('streaming-cursor');
-    showToast('发送失败: ' + e.message, 'error');
+    showToast('\u53d1\u9001\u5931\u8d25: ' + e.message, 'error');
   } finally {
     state.isStreaming = false;
+    state.streamingSessionId = null;
     $('#btn-send').classList.remove('streaming');
-    $('#btn-send').title = '发送';
+    $('#btn-send').title = '\u53d1\u9001';
     abortController = null;
   }
 }
 
-function stopGeneration() {
+async function stopGeneration() {
+  const sessionId = state.streamingSessionId || state.subscribingSessionId;
+  // 1. 中止前端 fetch 读取
   if (abortController) {
     abortController.abort();
+  }
+  // 2. 通知后端取消后台任务
+  if (sessionId) {
+    try {
+      await fetch(`/api/chat/stop/${sessionId}`, { method: 'POST' });
+    } catch (e) {
+      // 忽略网络错误
+    }
+    // 3. 立即更新前端状态，隐藏运行指示器
+    if (state.taskStatuses[sessionId]) {
+      state.taskStatuses[sessionId].status = 'failed';
+    }
+    state.acknowledgedTasks.add(sessionId);
+    _saveAcknowledged();
+    state.completedBgSessions.delete(sessionId);
+    renderSessions();
   }
 }
 
@@ -1340,6 +1828,7 @@ function showCloudPreview(file) {
 // ===== 技能列表 =====
 let _skillData = { system: [], user: [] };
 let _skillTab = 'system';
+let _skillRendered = [];   // 当前渲染出来的技能（供事件委托按下标取用）
 
 async function loadSkills() {
   const container = $('#skills-container');
@@ -1386,41 +1875,70 @@ function renderSkillList() {
     return;
   }
 
-  container.innerHTML = filtered.map(s => {
+  const isSystem = _skillTab === 'system';
+  container.innerHTML = filtered.map((s, idx) => {
     const name = s.name || s.skill_name || '';
     const desc = s.description || '';
     const enabled = s.enabled !== false;
-    const isSystem = _skillTab === 'system';
+    const count = typeof s.scripts_count === 'number' ? s.scripts_count : null;
+    const meta = [];
+    if (count !== null) meta.push(`${count} 个脚本`);
+    if (s.source === 'filesystem') meta.push('文件');
     return `
-      <div class="skill-item" data-name="${escapeHtml(name)}">
+      <div class="skill-item${enabled ? '' : ' disabled'}" data-name="${escapeHtml(name)}">
         <div class="skill-info">
-          <div class="skill-name">${escapeHtml(name)}</div>
+          <div class="skill-name">
+            ${escapeHtml(name)}
+            ${meta.length ? `<span class="skill-meta">${escapeHtml(meta.join(' · '))}</span>` : ''}
+          </div>
           ${desc ? `<div class="skill-desc" title="${escapeHtml(desc)}">${escapeHtml(desc)}</div>` : ''}
         </div>
         <div class="skill-actions">
-          <button class="btn-preview" onclick="previewSkill('${escapeHtml(name)}', ${isSystem})">预览</button>
-          <button class="skill-toggle ${enabled ? 'on' : ''}" onclick="toggleSkill('${escapeHtml(name)}', ${isSystem}, ${!enabled})" title="${enabled ? '已启用' : '已禁用'}"></button>
+          <button class="btn-preview" data-skill-action="preview" data-idx="${idx}">预览</button>
+          <button class="skill-toggle ${enabled ? 'on' : ''}" data-skill-action="toggle" data-idx="${idx}"
+                  title="${enabled ? '点击禁用' : '点击启用'}"></button>
         </div>
       </div>
     `;
   }).join('');
+
+  // 事件委托：技能名可能含引号/反斜杠，用 inline onclick 拼字符串会破坏语法
+  _skillRendered = filtered;
+  container.querySelectorAll('[data-skill-action]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const skill = _skillRendered[Number(btn.dataset.idx)];
+      if (!skill) return;
+      if (btn.dataset.skillAction === 'preview') {
+        previewSkill(skill, isSystem);
+      } else {
+        toggleSkill(skill, isSystem, btn);
+      }
+    });
+  });
 }
 
-async function toggleSkill(name, isSystem, enable) {
+async function toggleSkill(skill, isSystem, btn) {
+  const name = skill.name || skill.skill_name;
+  const enable = skill.enabled === false;   // 当前禁用 → 点击后启用
+
+  if (btn) btn.disabled = true;
   try {
-    await API.put(`/api/skills/0/toggle`, { name, enabled: enable });
-    // 更新本地状态
+    await API.put('/api/skills/0/toggle', { name, enabled: enable });
+    // 后端成功后再落本地状态，避免"界面变了但实际没生效"
     const list = isSystem ? _skillData.system : _skillData.user;
     const item = list.find(s => (s.name || s.skill_name) === name);
     if (item) item.enabled = enable;
+    skill.enabled = enable;
     renderSkillList();
+    showToast(`技能「${name}」已${enable ? '启用' : '禁用'}`, 'success');
   } catch (e) {
-    alert(`操作失败: ${e.message}`);
+    if (btn) btn.disabled = false;
+    showToast(`操作失败: ${e.message}`, 'error');
   }
 }
 
-async function previewSkill(name, isSystem) {
-  const modal = $('#modal-skill-preview');
+async function previewSkill(skill, isSystem) {
+  const name = typeof skill === 'string' ? skill : (skill.name || skill.skill_name);
   const content = $('#skill-preview-content');
   const title = $('#skill-preview-title');
   title.textContent = `${name} - 技能详情`;
@@ -1428,19 +1946,35 @@ async function previewSkill(name, isSystem) {
   openModal('modal-skill-preview');
 
   try {
-    let data;
+    let url;
     if (isSystem) {
-      data = await API.get(`/api/skills/system/${encodeURIComponent(name)}`);
+      url = `/api/skills/system/${encodeURIComponent(name)}`;
+    } else if (skill && skill.id) {
+      url = `/api/skills/${skill.id}`;
     } else {
-      // 用户技能：找到对应的 skill_id
-      const skill = _skillData.user.find(s => (s.name || s.skill_name) === name);
-      if (!skill || !skill.id) throw new Error('技能未找到');
-      data = await API.get(`/api/skills/${skill.id}`);
+      // 文件系统用户技能没有数据库 id，按名称查
+      url = `/api/skills/user/${encodeURIComponent(name)}`;
     }
-    renderSkillPreview(data);
+    renderSkillPreview(await API.get(url));
   } catch (e) {
     content.innerHTML = `<p class="loading-text" style="color:var(--danger);">加载失败: ${escapeHtml(e.message)}</p>`;
   }
+}
+
+function formatSkillParams(params) {
+  if (!params || typeof params !== 'object') return '无参数';
+  // 兼容两种结构：{name: {...}} 或 JSON Schema {type:'object', properties:{...}}
+  const props = params.properties && typeof params.properties === 'object'
+    ? params.properties : params;
+  const required = Array.isArray(params.required) ? params.required : [];
+  const keys = Object.keys(props).filter(k => k !== 'type' && k !== 'required');
+  if (keys.length === 0) return '无参数';
+  return keys.map(k => {
+    const v = props[k];
+    const desc = v && typeof v === 'object' ? (v.description || '') : '';
+    const mark = required.includes(k) ? '*' : '';
+    return `${k}${mark}${desc ? ': ' + desc : ''}`;
+  }).join(', ');
 }
 
 function renderSkillPreview(data) {
@@ -1450,7 +1984,20 @@ function renderSkillPreview(data) {
   let html = '';
   if (data.description) {
     html += `<div class="skill-preview-section">
-      <p style="color:var(--text-muted);">${escapeHtml(data.description)}</p>
+      <p style="color:var(--text-muted);margin:0;">${escapeHtml(data.description)}</p>
+    </div>`;
+  }
+
+  // SKILL.md 正文（此前完全没渲染，用户技能预览等于一片空白）
+  const instructions = data.instructions || '';
+  if (instructions) {
+    html += `<div class="skill-preview-section">
+      <h4>技能说明</h4>
+    </div>
+    <div class="skill-preview-script">
+      <div style="padding:8px 12px;">
+        <pre style="white-space:pre-wrap;">${escapeHtml(instructions)}</pre>
+      </div>
     </div>`;
   }
 
@@ -1462,14 +2009,8 @@ function renderSkillPreview(data) {
     html += '<p class="loading-text">暂无脚本</p>';
   } else {
     html += scripts.map((s, i) => {
-      const code = s.execution_code || s.code || '';
-      const params = s.parameters || {};
-      const paramStr = typeof params === 'object' && Object.keys(params).length > 0
-        ? Object.entries(params).map(([k, v]) => {
-            const desc = typeof v === 'object' ? (v.description || '') : '';
-            return `${k}${desc ? ': ' + desc : ''}`;
-          }).join(', ')
-        : '无参数';
+      const code = s.execution_code || s.code || s.source || '';
+      const paramStr = formatSkillParams(s.parameters);
       return `
         <div class="skill-preview-script">
           <h4>${i + 1}. ${escapeHtml(s.name || '脚本')}</h4>
@@ -2268,6 +2809,8 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e)
 // ===== 事件绑定 =====
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
+  // 刷新前已查看过的完成任务，恢复已读标记，避免完成气泡重复弹出
+  _loadAcknowledged();
 
   $('#theme-toggle').addEventListener('click', toggleTheme);
 
@@ -2381,8 +2924,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   $('#btn-send').addEventListener('click', () => {
-    if (state.isStreaming) {
+    if (state.isStreaming || (state.subscribingSessionId === state.currentSessionId)) {
       stopGeneration();
+    } else if (state.subscribingSessionId) {
+      showToast('后台任务正在执行中，请等待完成', 'info');
     } else {
       sendMessage();
     }
@@ -2540,6 +3085,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 加载当前用户信息
   loadCurrentUser();
+
+  // 启动任务状态轮询（检测后台任务完成，显示气泡通知）
+  startTaskPolling();
 
   const urlParams = new URLSearchParams(window.location.search);
   if (urlParams.get('must_change_password') === '1') {

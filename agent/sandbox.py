@@ -4,9 +4,17 @@ import subprocess
 import sys
 import tempfile
 import threading
+from urllib.parse import urlparse
 from agent.logger import get_logger
 
 logger = get_logger("sandbox")
+
+# pip 安装配置（可通过环境变量覆盖）
+# SANDBOX_PIP_INDEX 设为空串即使用 pypi 官方源
+PIP_INDEX_URL = os.environ.get(
+    "SANDBOX_PIP_INDEX", "https://pypi.tuna.tsinghua.edu.cn/simple"
+)
+PIP_INSTALL_TIMEOUT = int(os.environ.get("SANDBOX_PIP_TIMEOUT", "300"))
 
 
 class ToolSandbox:
@@ -17,19 +25,69 @@ class ToolSandbox:
     - 工具代码在子进程中执行，崩溃不影响主服务
     - 超时保护，防止死循环
     - 参数通过 stdin 传入，结果通过 stdout 返回
+    - 每用户独立日志文件（sandbox.log）
     """
 
-    def __init__(self, sandbox_dir: str = None):
+    def __init__(self, sandbox_dir: str = None, user_id: int = 0):
         if sandbox_dir is None:
             base_dir = os.path.dirname(os.path.abspath(__file__))
             sandbox_dir = os.path.join(os.path.dirname(base_dir), "tool_sandbox")
         self.sandbox_dir = sandbox_dir
+        self.user_id = user_id
         self.venv_dir = os.path.join(sandbox_dir, "venv")
         self.venv_python = os.path.join(self.venv_dir, "bin", "python3")
         self._deps_installed = set()
         self._deps_file = os.path.join(sandbox_dir, ".installed_deps")
+        self._exec_log_path = os.path.join(sandbox_dir, "sandbox.log")
+
+        # 共享基础环境：用户沙箱（tool_sandbox/user_N）通过 PYTHONPATH 继承
+        # tool_sandbox/venv 的依赖，避免每个用户重复 pip 安装常用库
+        _norm = os.path.normpath(sandbox_dir)
+        if os.path.basename(_norm).startswith("user_"):
+            self.shared_venv_dir = os.path.join(os.path.dirname(_norm), "venv")
+        else:
+            self.shared_venv_dir = self.venv_dir
+        self._shared_site_packages = None   # 懒加载缓存
+        self._shared_packages = None        # 懒加载缓存
+
         self._ensure_venv()
         self._load_installed_deps()
+
+    def get_shared_site_packages(self) -> str:
+        """返回共享基础环境的 site-packages 路径（用户沙箱专用），无则返回空串"""
+        if self._shared_site_packages is not None:
+            return self._shared_site_packages
+        path = ""
+        if self.shared_venv_dir != self.venv_dir:
+            import glob as _glob
+            hits = _glob.glob(os.path.join(self.shared_venv_dir, "lib", "python*", "site-packages"))
+            if hits:
+                path = hits[0]
+        self._shared_site_packages = path
+        return path
+
+    def _get_shared_packages(self) -> set:
+        """列出共享基础环境中已安装的包名（小写），用于跳过重复安装"""
+        if self._shared_packages is not None:
+            return self._shared_packages
+        packages = set()
+        shared_python = os.path.join(self.shared_venv_dir, "bin", "python3")
+        if self.shared_venv_dir != self.venv_dir and os.path.exists(shared_python):
+            try:
+                result = subprocess.run(
+                    [shared_python, "-m", "pip", "list", "--format", "freeze"],
+                    capture_output=True, text=True, timeout=15
+                )
+                if result.returncode == 0:
+                    for line in result.stdout.strip().split("\n"):
+                        name = line.strip().split("==")[0].strip().lower()
+                        if name:
+                            packages.add(name)
+                            packages.add(name.replace("-", "_"))
+            except Exception:
+                pass
+        self._shared_packages = packages
+        return packages
 
     def _ensure_venv(self):
         os.makedirs(self.sandbox_dir, exist_ok=True)
@@ -100,6 +158,19 @@ class ToolSandbox:
         if not to_install:
             return True
 
+        # 1) 共享基础环境已有的包，通过 PYTHONPATH 继承，无需安装
+        shared_packages = self._get_shared_packages()
+        if shared_packages:
+            for pkg in list(to_install):
+                if pkg.lower() in shared_packages:
+                    self._deps_installed.add(pkg)
+                    to_install.remove(pkg)
+            self._save_installed_deps()
+
+        if not to_install:
+            return True
+
+        # 2) 本沙箱 venv 已有的包
         venv_packages = self._get_venv_installed_packages()
         if venv_packages:
             for pkg in list(to_install):
@@ -115,22 +186,51 @@ class ToolSandbox:
             if not self._ensure_venv():
                 logger.error(f"虚拟环境不可用，无法安装依赖")
                 return False
+
+        logger.info(f"安装依赖到用户沙箱(user={self.user_id}): {', '.join(to_install)}")
         try:
-            subprocess.check_call(
-                [self.venv_python, "-m", "pip", "install", "--no-cache-dir", "-q"] + to_install,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=120
+            proc = subprocess.run(
+                self._build_pip_command(to_install),
+                capture_output=True, text=True,
+                timeout=PIP_INSTALL_TIMEOUT
             )
         except subprocess.TimeoutExpired:
-            logger.error(f"pip install 超时: {to_install}")
+            logger.error(
+                f"pip install 超时({PIP_INSTALL_TIMEOUT}s): {to_install} | "
+                f"index={PIP_INDEX_URL or '默认'}"
+            )
             return False
         except Exception as e:
-            logger.error(f"pip install 失败: {e}")
+            logger.error(f"pip install 异常: {to_install} | {e}")
             return False
+
+        if proc.returncode != 0:
+            # 关键：把 pip 的真实错误写进日志，便于定位（旧实现丢弃了 stderr）
+            detail = (proc.stderr or proc.stdout or "").strip().replace("\n", " ")
+            logger.error(f"pip install 失败: {to_install} | 退出码={proc.returncode} | {detail[:500]}")
+            return False
+
         for p in to_install:
             self._deps_installed.add(p)
         self._save_installed_deps()
         return True
+
+    def _build_pip_command(self, packages: list) -> list:
+        """构建 pip install 命令（含镜像源与重试参数）
+
+        镜像源可通过环境变量 SANDBOX_PIP_INDEX 覆盖，设为空串则使用 pypi 官方源。
+        """
+        cmd = [
+            self.venv_python, "-m", "pip", "install",
+            "--no-cache-dir", "-q", "--disable-pip-version-check",
+            "--timeout", "30", "--retries", "2",
+        ]
+        if PIP_INDEX_URL:
+            cmd += ["-i", PIP_INDEX_URL]
+            host = urlparse(PIP_INDEX_URL).hostname
+            if host:
+                cmd += ["--trusted-host", host]
+        return cmd + list(packages)
 
     def install_verbose(self, packages: list):
         if not packages:
@@ -139,8 +239,18 @@ class ToolSandbox:
         if not to_install:
             return
 
-        venv_packages = self._get_venv_installed_packages()
         pre_existing = set()
+        # 共享基础环境已有的包，通过 PYTHONPATH 继承
+        shared_packages = self._get_shared_packages()
+        if shared_packages:
+            for pkg in list(to_install):
+                if pkg.lower() in shared_packages:
+                    self._deps_installed.add(pkg)
+                    pre_existing.add(pkg)
+                    to_install.remove(pkg)
+            self._save_installed_deps()
+
+        venv_packages = self._get_venv_installed_packages()
         if venv_packages:
             for pkg in list(to_install):
                 if pkg.lower() in venv_packages:
@@ -159,11 +269,11 @@ class ToolSandbox:
         logger.info(f"安装依赖: {', '.join(to_install)}")
         try:
             subprocess.check_call(
-                [self.venv_python, "-m", "pip", "install", "--no-cache-dir"] + to_install,
-                timeout=120
+                self._build_pip_command(to_install),
+                timeout=PIP_INSTALL_TIMEOUT
             )
         except subprocess.TimeoutExpired:
-            logger.error(f"pip install 超时: {to_install}")
+            logger.error(f"pip install 超时({PIP_INSTALL_TIMEOUT}s): {to_install}")
             self._cleanup_failed_install(to_install, pre_existing)
             raise
         except Exception as e:
@@ -209,17 +319,91 @@ class ToolSandbox:
         except Exception:
             logger.warning("清理失败，可能需要手动清理")
 
-    def execute(self, code: str, params: dict, timeout: int = 30, user_id: int = None) -> str:
+    def _write_exec_log(self, tool_name: str, success: bool, duration_ms: float,
+                        code_preview: str, result_preview: str, error_detail: str = ""):
+        """写入每用户独立的沙箱执行日志
+
+        Args:
+            tool_name: 工具名称
+            success: 是否执行成功
+            duration_ms: 执行耗时（毫秒）
+            code_preview: 代码预览（前100字符）
+            result_preview: 结果预览（前200字符）
+            error_detail: 错误详情（失败时）
+        """
+        import time as _time
+        try:
+            timestamp = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime())
+            status = "SUCCESS" if success else "FAILED"
+            entry = (
+                f"[{timestamp}] [{status}] tool={tool_name} | "
+                f"user={self.user_id} | duration={duration_ms:.0f}ms | "
+                f"code={code_preview}\n"
+            )
+            if not success:
+                entry += f"  error: {error_detail[:500]}\n"
+            if result_preview:
+                entry += f"  result: {result_preview[:300]}\n"
+            entry += "-" * 60 + "\n"
+            with open(self._exec_log_path, "a", encoding="utf-8") as f:
+                f.write(entry)
+        except Exception:
+            pass  # 日志写入失败不应影响主流程
+
+    @staticmethod
+    def _rewrite_user_paths(code: str, user_id: int, tool_name: str = "") -> str:
+        """将代码中的 document_output 路径重写为用户专属目录 document_output/{user_id}。
+
+        实现要点：
+        1. 单次正则替换，只匹配紧跟在引号后的 document_output，不会误伤变量名/注释。
+        2. 幂等：通过负向前瞻跳过已含 /{user_id} 的路径，避免重复注入。
+        3. 安全网：重写后做语法校验，若破坏了原本合法的代码则回退原始代码。
+
+        Args:
+            code: 待执行的工具源码
+            user_id: 用户 ID
+            tool_name: 工具名（仅用于日志）
+
+        Returns:
+            str: 重写后的代码；重写失败时返回原始代码
+        """
+        import re as _re
+
+        # (?P<q>['"])  引号
+        # (?!/{uid}(?:/|(?P=q)))  已重写过则跳过
+        # (?P<tail>/|(?P=q))  后接路径分隔符或闭合引号，确保是完整的目录名
+        pattern = _re.compile(
+            rf"(?P<q>['\"])document_output(?!/{user_id}(?:/|(?P=q)))(?P<tail>/|(?P=q))"
+        )
+        rewritten = pattern.sub(
+            lambda m: f"{m.group('q')}document_output/{user_id}{m.group('tail')}",
+            code,
+        )
+        if rewritten == code:
+            return code
+
+        # 安全网：原本能编译却被改坏了，说明重写有问题，回退并告警
+        try:
+            compile(code, "<sandbox-origin>", "exec")
+        except SyntaxError:
+            return rewritten  # 原代码本身就有语法问题，交给后续流程报错
+        try:
+            compile(rewritten, "<sandbox-rewritten>", "exec")
+        except SyntaxError as e:
+            logger.error(
+                f"用户路径重写破坏了代码语法，已回退: tool={tool_name or '未知'} | "
+                f"user={user_id} | line={e.lineno} | msg={e.msg}"
+            )
+            return code
+        return rewritten
+
+    def execute(self, code: str, params: dict, timeout: int = 30, user_id: int = None, tool_name: str = "") -> str:
+        import time as _time
+        _start = _time.time()
+        code_preview = code[:100].replace("\n", " ") + ("..." if len(code) > 100 else "")
+        logger.info(f"执行工具: {tool_name or '未知'} | user={user_id} | code={code_preview}")
         if user_id is not None:
-            # 替换所有引用 document_output 的路径，在 document_output 后插入 /{user_id}
-            code = code.replace("'document_output/'", f"'document_output/{user_id}/'")
-            code = code.replace('"document_output/"', f'"document_output/{user_id}/"')
-            code = code.replace("'document_output'", f"'document_output/{user_id}'")
-            code = code.replace('"document_output"', f'"document_output/{user_id}"')
-            # 处理带文件名的路径：'document_output/xxx' → 'document_output/{user_id}/xxx'
-            import re as _re
-            code = _re.sub(r"('document_output)/([^'])", rf"'\1/{user_id}/\2", code)
-            code = _re.sub(r'("document_output)/([^"])', rf'"\1/{user_id}/\2', code)
+            code = self._rewrite_user_paths(code, user_id, tool_name)
         wrapper = self._build_wrapper(code, params)
         base_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(base_dir)
@@ -233,6 +417,10 @@ class ToolSandbox:
             "LANG": os.environ.get("LANG", "en_US.UTF-8"),
             "LC_ALL": os.environ.get("LC_ALL", "en_US.UTF-8"),
         }
+        # 用户沙箱继承共享基础环境的依赖（只读共享，避免每用户重复安装）
+        _shared_sp = self.get_shared_site_packages()
+        if _shared_sp:
+            subprocess_env["PYTHONPATH"] = _shared_sp
         for key in ("USER", "LOGNAME", "SHELL"):
             if key in os.environ:
                 subprocess_env[key] = os.environ[key]
@@ -251,15 +439,39 @@ class ToolSandbox:
                 if stdout:
                     parts.append(stdout[:800])
                 if stderr:
-                    parts.append(f"[系统错误] {stderr[:300]}")
+                    parts.append(f"[系统错误] {stderr[:500]}")
                 if not parts:
                     parts.append(f"退出码: {proc.returncode}")
-                return f"[沙箱执行失败] {' | '.join(parts)}"
-            return proc.stdout.strip()
+                result = f"[沙箱执行失败] {' | '.join(parts)}"
+                logger.error(
+                    f"沙箱执行失败: tool={tool_name or '未知'} | user={user_id} | "
+                    f"returncode={proc.returncode} | stderr={stderr[:200]} | "
+                    f"code={code[:200]}"
+                )
+                _elapsed = (_time.time() - _start) * 1000
+                self._write_exec_log(tool_name or '未知', False, _elapsed,
+                                     code_preview, result[:200], error_detail=stderr[:500])
+                return result
+            result = proc.stdout.strip()
+            logger.debug(f"沙箱执行成功: tool={tool_name or '未知'} | user={user_id}")
+            _elapsed = (_time.time() - _start) * 1000
+            self._write_exec_log(tool_name or '未知', True, _elapsed,
+                                 code_preview, result[:200])
+            return result
         except subprocess.TimeoutExpired:
-            return f"[沙箱执行超时] 工具执行超过 {timeout} 秒，已强制终止"
+            result = f"[沙箱执行超时] 工具执行超过 {timeout} 秒，已强制终止"
+            logger.warning(f"沙箱执行超时: tool={tool_name or '未知'} | user={user_id} | timeout={timeout}s")
+            _elapsed = timeout * 1000
+            self._write_exec_log(tool_name or '未知', False, _elapsed,
+                                 code_preview, result[:200], error_detail=f"超时({timeout}s)")
+            return result
         except Exception as e:
-            return f"[沙箱异常] {str(e)}"
+            result = f"[沙箱异常] {str(e)}"
+            logger.error(f"沙箱异常: tool={tool_name or '未知'} | user={user_id} | error={str(e)}")
+            _elapsed = (_time.time() - _start) * 1000
+            self._write_exec_log(tool_name or '未知', False, _elapsed,
+                                 code_preview, result[:200], error_detail=str(e))
+            return result
 
     _SAFE_MODULES = {
         "json", "math", "datetime", "re", "base64", "hashlib",
@@ -269,10 +481,10 @@ class ToolSandbox:
         "decimal", "fractions", "statistics",
     }
     _BLOCKED_MODULES = {
-        "subprocess", "shutil", "ctypes", "socket",
-        "http", "requests", "popen", "signal", "pty",
+        "subprocess", "shutil", "ctypes",
+        "requests", "popen", "signal", "pty",
         "fcntl", "posix", "grp", "pwd", "spwd", "crypt",
-        "multiprocessing", "asyncio", "select", "selectors", "ssl",
+        "multiprocessing", "asyncio", "select", "selectors",
         "smtplib", "imaplib", "poplib", "ftplib", "telnetlib",
         "shelve", "marshal",
     }
@@ -367,18 +579,6 @@ class ToolSandbox:
             "        raise ImportError(f'模块 {name} 已被沙箱禁用')\n"
             "    return _orig_import(name, *args, **kwargs)\n"
             "builtins.__import__ = _safe_import\n"
-            # 预置 urllib.request mock，防止报告生成库(reportlab)导入时触发 http/socket 等网络模块加载
-            "import sys as _sys\n"
-            "class _MockUrllibRequest:\n"
-            "    urlopen = None\n"
-            "    Request = None\n"
-            "    OpenerDirector = None\n"
-            "    build_opener = None\n"
-            "    install_opener = None\n"
-            "    pathname2url = None\n"
-            "    url2pathname = None\n"
-            "    getproxies = None\n"
-            "_sys.modules['urllib.request'] = _MockUrllibRequest()\n"
             "_orig_unlink = _os.unlink\n"
             "_orig_remove = _os.remove\n"
             "_DANGEROUS_OS = ['system', 'popen', 'execv', 'execve', 'spawnl', 'spawnle', 'spawnlp', 'spawnlpe', 'spawnv', 'spawnve', 'spawnvp', 'spawnvpe', 'remove', 'rmdir', 'removedirs', 'renames', 'chmod', 'chown', 'link', 'symlink', 'kill', 'killpg', 'setuid', 'setgid', 'fork', 'forkpty', 'unlink']\n"
@@ -398,6 +598,15 @@ class ToolSandbox:
             "_os.unlink = _safe_unlink\n"
             "_os.remove = _safe_unlink\n"
             "os = _os\n"
+            # 注意：eval/exec/compile 是 Python 标准库和 import 系统的内部依赖，不可移除
+            # 沙箱安全由其他 9 层防护保证（进程隔离、模块阻断、OS函数禁用、文件删除控制、内存限制、超时等）
+            # 内存限制（Unix 系统，512MB）
+            "try:\n"
+            "    import resource as _resource\n"
+            "    _limit = 512 * 1024 * 1024\n"
+            "    _resource.setrlimit(_resource.RLIMIT_AS, (_limit, _limit))\n"
+            "except (ImportError, ValueError):\n"
+            "    pass\n"
         )
 
         indented_code = "\n".join(
@@ -453,7 +662,7 @@ class SandboxPool:
         with self._lock:
             if user_id not in self._sandboxes:
                 sandbox_dir = os.path.join(self.base_dir, f"user_{user_id}")
-                self._sandboxes[user_id] = ToolSandbox(sandbox_dir)
+                self._sandboxes[user_id] = ToolSandbox(sandbox_dir, user_id=user_id)
             return self._sandboxes[user_id]
 
     def remove(self, user_id: int):

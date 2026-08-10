@@ -8,7 +8,7 @@ Returns:
     str: Markdown格式的天气信息
 """
 # HTTP_CONFIG:
-#   url: https://np6heyjn2u.re.qweatherapi.com/v7/weather/now?location={location}&key={secret:qweather_api_key}
+#   url: https://{secret:qweather_api_host}/v7/weather/now?location={location}&key={secret:qweather_api_key}
 #   method: GET
 import json
 

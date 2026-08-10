@@ -19,6 +19,9 @@ import os
 import re
 import shutil
 
+from agent.logger import get_logger
+logger = get_logger("skill_editor")
+
 # 技能根目录
 _SKILLS_ROOT = os.path.join(os.path.dirname(__file__), "skills")
 _USER_SKILLS_DIR = os.path.join(_SKILLS_ROOT, "user")
@@ -44,6 +47,45 @@ def _sanitize_name(name: str) -> str:
     return name.strip('_')
 
 
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
+
+
+def validate_skill_md(content: str):
+    """校验 SKILL.md 格式是否合法、字段是否完整（保存前调用）。
+
+    Returns:
+        (ok: bool, message: str)
+    """
+    if not isinstance(content, str) or not content.strip():
+        return False, "SKILL.md 内容为空"
+
+    m = _FRONTMATTER_RE.match(content)
+    if not m:
+        return False, "缺少 YAML frontmatter（应以 --- 开头并以 --- 结束）"
+
+    fm_text, body = m.group(1), m.group(2)
+    fm = {}
+    for line in fm_text.splitlines():
+        if ":" not in line:
+            continue
+        k, v = line.split(":", 1)
+        fm[k.strip()] = v.strip()
+
+    if "name" not in fm or not fm["name"]:
+        return False, "frontmatter 缺少必填字段: name"
+    if "description" not in fm or not fm["description"]:
+        return False, "frontmatter 缺少必填字段: description"
+
+    name = fm["name"]
+    if not re.match(r"^[a-zA-Z][a-zA-Z0-9_]*$", name):
+        return False, f"name 必须是合法标识（字母开头，仅含字母数字下划线），当前为: {name}"
+
+    if not body.strip():
+        return False, "SKILL.md 正文（指令部分）不能为空"
+
+    return True, "SKILL.md 格式合法"
+
+
 # ==================== 工具执行函数 ====================
 
 def create_user_skill(user_id: int, name: str, skill_md: str, tools: list = None) -> dict:
@@ -61,6 +103,12 @@ def create_user_skill(user_id: int, name: str, skill_md: str, tools: list = None
     safe_name = _sanitize_name(name)
     if not safe_name:
         return {"success": False, "message": "Skill 名称无效，请使用英文标识"}
+
+    # 保存前校验 SKILL.md 格式（不合法则不落盘）
+    valid, vmsg = validate_skill_md(skill_md)
+    if not valid:
+        logger.warning(f"创建 Skill 校验未通过 (user={user_id}, name={safe_name}): {vmsg}")
+        return {"success": False, "message": f"SKILL.md 校验未通过: {vmsg}"}
 
     user_dir = _ensure_user_dir(user_id)
     skill_dir = os.path.join(user_dir, safe_name)
@@ -114,6 +162,13 @@ def update_user_skill(user_id: int, name: str, skill_md: str = None, tools: list
     skill_dir = os.path.join(_get_user_dir(user_id), safe_name)
     if not os.path.isdir(skill_dir):
         return {"success": False, "message": f"Skill '{safe_name}' 不存在，请使用 create_user_skill 创建"}
+
+    # 若更新 SKILL.md，先校验格式
+    if skill_md is not None:
+        valid, vmsg = validate_skill_md(skill_md)
+        if not valid:
+            logger.warning(f"更新 Skill 校验未通过 (user={user_id}, name={safe_name}): {vmsg}")
+            return {"success": False, "message": f"SKILL.md 校验未通过: {vmsg}"}
 
     updated = []
 

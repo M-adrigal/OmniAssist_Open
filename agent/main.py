@@ -14,6 +14,7 @@ from agent.tools import ToolRegistry
 from agent.llm import LLMClient
 from agent.agent import SimpleAgent
 from agent.config import AgentConfig
+from agent.user_secrets import resolve_user_secrets_in_template
 
 
 # ==================== 执行器工厂函数 ====================
@@ -70,14 +71,16 @@ def create_local_executor(tool_name: str, execution_code: str,
             # 提取 user_id 以获取用户专属沙箱
             user_id = kwargs.get("_user_id", 0)
             sandbox = sandbox_pool.get(user_id)
-            sandbox.install(dependencies)
+            install_ok = sandbox.install(dependencies)
+            if not install_ok:
+                return f"[工具执行异常] 依赖安装失败: {dependencies}。请检查网络连接或手动安装。"
 
         # 提取 user_id 并移除，避免传入工具参数
         user_id = kwargs.pop("_user_id", 0)
         sandbox = sandbox_pool.get(user_id)
 
         try:
-            return sandbox.execute(execution_code, kwargs, user_id=user_id)
+            return sandbox.execute(execution_code, kwargs, timeout=60, user_id=user_id, tool_name=tool_name)
         except Exception as e:
             return f"[工具执行异常] {type(e).__name__}: {str(e)}"
 
@@ -103,14 +106,21 @@ def create_http_executor(tool_name: str, http_config: dict,
     import urllib.error
 
     def executor(**kwargs):
-        url = http_config.get("url", "")
+        # 按用户解析 {secret:xxx} 占位符（多用户各自密钥，回退全局）
+        user_id = kwargs.get("_user_id", 0)
+        url = resolve_user_secrets_in_template(http_config.get("url", ""), user_id)
         method = http_config.get("method", "GET").upper()
-        headers = http_config.get("headers", {})
-        body_template = http_config.get("body", "")
+        headers = {
+            k: resolve_user_secrets_in_template(v, user_id)
+            for k, v in http_config.get("headers", {}).items()
+        }
+        body_template = resolve_user_secrets_in_template(http_config.get("body", ""), user_id)
 
         for key, value in kwargs.items():
-            url = url.replace(f"{{{{{key}}}}}", str(value))
-            body_template = body_template.replace(f"{{{{{key}}}}}", str(value))
+            if key == "_user_id":
+                continue
+            url = url.replace(f"{{{key}}}", str(value))
+            body_template = body_template.replace(f"{{{key}}}", str(value))
 
         req_data = None
         if method in ("POST", "PUT", "PATCH") and body_template:
@@ -133,7 +143,8 @@ def create_http_executor(tool_name: str, http_config: dict,
                 local_vars = {"response_data": raw, "json": json}
                 exec(response_formatter, {}, local_vars)
                 if "format_response" in local_vars:
-                    return local_vars["format_response"](raw)
+                    # 透传调用参数，使格式化器能拿到 location/unit 等字段
+                    return local_vars["format_response"](raw, **kwargs)
             except Exception as e:
                 pass
 

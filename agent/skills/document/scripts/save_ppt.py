@@ -10,8 +10,11 @@ Returns:
     str: 生成的文件路径
 """
 # DEPENDENCIES: python-pptx
+import sys
 import os
 import json
+
+sys.path.insert(0, os.getcwd())
 
 
 def execute(filename: str, content: str = "", formatting: dict = None) -> str:

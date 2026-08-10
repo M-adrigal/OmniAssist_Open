@@ -18,6 +18,8 @@ import json
 import os
 import yaml
 import concurrent.futures
+import threading
+import uuid
 
 from agent.agent import SimpleAgent
 from agent.tools import ToolRegistry
@@ -43,6 +45,7 @@ class AgentPool:
         self._profiles: dict[str, dict] = {}       # name → profile dict
         self._agents: dict[str, SimpleAgent] = {}   # name → SimpleAgent 实例
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self._lock = threading.Lock()                # 保护 _profiles 和 _agents 的并发操作
 
     # ---- 注册 ----
 
@@ -79,12 +82,13 @@ class AgentPool:
         return loaded
 
     def register(self, profile: dict):
-        """注册一个 Agent 配置（可从数据库加载后调用）
+        """注册一个 Agent 配置（可从数据库或动态创建后调用）
 
         Args:
             profile: Agent 配置字典，格式与 YAML 文件一致
         """
-        self._profiles[profile['name']] = profile
+        with self._lock:
+            self._profiles[profile['name']] = profile
 
     def list_agents(self) -> list:
         """列出所有已注册的 Agent 名称"""
@@ -108,38 +112,43 @@ class AgentPool:
         if name in self._agents:
             return self._agents[name]
 
-        profile = self._profiles[name]
+        with self._lock:
+            # 双重检查，避免重复创建
+            if name in self._agents:
+                return self._agents[name]
 
-        # 创建独立的 ToolRegistry，只注册该 Agent 分配到的技能
-        tool_registry = ToolRegistry()
-        assigned_skills = profile.get('assigned_skills', [])
-        for skill_name in assigned_skills:
-            skill = self.skill_registry.get_system_skill(skill_name)
-            if skill:
-                for script in skill.scripts:
-                    tool_registry.register_tool(
-                        name=script.name,
-                        description=script.description,
-                        parameters=script.parameters,
-                        func=self._make_tool_func(script)
-                    )
+            profile = self._profiles[name]
 
-        # 构建技能上下文（只注入分配的技能）
-        skill_context = self._build_skill_context(assigned_skills)
+            # 创建独立的 ToolRegistry，只注册该 Agent 分配到的技能
+            tool_registry = ToolRegistry()
+            assigned_skills = profile.get('assigned_skills', [])
+            for skill_name in assigned_skills:
+                skill = self.skill_registry.get_system_skill(skill_name)
+                if skill:
+                    for script in skill.scripts:
+                        tool_registry.register_tool(
+                            name=script.name,
+                            description=script.description,
+                            parameters=script.parameters,
+                            func=self._make_tool_func(script)
+                        )
 
-        agent = SimpleAgent(
-            llm_client=self.llm,
-            tool_registry=tool_registry,
-            show_thought=False,       # 子 Agent 不显示思考过程
-            skill_context=skill_context,
-            silent=True                # 子 Agent 静默模式，不打印终端输出
-        )
-        # 覆盖系统提示词为 Agent 专属提示词
-        agent._system_prompt = profile['system_prompt']
-        agent._rebuild_system_message()
+            # 构建技能上下文（只注入分配的技能）
+            skill_context = self._build_skill_context(assigned_skills)
 
-        self._agents[name] = agent
-        return agent
+            agent = SimpleAgent(
+                llm_client=self.llm,
+                tool_registry=tool_registry,
+                show_thought=False,       # 子 Agent 不显示思考过程
+                skill_context=skill_context,
+                silent=True                # 子 Agent 静默模式，不打印终端输出
+            )
+            # 覆盖系统提示词为 Agent 专属提示词
+            agent._system_prompt = profile['system_prompt']
+            agent._rebuild_system_message()
+
+            self._agents[name] = agent
+            return agent
 
     def _make_tool_func(self, script):
         """为脚本创建沙箱执行器
@@ -157,7 +166,7 @@ class AgentPool:
             sandbox = self.sandbox_pool.get(user_id)
             if script.dependencies:
                 sandbox.install(script.dependencies)
-            return sandbox.execute(script.source, kwargs, user_id=user_id)
+            return sandbox.execute(script.source, kwargs, user_id=user_id, tool_name=script.name)
         return executor
 
     def _build_skill_context(self, skill_names: list) -> str:
@@ -240,6 +249,52 @@ class AgentPool:
 
         return results
 
+    # ---- 动态 Agent ----
+
+    def release_agent(self, name: str):
+        """释放 Agent 实例和配置
+
+        Args:
+            name: Agent 名称
+        """
+        with self._lock:
+            self._agents.pop(name, None)
+            self._profiles.pop(name, None)
+
+    def delegate_dynamic(self, system_prompt: str, task: str,
+                         skills: list = None, user_id: int = None,
+                         max_iterations: int = 5, timeout: int = 60) -> str:
+        """动态创建临时 Agent 执行任务，完成后自动释放
+
+        适用于无对应固定 Agent 的一次性任务，Agent 即用即弃。
+
+        Args:
+            system_prompt: 临时 Agent 的系统提示词，定义角色、职责和规则
+            task: 要执行的具体任务描述
+            skills: 分配给临时 Agent 的技能列表，如 ["calculator", "weather"]
+            user_id: 用户 ID，用于文件输出隔离
+            max_iterations: 最大迭代次数
+            timeout: 超时时间（秒）
+
+        Returns:
+            str: 临时 Agent 的执行结果
+        """
+        temp_name = f"temp_{uuid.uuid4().hex[:8]}"
+
+        profile = {
+            'name': temp_name,
+            'description': f'动态临时Agent',
+            'system_prompt': system_prompt,
+            'assigned_skills': skills or [],
+            'max_iterations': max_iterations,
+            'timeout': timeout,
+        }
+        self.register(profile)
+        try:
+            return self.delegate(temp_name, task, user_id)
+        finally:
+            self.release_agent(temp_name)
+
     # ---- 工具注册 ----
 
     def register_as_tools(self, target_registry: ToolRegistry):
@@ -297,6 +352,33 @@ class AgentPool:
                 func=self._delegate_parallel_tool
             )
 
+        # 注册动态委派工具
+        target_registry.register_tool(
+            name="delegate_dynamic",
+            description="动态创建临时Agent执行特定任务，完成后自动释放。"
+                        "适用于：需要特定领域知识但无对应固定Agent的一次性任务。"
+                        "通过 system_prompt 定义Agent的角色、职责和规则。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "system_prompt": {
+                        "type": "string",
+                        "description": "临时Agent的系统提示词，定义其角色、职责和规则。例如：'你是一位古典诗词专家，擅长创作七言绝句'"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "要执行的具体任务描述，越详细越好"
+                    },
+                    "skills": {
+                        "type": "string",
+                        "description": "分配给临时Agent的技能列表（JSON数组），如[\"calculator\",\"weather\"]。留空或\"[]\"则不给技能"
+                    }
+                },
+                "required": ["system_prompt", "task"]
+            },
+            func=self._delegate_dynamic_tool
+        )
+
     def _delegate_parallel_tool(self, tasks: str, _user_id: int = None) -> str:
         """并行委派工具的执行函数，解析 JSON 并委派
 
@@ -322,6 +404,33 @@ class AgentPool:
 
         results = self.delegate_parallel(task_list, _user_id)
         return json.dumps(results, ensure_ascii=False, indent=2)
+
+    def _delegate_dynamic_tool(self, system_prompt: str, task: str,
+                                skills: str = None, _user_id: int = None) -> str:
+        """动态委派工具的执行函数，解析参数并委派
+
+        Args:
+            system_prompt: 临时 Agent 的系统提示词
+            task: 任务描述
+            skills: JSON 字符串格式的技能列表
+            _user_id: 用户 ID
+
+        Returns:
+            str: 临时 Agent 的执行结果
+        """
+        skill_list = []
+        if skills and skills.strip():
+            try:
+                skill_list = json.loads(skills)
+            except json.JSONDecodeError:
+                return f"错误：skills 参数必须是有效的 JSON 数组。当前值: {skills}"
+
+        return self.delegate_dynamic(
+            system_prompt=system_prompt,
+            task=task,
+            skills=skill_list,
+            user_id=_user_id,
+        )
 
     # ---- 生命周期 ----
 

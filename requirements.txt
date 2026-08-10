@@ -7,3 +7,12 @@ tavily-python>=0.3.0
 PyPDF2>=3.0.0
 pyyaml>=6.0
 
+# 文件解析（主进程 file_parser.py，解析上传的 Word/Excel/PPT）
+python-docx>=1.1.0
+openpyxl>=3.1.0
+python-pptx>=0.6.23
+# 图片处理（文档技能生成含图 PDF，PIL 在 pdf_formatter 顶层 import）
+Pillow>=10.0.0
+# 数据库管理界面（server/main.py 以子进程 `python -m sqlite_web` 启动）
+sqlite-web>=0.10.0
+

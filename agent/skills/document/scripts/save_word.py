@@ -21,6 +21,7 @@ def execute(filename: str, content: str = "", formatting: dict = None) -> str:
     from agent.skills.document.document_formatter import create_word_document
 
     output_dir = os.path.join("document_output", "word_output")
+    os.makedirs(output_dir, exist_ok=True)
 
     fmt = None
     if formatting and isinstance(formatting, str):

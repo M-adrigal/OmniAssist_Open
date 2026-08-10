@@ -99,6 +99,10 @@ def _init_logging(log_dir: str, level: int = logging.DEBUG):
         root_logger = logging.getLogger()
         root_logger.setLevel(level)
 
+        # 抑制第三方库的日志噪音（httpx/httpcore/openai 的 HTTP 请求日志）
+        for lib in ["httpx", "httpcore", "openai", "urllib3"]:
+            logging.getLogger(lib).setLevel(logging.WARNING)
+
         formatter = LogFormatter()
 
         # --- 控制台输出 (INFO+) ---

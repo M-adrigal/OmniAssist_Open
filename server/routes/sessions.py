@@ -14,6 +14,9 @@ from server.database import (
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
+# 安全限制
+MAX_TITLE_LENGTH = 200  # 会话标题最大字符数
+
 
 @router.get("", response_model=list[dict])
 def list_sessions(request: Request):
@@ -37,6 +40,9 @@ def create_session(body: SessionCreate = None, request: Request = None):
     user_id = user["id"] if user else 1
     sid = str(uuid.uuid4())
     title = (body.title if body and body.title else None) or "新对话"
+    # 标题长度限制
+    if len(title) > MAX_TITLE_LENGTH:
+        raise HTTPException(status_code=400, detail=f"标题过长，最大允许 {MAX_TITLE_LENGTH} 字符")
     s = db_create_session(sid, user_id, title)
     return {"id": s["id"], "title": s["title"], "created_at": s["created_at"]}
 
@@ -64,6 +70,8 @@ def get_session(session_id: str, response: Response):
 
 @router.put("/{session_id}", response_model=dict)
 def rename_session(session_id: str, body: SessionRename):
+    if len(body.title) > MAX_TITLE_LENGTH:
+        raise HTTPException(status_code=400, detail=f"标题过长，最大允许 {MAX_TITLE_LENGTH} 字符")
     s = db_rename_session(session_id, body.title)
     if not s:
         raise HTTPException(status_code=404, detail="会话不存在")
@@ -74,4 +82,23 @@ def rename_session(session_id: str, body: SessionRename):
 def delete_session(session_id: str):
     if not db_delete_session(session_id):
         raise HTTPException(status_code=404, detail="会话不存在")
+    # 清理任务注册表中对应的运行中任务
+    try:
+        from server.routes.chat import remove_running_task
+        remove_running_task(session_id)
+    except Exception:
+        pass
     return {"success": True, "message": "会话已删除"}
+
+
+@router.get("/task-status/all")
+def get_task_status(request: Request):
+    """获取当前用户所有运行中/最近完成的任务状态"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
+    try:
+        from server.routes.chat import get_all_task_statuses
+        return get_all_task_statuses(user["id"])
+    except Exception:
+        return {}

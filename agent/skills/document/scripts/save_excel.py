@@ -22,6 +22,7 @@ def execute(filename: str, headers: str = "", rows: str = "", formatting: dict =
     from agent.skills.document.excel_formatter import create_excel_workbook
 
     output_dir = os.path.join("document_output", "excel_output")
+    os.makedirs(output_dir, exist_ok=True)
 
     fmt = None
     if formatting and isinstance(formatting, str):

@@ -24,6 +24,44 @@ from agent.sandbox import SandboxPool
 from agent.skills import SkillRegistry
 from agent.agent_pool import AgentPool
 from agent.logger import get_logger
+from agent.user_secrets import set_user_secret, list_user_secrets_masked, delete_user_secret
+
+
+def install_skill_template(template_name: str, _user_id=None):
+    """把技能模板安装到当前用户的技能仓库（复制目录 + 立即加载）。
+
+    模板位于 agent/skill_templates/，需用户自带 API Key 的技能（如 weather）。
+    安装后需先用 set_user_secret 设置该技能所需的 key/host 才能使用。
+    """
+    import os
+    import shutil
+
+    base = os.path.dirname(os.path.abspath(__file__))
+    templates_dir = os.path.normpath(os.path.join(base, "..", "agent", "skill_templates"))
+    src = os.path.join(templates_dir, template_name)
+    if not os.path.isdir(src):
+        return {"success": False, "message": f"模板不存在: {template_name}"}
+
+    user_dir = os.path.normpath(
+        os.path.join(base, "..", "agent", "skills", "user", str(_user_id), template_name)
+    )
+    if os.path.exists(user_dir):
+        return {"success": False, "message": f"你已安装过 {template_name}，更新请先 delete_user_skill 再装"}
+
+    try:
+        shutil.copytree(src, user_dir)
+    except Exception as e:
+        return {"success": False, "message": f"复制失败: {e}"}
+
+    try:
+        get_skill_registry().load_user_skills_from_fs(_user_id)
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "message": f"已安装模板 {template_name} 到你的技能仓库；使用前请先 set_user_secret 设置该技能所需的凭据",
+    }
 
 from server.routes import routers
 from server.database import init_db, DB_PATH, _generate_random_password
@@ -210,6 +248,65 @@ def init_services():
     )
     logger.info("已注册 Skill 编辑器工具（create/update/delete/list）")
 
+    # 注册用户级密钥管理工具（仅操作调用者自身 _user_id 的密钥，无 admin 门禁）
+    _tool_registry.register_tool(
+        name="set_user_secret",
+        description="保存当前用户私有的密钥/配置（如第三方 API Key、私有 host）。"
+                    "用于用户自带凭据的技能（天气、金价等）。密钥按用户加密隔离，其他用户不可见。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "key_name": {"type": "string", "description": "密钥名称，如 qweather_api_key / qweather_api_host"},
+                "value": {"type": "string", "description": "密钥明文"},
+            },
+            "required": ["key_name", "value"]
+        },
+        func=lambda key_name, value, _user_id=None: json.dumps(
+            {"success": set_user_secret(_user_id, key_name, value)}, ensure_ascii=False
+        )
+    )
+    _tool_registry.register_tool(
+        name="list_user_secrets",
+        description="列出当前用户已保存的私有密钥名称及脱敏值（不返回明文）。",
+        parameters={"type": "object", "properties": {}, "required": []},
+        func=lambda _user_id=None: json.dumps(
+            {"secrets": list_user_secrets_masked(_user_id)}, ensure_ascii=False
+        )
+    )
+    _tool_registry.register_tool(
+        name="delete_user_secret",
+        description="删除当前用户的一个私有密钥。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "key_name": {"type": "string", "description": "要删除的密钥名称"},
+            },
+            "required": ["key_name"]
+        },
+        func=lambda key_name, _user_id=None: json.dumps(
+            {"success": delete_user_secret(_user_id, key_name)}, ensure_ascii=False
+        )
+    )
+    logger.info("已注册用户密钥管理工具（set/list/delete_user_secret）")
+
+    # 注册技能模板安装工具
+    _tool_registry.register_tool(
+        name="install_skill_template",
+        description="把官方技能模板（需自带 API Key 的，如 weather）安装到当前用户的技能仓库。"
+                    "安装后需先用 set_user_secret 设置该技能需要的 key/host 才能使用。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "template_name": {"type": "string", "description": "模板名称，如 weather"},
+            },
+            "required": ["template_name"]
+        },
+        func=lambda template_name, _user_id=None: json.dumps(
+            install_skill_template(template_name, _user_id), ensure_ascii=False
+        )
+    )
+    logger.info("已注册技能模板安装工具（install_skill_template）")
+
     # 注册任务复盘工具
     from agent.task_reviewer import log_task_execution, review_recent_tasks, analyze_and_suggest, clear_reviews
     _tool_registry.register_tool(
@@ -254,6 +351,98 @@ def init_services():
         )
     )
     logger.info("已注册意图关键词更新工具")
+
+    # ============ 注册诊断与管理工具（admin 限定，见 agent/diagnostics.py） ============
+    from agent.diagnostics import (
+        diag_read_logs, diag_service_status, diag_restart_service,
+        diag_check_env, diag_db_query, diag_read_file,
+        diag_list_files, diag_delete_file, diag_rename_file,
+        diag_validate_skill,
+    )
+
+    def _reg(name, desc, params, fn):
+        _tool_registry.register_tool(name=name, description=desc, parameters=params, func=fn)
+
+    _reg(
+        "diag_read_logs",
+        "【管理员】读取应用运行日志或错误日志尾部（只读）。参数 log_name: 'app'/'error' 或带日期的归档名；lines: 返回行数。用于排查工具报错时直接查看堆栈。",
+        {"type": "object", "properties": {
+            "log_name": {"type": "string", "description": "日志名：app / error / app.log.2026-08-06"},
+            "lines": {"type": "integer", "description": "返回尾部行数，默认200，上限2000"},
+        }, "required": ["log_name"]},
+        lambda log_name, lines=200, _user_id=None: diag_read_logs(log_name, lines, _user_id),
+    )
+    _reg(
+        "diag_service_status",
+        "【管理员】查询服务运行端口(17520/17521/17523)的监听状态、进程 PID、Python 与 pip 版本（只读）。用于判断服务是否存活。",
+        {"type": "object", "properties": {}},
+        lambda _user_id=None: diag_service_status(_user_id),
+    )
+    _reg(
+        "diag_restart_service",
+        "【管理员】受控重启主服务。会先停掉旧进程再拉起新服务，当前请求可能短暂中断，稍后刷新即可。用于修复依赖/代码更新后需重启的场景。",
+        {"type": "object", "properties": {}},
+        lambda _user_id=None: diag_restart_service(_user_id),
+    )
+    _reg(
+        "diag_check_env",
+        "【管理员】结构化只读环境检查（不开放自由 shell）。check_type 取值：python_version / pip_package(需 value=包名) / file_exists(需 value=相对路径) / port_listen(需 value=端口)。",
+        {"type": "object", "properties": {
+            "check_type": {"type": "string", "description": "python_version | pip_package | file_exists | port_listen"},
+            "value": {"type": "string", "description": "配合 check_type 使用：包名/相对路径/端口号"},
+        }, "required": ["check_type"]},
+        lambda check_type, value="", _user_id=None: diag_check_env(check_type, value, _user_id),
+    )
+    _reg(
+        "diag_db_query",
+        "【管理员】数据库只读查询（SELECT-only，限白名单表 user_skills/sessions/users/permissions/model_configs/search_configs）。用于排查数据层问题，如确认 user_skills 表的禁用标记。",
+        {"type": "object", "properties": {
+            "sql": {"type": "string", "description": "单条 SELECT 语句，禁止 INSERT/UPDATE/DELETE/DROP 等写操作"},
+        }, "required": ["sql"]},
+        lambda sql, _user_id=None: diag_db_query(sql, _user_id),
+    )
+    _reg(
+        "diag_read_file",
+        "【管理员】读取项目内的配置/技能定义/沙箱脚本（白名单目录+扩展名，禁止密钥文件）。用于直接查看代码定位语法错误等问题。",
+        {"type": "object", "properties": {
+            "path": {"type": "string", "description": "相对项目根目录的路径，如 agent/skills/weather/SKILL.md"},
+        }, "required": ["path"]},
+        lambda path, _user_id=None: diag_read_file(path, _user_id),
+    )
+    _reg(
+        "diag_list_files",
+        "【管理员】列出 document_output 下已生成的文件（只读展示）。target_user_id 为空则列出所有用户。",
+        {"type": "object", "properties": {
+            "target_user_id": {"type": "integer", "description": "可选，按用户过滤；不传则列出全部"},
+        }, "required": []},
+        lambda target_user_id=None, _user_id=None: diag_list_files(target_user_id, _user_id),
+    )
+    _reg(
+        "diag_delete_file",
+        "【管理员】删除 document_output 下的某个生成文件（写操作，带审计）。",
+        {"type": "object", "properties": {
+            "rel_path": {"type": "string", "description": "相对项目根目录的文件路径，必须位于 document_output 下"},
+        }, "required": ["rel_path"]},
+        lambda rel_path, _user_id=None: diag_delete_file(rel_path, _user_id),
+    )
+    _reg(
+        "diag_rename_file",
+        "【管理员】重命名 document_output 下的某个生成文件（写操作，带审计）。new_name 仅限文件名。",
+        {"type": "object", "properties": {
+            "old_rel_path": {"type": "string", "description": "原文件相对路径"},
+            "new_name": {"type": "string", "description": "新文件名（不含路径）"},
+        }, "required": ["old_rel_path", "new_name"]},
+        lambda old_rel_path, new_name, _user_id=None: diag_rename_file(old_rel_path, new_name, _user_id),
+    )
+    _reg(
+        "diag_validate_skill",
+        "【管理员】校验 SKILL.md 格式是否合法、字段(name/description)是否完整、正文是否非空。保存前可先调用此工具自检。",
+        {"type": "object", "properties": {
+            "skill_md": {"type": "string", "description": "待校验的 SKILL.md 全文"},
+        }, "required": ["skill_md"]},
+        lambda skill_md, _user_id=None: diag_validate_skill(skill_md, _user_id),
+    )
+    logger.info("已注册诊断与管理工具（9个，admin限定）")
 
     show_thought = False
     context_limit = ""
@@ -412,10 +601,23 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="OmniAssist API", version="1.0.0", lifespan=lifespan)
 
+# CORS：默认仅允许本地前端域名。生产环境通过环境变量 CORS_ALLOW_ORIGINS
+# 指定可信前端来源（逗号分隔），例如：https://app.example.com,https://admin.example.com
+# 注意：浏览器禁止在 allow_credentials=True 时使用 "*"，故检测到 "*" 时自动关闭凭据。
+_CORS_ORIGINS = [
+    o.strip()
+    for o in os.environ.get(
+        "CORS_ALLOW_ORIGINS",
+        "http://localhost:17520,http://127.0.0.1:17520,http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if o.strip()
+]
+_CORS_ALLOW_CREDENTIALS = "*" not in _CORS_ORIGINS
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_CORS_ORIGINS,
+    allow_credentials=_CORS_ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -658,7 +860,7 @@ def _start_sqlite_web():
     time.sleep(1)
 
     if _start_db_auth_proxy(DB_PROXY_PORT, DB_BACKEND_PORT, web_password_hash):
-        logger.info(f"数据库管理代理已启动: http://0.0.0.0:{DB_PROXY_PORT}")
+        logger.info(f"数据库管理代理已启动(仅本地回环): http://127.0.0.1:{DB_PROXY_PORT}")
         logger.info("使用管理员账号(admin)登录即可访问")
         logger.info(f"数据库文件: {DB_PATH}")
 
@@ -743,7 +945,9 @@ def _start_db_auth_proxy(proxy_port: int, backend_port: int, password_hash: str)
             pass
 
     try:
-        server = http.server.ThreadingHTTPServer(("0.0.0.0", proxy_port), ProxyHandler)
+        # 仅绑定本地回环地址，避免数据库管理界面直接暴露在公网。
+        # 运维需访问时，请通过 SSH 隧道：ssh -L 17521:127.0.0.1:17521 user@your-server-ip
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", proxy_port), ProxyHandler)
         server.socket.setsockopt(__import__("socket").SOL_SOCKET, __import__("socket").SO_REUSEADDR, 1)
         try:
             server.socket.setsockopt(__import__("socket").SOL_SOCKET, __import__("socket").SO_REUSEPORT, 1)

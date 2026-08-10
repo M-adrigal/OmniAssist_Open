@@ -183,7 +183,7 @@ class ScriptDef:
 
     @staticmethod
     def _extract_deps(tree: ast.AST) -> list:
-        """从 AST 中提取第三方库依赖（排除标准库）"""
+        """从 AST 中提取第三方库依赖（排除标准库和项目内部模块）"""
         stdlib = {
             "json", "os", "sys", "re", "math", "datetime", "io", "base64",
             "hashlib", "csv", "random", "string", "urllib", "tempfile",
@@ -205,18 +205,32 @@ class ScriptDef:
             "profile", "timeit", "trace", "tracemalloc", "venv", "zipapp",
             "zipimport", "webbrowser", "calendar", "gettext", "locale",
         }
+        # 项目内部模块，不应作为 pip 依赖安装
+        _INTERNAL_MODULES = {
+            "agent", "server", "sandbox", "tool_sandbox",
+        }
+        # import 名 → pip 包名映射（常见不一致情况）
+        _IMPORT_TO_PIP = {
+            "pptx": "python-pptx",
+            "docx": "python-docx",
+            "PIL": "Pillow",
+            "yaml": "pyyaml",
+            "sklearn": "scikit-learn",
+            "cv2": "opencv-python",
+            "bs4": "beautifulsoup4",
+        }
         deps = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     pkg = alias.name.split('.')[0]
-                    if pkg not in stdlib:
-                        deps.add(pkg)
+                    if pkg not in stdlib and pkg not in _INTERNAL_MODULES:
+                        deps.add(_IMPORT_TO_PIP.get(pkg, pkg))
             elif isinstance(node, ast.ImportFrom):
                 if node.module:
                     pkg = node.module.split('.')[0]
-                    if pkg not in stdlib:
-                        deps.add(pkg)
+                    if pkg not in stdlib and pkg not in _INTERNAL_MODULES:
+                        deps.add(_IMPORT_TO_PIP.get(pkg, pkg))
         return sorted(deps)
 
     def to_openai_tool(self) -> dict:
@@ -424,21 +438,30 @@ class SkillRegistry:
         """
         user_skills = {}
         for row in skills_data:
-            if not row.get("enabled", True):
+            # 跳过「禁用标记」：内容为空的 enabled=0 记录只是按钮状态，
+            # 不代表一个真实技能（用于关闭系统技能 / 文件系统技能）。
+            content = (row.get("skill_content") or "").strip()
+            if not content:
                 continue
+            # 注意：被禁用的真实数据库技能（有内容、enabled=0）也要加载进来，
+            # 这样工具层才能按名称过滤掉它的脚本；是否进入提示词上下文由
+            # get_enabled_skills 的 disabled_names 控制。
             try:
                 skill = Skill.from_db_row(row)
                 user_skills[skill.name] = skill
             except Exception as e:
                 logger.warning(f"加载用户技能失败: {e}")
 
-        # 合并已有的文件系统技能
-        if user_id in self._user_skills:
-            existing = self._user_skills[user_id]
-            existing.update(user_skills)
-            self._user_skills[user_id] = existing
-        else:
-            self._user_skills[user_id] = user_skills
+        # 合并已有的文件系统技能。
+        # 注意：先剔除上一轮从数据库加载的技能（skill_id 非空），
+        # 否则技能被禁用/删除后，旧缓存仍会残留并继续注入上下文。
+        existing = self._user_skills.get(user_id, {})
+        merged = {
+            name: skill for name, skill in existing.items()
+            if getattr(skill, "skill_id", None) is None
+        }
+        merged.update(user_skills)
+        self._user_skills[user_id] = merged
 
     def load_user_skills_from_fs(self, user_id: int) -> list:
         """从文件系统加载用户自定义 Skill（agent/skills/user/{user_id}/）
@@ -490,61 +513,91 @@ class SkillRegistry:
         return self._user_skills.get(user_id, {})
 
     def get_enabled_skills(self, user_id: int = None,
-                           enabled_system: set = None) -> dict:
+                           disabled_names: set = None) -> dict:
         """获取所有启用的技能（系统 + 用户）
 
         Args:
             user_id: 用户 ID，用于加载用户技能
-            enabled_system: 启用的系统技能名称集合，None 表示全部启用
+            disabled_names: 被禁用的技能名称集合（同时作用于系统技能与用户技能）。
+                None 或空集表示不禁用任何技能。
 
         Returns:
             dict: {name: Skill}
         """
+        disabled = disabled_names or set()
         result = {}
 
         # 系统技能
         for name, skill in self.skills.items():
-            if enabled_system is None or name in enabled_system:
+            if name not in disabled:
                 result[name] = skill
 
-        # 用户技能
+        # 用户技能（同名时覆盖系统技能）
         if user_id and user_id in self._user_skills:
-            result.update(self._user_skills[user_id])
+            for name, skill in self._user_skills[user_id].items():
+                if name not in disabled:
+                    result[name] = skill
 
         return result
 
     def get_all_scripts(self, user_id: int = None,
-                        enabled_system: set = None) -> list:
+                        disabled_names: set = None) -> list:
         """获取所有启用技能的脚本列表
 
         Args:
             user_id: 用户 ID
-            enabled_system: 启用的系统技能名称集合
+            disabled_names: 被禁用的技能名称集合
 
         Returns:
             list: ScriptDef 列表
         """
         scripts = []
-        skills = self.get_enabled_skills(user_id, enabled_system)
+        skills = self.get_enabled_skills(user_id, disabled_names)
         for skill in skills.values():
             for script in skill.scripts:
                 scripts.append(script)
         return scripts
 
+    def get_script_names_of(self, names, user_id: int = None) -> set:
+        """获取指定技能集合下所有脚本（工具）的名称
+
+        用于在工具层过滤被禁用技能的脚本，避免"开关关了但模型仍能调用"。
+
+        Args:
+            names: 技能名称集合
+            user_id: 用户 ID（用于查找用户技能）
+
+        Returns:
+            set: 脚本名称集合
+        """
+        target = set(names or ())
+        if not target:
+            return set()
+
+        result = set()
+        user_pool = self._user_skills.get(user_id, {}) if user_id else {}
+        for name in target:
+            skill = user_pool.get(name) or self.skills.get(name)
+            if not skill:
+                continue
+            for script in skill.scripts:
+                result.add(script.name)
+        return result
+
     # ---- 上下文构建 ----
 
     def build_context(self, user_id: int = None,
-                      enabled_system: set = None) -> str:
+                      disabled_names: set = None) -> str:
         """构建技能上下文，用于注入系统提示词
 
         Args:
             user_id: 用户 ID
-            enabled_system: 启用的系统技能名称集合
+            disabled_names: 被禁用的技能名称集合
 
         Returns:
             str: 技能上下文字符串
         """
-        skills = self.get_enabled_skills(user_id, enabled_system)
+        skills = self.get_enabled_skills(user_id, disabled_names)
         if not skills:
             return ""
 

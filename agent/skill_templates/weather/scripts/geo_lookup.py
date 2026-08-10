@@ -8,7 +8,7 @@ Returns:
     str: JSON格式的城市信息列表
 """
 # HTTP_CONFIG:
-#   url: https://np6heyjn2u.re.qweatherapi.com/geo/v2/city/lookup?location={location}&key={secret:qweather_api_key}
+#   url: https://{secret:qweather_api_host}/geo/v2/city/lookup?location={location}&key={secret:qweather_api_key}
 #   method: GET
 import json
 

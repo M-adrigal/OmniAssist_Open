@@ -4,7 +4,7 @@
 
 ### 系统要求
 - Ubuntu 20.04+ / Debian 11+ / CentOS 8+
-- Python 3.14.0
+- Python 3.10+（兼容 3.10~3.14，本机开发使用 3.14）
 - 至少 2GB RAM，10GB 磁盘空间
 
 ### 创建部署用户
@@ -41,7 +41,7 @@ cd Lightweight_agent_service
 ### 方式二：通过 SCP 上传
 ```bash
 # 在本地机器上
-scp -r /Users/yuanye/Documents/Lightweight_agent_service/* agent@your-server-ip:/home/agent/Lightweight_agent_service/
+scp -r /path/to/Lightweight_agent_service/* agent@your-server-ip:/home/agent/Lightweight_agent_service/
 ```
 
 ## 4. 安装 Python 依赖
@@ -51,6 +51,10 @@ cd /home/agent/Lightweight_agent_service
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+
+# 如需在 Linux 服务器上生成中文 PDF（文档技能），需安装系统中文字体：
+# sudo apt install -y fonts-noto-cjk
+# 安装后字体通常位于 /usr/share/fonts/opentype/noto/ 或 /usr/share/fonts/truetype/noto/
 ```
 
 ## 5. 首次启动与初始化
@@ -74,11 +78,13 @@ python server/main.py
 
 服务启动后会自动启动数据库管理界面（基于 sqlite-web）：
 
-- **地址**：`http://your-server-ip:17521`
+- **地址**：`http://127.0.0.1:17521`（仅监听本地回环，不对外网开放）
+- **访问方式**：在服务器本机浏览器直接访问，或通过 SSH 隧道从本地访问：
+  `ssh -L 17521:127.0.0.1:17521 agent@your-server-ip`，随后在本机浏览器打开 `http://127.0.0.1:17521`
 - **认证**：使用管理员账号 `admin` 和当前密码登录（Basic Auth）
 - **依赖**：需安装 `sqlite-web`（已在 `requirements.txt` 中）
 
-> 注意：数据库管理界面仅管理员可访问，普通用户无法通过认证。
+> 注意：数据库管理界面仅管理员可访问，普通用户无法通过认证。出于安全考虑已绑定 `127.0.0.1`，**请勿在防火墙上开放 17521 端口**。
 
 ## 6. 配置模型与搜索
 
@@ -177,7 +183,6 @@ sudo systemctl reload nginx
 sudo ufw allow 22/tcp
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
-sudo ufw allow 17521/tcp
 sudo ufw enable
 ```
 
@@ -295,11 +300,11 @@ top -o %MEM
 
 ### 沙箱依赖安装问题
 
-工具的 Python 依赖（如 `python-docx`、`openpyxl`、`reportlab` 等）运行在独立的沙箱虚拟环境中，与主服务隔离。
+工具的技能脚本（如 `python-docx`、`openpyxl`、`reportlab` 等）运行在独立的沙箱虚拟环境中，与主服务隔离。
 
 **工作原理**：
 - 每位用户拥有独立的沙箱 venv，位于 `tool_sandbox/{user_id}/venv/`
-- 首次使用时自动创建用户沙箱，通过 AST 解析提取脚本依赖并自动安装
+- 首次使用时自动创建用户沙箱，通过 AST 解析技能脚本中的 `import` 语句提取依赖并自动安装
 - 沙箱池（SandboxPool）负责管理用户沙箱的懒加载和线程安全调度
 
 **常见问题**：
@@ -311,32 +316,15 @@ sudo apt install -y python3-venv
 # 2. 查看用户沙箱列表
 ls -la /home/agent/Lightweight_agent_service/tool_sandbox/
 
-# 3. 手动检查某用户沙箱是否正常
+# 3. 手动检查某用户沙箱是否正常（以用户 ID=1 为例）
 ls -la /home/agent/Lightweight_agent_service/tool_sandbox/1/venv/bin/python
-python3 -c "
-from agent.sandbox import ToolSandbox
-import json, os
-s = ToolSandbox()
-tools_dir = 'agent/agent_tools'
-all_deps = set()
-for f in os.listdir(tools_dir):
-    if f.endswith('.json'):
-        with open(os.path.join(tools_dir, f)) as fp:
-            deps = json.load(fp).get('dependencies', [])
-            all_deps.update(deps)
-if all_deps:
-    print(f'安装依赖: {sorted(all_deps)}')
-    s.install_verbose(sorted(all_deps))
-else:
-    print('没有需要安装的依赖')
-"
 
 # 4. 如果 pip 安装超时（网络慢），可配置国内镜像
-# 在沙箱 venv 中设置 pip 镜像：
-tool_sandbox/venv/bin/pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+# 在用户沙箱 venv 中设置 pip 镜像：
+/home/agent/Lightweight_agent_service/tool_sandbox/1/venv/bin/pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 5. 清理并重建沙箱环境
-rm -rf tool_sandbox/venv
+# 5. 清理并重建某用户沙箱（以用户 ID=1 为例）
+rm -rf /home/agent/Lightweight_agent_service/tool_sandbox/1
 sudo systemctl restart agent
 ```
 

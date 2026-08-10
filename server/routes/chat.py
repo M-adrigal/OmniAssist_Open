@@ -1,7 +1,10 @@
+import asyncio
 import json
 import os
-import asyncio
 import re
+import time
+import threading
+from functools import partial
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -9,11 +12,144 @@ from server.models import ChatRequest
 from agent.intent_keywords import select_tools_by_intent
 from agent.model_gateway import ModelGateway
 from agent.logger import get_logger, set_context, clear_context
+from agent.parallel_executor import ParallelToolExecutor
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = get_logger("chat")
 
+# 安全限制
+MAX_MESSAGE_LENGTH = 10000      # 单条消息最大字符数
+MAX_SESSION_TITLE_LENGTH = 200  # 会话标题最大字符数
+
 from server.routes.auth import get_current_user
+
+
+# ===== SessionTask: 后台任务管理（解耦客户端连接） =====
+
+class SessionTask:
+    """跟踪一个会话的后台聊天任务，缓冲 SSE 事件，支持多订阅者"""
+
+    def __init__(self, session_id: str, user_message: str, user_id: int):
+        self.session_id = session_id
+        self.user_message = user_message
+        self.user_id = user_id
+        self.status = "running"          # running / completed / failed
+        self.events: list[str] = []      # 全量 SSE 事件缓冲
+        self.subscribers: list[asyncio.Queue] = []
+        self.started_at = time.time()
+        self.completed_at: float | None = None
+        self.answer = ""
+        self._bg_task: asyncio.Task | None = None
+
+    def add_event(self, event_str: str):
+        """添加一个 SSE 事件到缓冲区，并推送给所有活跃订阅者"""
+        self.events.append(event_str)
+        # 解析 done 事件，提取 answer
+        try:
+            if '"type": "done"' in event_str or '"type":"done"' in event_str:
+                pass  # done 事件仅标记结束
+        except Exception:
+            pass
+        for q in self.subscribers:
+            try:
+                q.put_nowait(event_str)
+            except asyncio.QueueFull:
+                pass
+
+    def mark_completed(self):
+        """标记任务完成，通知所有订阅者结束"""
+        if self.status != "running":
+            return
+        self.status = "completed"
+        self.completed_at = time.time()
+        for q in self.subscribers:
+            try:
+                q.put_nowait(None)  # None = 流结束信号
+            except asyncio.QueueFull:
+                pass
+
+    def mark_failed(self, error: str):
+        """标记任务失败"""
+        if self.status != "running":
+            return
+        self.status = "failed"
+        self.completed_at = time.time()
+        for q in self.subscribers:
+            try:
+                q.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+
+    async def subscribe(self) -> asyncio.Queue:
+        """订阅任务事件：先回放历史事件，再等待新事件"""
+        q: asyncio.Queue = asyncio.Queue(maxsize=10000)
+        # 回放已有事件
+        for evt in self.events:
+            q.put_nowait(evt)
+        # 如果任务已结束，立即发送结束信号
+        if self.status in ("completed", "failed"):
+            q.put_nowait(None)
+        else:
+            self.subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue):
+        """取消订阅"""
+        if q in self.subscribers:
+            self.subscribers.remove(q)
+
+
+# 全局任务注册表
+_running_tasks: dict[str, SessionTask] = {}
+
+
+def get_running_task(session_id: str) -> SessionTask | None:
+    return _running_tasks.get(session_id)
+
+
+def set_running_task(session_id: str, task: SessionTask):
+    _running_tasks[session_id] = task
+
+
+def remove_running_task(session_id: str):
+    _running_tasks.pop(session_id, None)
+
+
+def get_all_task_statuses(user_id: int) -> dict:
+    """获取指定用户的所有任务状态"""
+    cleanup_old_tasks()
+    result = {}
+    for sid, task in _running_tasks.items():
+        if task.user_id != user_id:
+            continue
+        result[sid] = {
+            "status": task.status,
+            "user_message": task.user_message[:100],
+            "started_at": task.started_at,
+            "completed_at": task.completed_at,
+        }
+    return result
+
+
+def cleanup_old_tasks():
+    """清理超过 5 分钟的已完成任务"""
+    now = time.time()
+    to_remove = [
+        sid for sid, t in _running_tasks.items()
+        if t.status in ("completed", "failed")
+        and t.completed_at
+        and now - t.completed_at > 300
+    ]
+    for sid in to_remove:
+        _running_tasks.pop(sid, None)
+
+
+async def _run_sync(func, *args, **kwargs):
+    """在线程池中运行同步函数，避免阻塞 asyncio 事件循环"""
+    loop = asyncio.get_running_loop()
+    if kwargs:
+        return await loop.run_in_executor(None, partial(func, *args, **kwargs))
+    return await loop.run_in_executor(None, func, *args)
 
 
 def get_dependencies():
@@ -32,6 +168,16 @@ def get_session_store():
     return gss()
 
 
+def _get_disabled_skills(user_id: int) -> set:
+    """获取当前用户禁用的技能名称集合（失败时返回空集，即不禁用任何技能）"""
+    from server.database import get_disabled_system_skills
+    try:
+        return get_disabled_system_skills(user_id) or set()
+    except Exception as e:
+        logger.debug(f"获取禁用技能失败 (user={user_id}): {e}")
+        return set()
+
+
 def _build_skill_context(user_id: int, skill_registry) -> str:
     """构建用户技能上下文，注入系统提示词
 
@@ -45,22 +191,59 @@ def _build_skill_context(user_id: int, skill_registry) -> str:
     if skill_registry is None:
         return ""
 
-    # 加载用户技能
-    from server.database import get_user_skills, get_enabled_system_skills
+    # 加载用户技能（从文件系统扫描，补充数据库技能）
     try:
-        user_skills = get_user_skills(user_id, enabled_only=True)
-        if user_skills:
-            skill_registry.load_user_skills(user_id, user_skills)
-    except Exception:
-        pass
+        skill_registry.load_user_skills_from_fs(user_id)
+    except Exception as e:
+        logger.debug(f"加载文件系统用户技能失败 (user={user_id}): {e}")
 
-    # 获取启用的系统技能
+    # 加载全部数据库用户技能（含被禁用者）：禁用状态交给 disabled_names 在
+    # 上下文与工具层统一过滤，避免"禁用后工具仍可调用"的遗漏。
+    from server.database import get_user_skills
     try:
-        enabled_system = get_enabled_system_skills()
-    except Exception:
-        enabled_system = None
+        skill_registry.load_user_skills(
+            user_id, get_user_skills(user_id)
+        )
+    except Exception as e:
+        logger.debug(f"加载数据库用户技能失败 (user={user_id}): {e}")
 
-    return skill_registry.build_context(user_id, enabled_system)
+    # 注意：build_context 的第二个参数是「被禁用」的技能集合，
+    # 不是「启用」的集合。传错会导致上下文里的技能被整体反选。
+    return skill_registry.build_context(user_id, _get_disabled_skills(user_id))
+
+
+def _filter_disabled_tools(tool_specs: list, user_id: int, skill_registry) -> list:
+    """从工具列表中剔除已禁用技能的脚本
+
+    仅从提示词里拿掉技能说明是不够的 —— 工具在服务启动时被全量注册，
+    模型依然可以直接调用被禁用技能的脚本。这里在下发工具列表前做一次过滤。
+    """
+    if not tool_specs or skill_registry is None:
+        return tool_specs
+
+    disabled = _get_disabled_skills(user_id)
+    if not disabled:
+        return tool_specs
+
+    try:
+        blocked = skill_registry.get_script_names_of(disabled, user_id)
+    except Exception as e:
+        logger.debug(f"解析禁用技能脚本失败 (user={user_id}): {e}")
+        return tool_specs
+
+    if not blocked:
+        return tool_specs
+
+    filtered = [
+        spec for spec in tool_specs
+        if spec.get("function", {}).get("name") not in blocked
+    ]
+    if len(filtered) != len(tool_specs):
+        logger.info(
+            f"已屏蔽 {len(tool_specs) - len(filtered)} 个禁用技能的工具 "
+            f"(user={user_id}, skills={sorted(disabled)})"
+        )
+    return filtered
 
 
 def _resolve_llm_client(user_id: int):
@@ -90,7 +273,7 @@ def _save_session_messages(session_id: str, messages: list, title: str = None, u
     update_session_messages(session_id, messages, title, user_id)
 
 
-async def _post_process_done(
+def _post_process_done(
     session_id: str, store: dict, message: str,
     answer: str, full_content: str,
     search_info: dict, all_thoughts: list,
@@ -479,6 +662,29 @@ def _extract_cached_tool_context(messages: list) -> str:
     )
 
 
+async def _stream_llm_async(llm, chat_messages, tools, api_params):
+    """在线程池中运行 LLM 流式调用，避免阻塞事件循环
+
+    每次 next(iterator) 在独立线程中执行，让出事件循环给其他请求。
+    """
+    loop = asyncio.get_running_loop()
+    stream = await loop.run_in_executor(
+        None,
+        lambda: llm.chat_stream(chat_messages, tools=tools, **api_params)
+    )
+    try:
+        it = iter(stream)
+        _SENTINEL = object()
+        while True:
+            chunk = await loop.run_in_executor(None, next, it, _SENTINEL)
+            if chunk is _SENTINEL:
+                break
+            yield chunk
+    finally:
+        if hasattr(stream, 'close'):
+            await loop.run_in_executor(None, stream.close)
+
+
 async def _stream_chat(message: str, session_id: str = None, web_search: str = "off", user_id: int = None, show_thought: bool = False):
     set_context(user_id=user_id, session_id=session_id)
     agent, _, registry, _, skill_registry = get_dependencies()
@@ -488,408 +694,542 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
     msg_preview = message[:80] + "..." if len(message) > 80 else message
     logger.info(f"收到消息: \"{msg_preview}\" (len={len(message)})")
 
-    if user_id is None:
-        yield f"data: {json.dumps({'type': 'error', 'content': '用户未登录'})}\n\n"
-        clear_context()
-        return
 
-    if agent is None or registry is None:
-        yield f"data: {json.dumps({'type': 'error', 'content': '服务正在初始化中，请稍后再试'})}\n\n"
-        clear_context()
-        return
+    # 统一出口标志：确保 done 事件和 clear_context 在任何代码路径都执行
+    _done_sent = False
+    _messages_saved = False
 
-    if message.strip().startswith("/"):
-        handled = False
-        async for chunk in _handle_command(message, session_id, user_id):
-            if chunk is not None:
-                handled = True
-                yield chunk
-        if handled:
+    try:
+        if user_id is None:
+            yield f"data: {json.dumps({'type': 'error', 'content': '用户未登录'})}\n\n"
             return
 
-    llm, cfg = _resolve_llm_client(user_id)
-    if llm is None:
-        from server.database import get_user_by_id
-        user = get_user_by_id(user_id)
-        is_admin = user and user.get("user_type") == "admin"
-        if is_admin:
-            yield f"data: {json.dumps({'type': 'error', 'content': '模型尚未配置，请到设置中配置模型 API Key'})}\n\n"
-        else:
-            yield f"data: {json.dumps({'type': 'error', 'content': '模型尚未配置，请联系管理员配置全局模型，或在设置中配置个人模型'})}\n\n"
-        return
+        if agent is None or registry is None:
+            yield f"data: {json.dumps({'type': 'error', 'content': '服务正在初始化中，请稍后再试'})}\n\n"
+            return
 
-    model_name = cfg.get("model_name", "").strip()
-    gateway = ModelGateway(model_name)
-    gateway_cfg = gateway.build_params(show_thought, temperature=0)
-    reasoning_field = gateway_cfg["reasoning_field"]
-    needs_prompt_fallback = gateway_cfg["needs_prompt_fallback"]
-    api_params = gateway_cfg["api_params"]
+        if message.strip().startswith("/"):
+            handled = False
+            async for chunk in _handle_command(message, session_id, user_id):
+                if chunk is not None:
+                    handled = True
+                    yield chunk
+            if handled:
+                _done_sent = True  # _handle_command 已发送 done
+                return
 
-    if session_id:
-        messages = _load_session_messages(session_id)
-        # 数据库中没有消息但内存中有，则使用内存中的（避免覆盖已有的会话）
-        if not messages and session_id in store:
-            messages = store[session_id].get("messages", [])
-        if messages:
-            compressed = _compress_if_needed(messages, llm, cfg)
-            if len(compressed) < len(messages):
-                _save_session_messages(session_id, compressed, user_id=user_id)
-                messages = compressed
-        if session_id in store:
-            store[session_id]["messages"] = messages
-        else:
-            store[session_id] = {"title": "新对话", "created_at": __import__("time").time(), "messages": messages}
-    else:
-        messages = []
-
-    search_context = ""
-    search_scenario = "general"
-    search_info = None
-    if web_search in ("auto", "on"):
-        from server.database import get_search_config, get_user_by_id
-        search_cfg = get_search_config()
-        tavily_key = search_cfg.get("tavily_api_key", "")
-        if not tavily_key:
+        llm, cfg = await _run_sync(_resolve_llm_client, user_id)
+        if llm is None:
+            from server.database import get_user_by_id
             user = get_user_by_id(user_id)
             is_admin = user and user.get("user_type") == "admin"
             if is_admin:
-                yield f"data: {json.dumps({'type': 'error', 'content': '联网搜索功能尚未配置，请到设置中配置 Tavily API Key'})}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'content': '模型尚未配置，请到设置中配置模型 API Key'})}\n\n"
             else:
-                yield f"data: {json.dumps({'type': 'error', 'content': '联网搜索功能尚未配置，请联系管理员进行联网搜索配置'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'content': '模型尚未配置，请联系管理员配置全局模型，或在设置中配置个人模型'})}\n\n"
             return
-        if tavily_key:
-            search_scenario = _classify_query(message)
-            scenario_label = SCENARIO_CONFIG[search_scenario]["label"]
-            yield f"data: {json.dumps({'type': 'status', 'content': f'正在联网搜索（{scenario_label}）...'})}\n\n"
-            search_context = _do_web_search(message, tavily_key, search_scenario)
-            if search_context:
-                search_info = {
-                    "query": message,
-                    "scenario": scenario_label,
-                    "results": search_context,
-                }
-                yield f"data: {json.dumps({'type': 'web_search', 'query': message, 'scenario': scenario_label, 'results': search_context})}\n\n"
-                yield f"data: {json.dumps({'type': 'status', 'content': '搜索完成，正在生成回答...'})}\n\n"
 
-    system_prompt = (
-        "你是一个智能助手，能够根据用户需求选择合适的工具。\n\n"
-        "工具使用原则：\n"
-        "1. 仔细阅读每个工具的 description（描述），判断是否与用户需求匹配\n"
-        "2. 只有当用户明确需要工具的功能时才调用工具，不要随意调用\n"
-        "3. 如果用户只是提问或聊天，直接回答即可，不需要调用任何工具\n"
-        "4. 如果用户说'放到word里'、'保存为文档'、'生成word'等，应使用 save_to_word 工具\n"
-        "5. 如果用户问时间日期，使用 get_current_datetime 工具\n"
-        "6. 如果用户需要计算，使用 simple_calculator 工具\n"
-        "7. 如果用户需要网页内容，使用 web_fetch 工具\n"
-        "8. 如果用户需要农历转换，使用 convert_gregorian_to_lunar 工具\n"
-        "9. 调用工具前先确认参数是否齐全，参数不齐时向用户询问\n\n"
-        "工具复用原则（重要）：\n"
-        "10. 调用工具前，先检查对话历史中是否已有该工具的执行结果\n"
-        "11. 如果之前的工具调用已经获取了所需数据，直接引用历史结果，不要重复调用\n"
-        "12. 只有以下情况才需要重新调用工具：\n"
-        "    - 之前没有相关数据\n"
-        "    - 用户明确要求重新查询（如'重新查一下'、'再查一下'、'刷新'）\n"
-        "    - 数据范围超出已有结果（如已有7天预报但用户问第8天）\n"
-        "    - 数据可能已过期（时间敏感数据，如股市行情、实时路况等）\n"
-        "13. 例如：已有北京7天天气预报结果，用户再问其中某天天气，直接引用已有数据回答即可\n\n"
-        "回答风格原则（重要）：\n"
-        "优先使用自然段落进行回答，像人类对话一样流畅自然。只在必要时使用格式：\n"
-        "- 简短问答、闲聊、一般性解释：直接用自然段落回答，不要使用任何列表或格式标记\n"
-        "- 步骤说明、教程、操作指南：使用有序列表（1. 2. 3.）\n"
-        "- 多个并列要点：使用无序列表（- 开头）\n"
-        "- 数据对比、规格参数：使用表格（| 列1 | 列2 |）\n"
-        "- 代码、命令、配置：使用代码块（```）\n"
-        "- 引用、名言：使用引用块（> 开头）\n"
-        "核心原则：默认用自然段落，格式只在确实能提升可读性时才使用。不要为了格式化而格式化。\n\n"
-        "回答简洁原则（重要）：\n"
-        "1. 直接回答用户问题，不要过度展开或添加用户未询问的额外信息\n"
-        "2. 优先给出核心结论或答案，必要时再补充简要说明\n"
-        "3. 如果用户没有明确要求详细分析，默认给出简洁版本\n"
-        "4. 避免重复表述，每句话都应有信息增量\n"
-        "5. 对于简单问题，用1-3句话回答即可，不要展开成段落"
-    )
+        model_name = cfg.get("model_name", "").strip()
+        gateway = ModelGateway(model_name)
+        gateway_cfg = gateway.build_params(show_thought, temperature=0)
+        reasoning_field = gateway_cfg["reasoning_field"]
+        needs_prompt_fallback = gateway_cfg["needs_prompt_fallback"]
+        api_params = gateway_cfg["api_params"]
 
-    if show_thought:
-        if needs_prompt_fallback:
-            system_prompt += (
-                "\n\n思考过程格式（重要）：\n"
-                "在给出最终回答之前，请用 <thinking>...</thinking> 标签包裹你的思考过程。\n"
-                "思考过程请用自然流畅的独白形式书写，像自己在心里默默分析一样，不要使用列表或标签格式。\n"
-                "应自然覆盖以下内容：先理解用户真正想问什么，然后把问题拆解成几个小步骤，\n"
-                "判断需要哪些知识或工具，一步步推理出结论，最后检查一下有没有遗漏，规划好怎么组织回答。\n\n"
-                "格式示例：\n"
-                "<thinking>\n"
-                "用户想知道北京未来三天天气，应该是为了出行做准备。要回答这个问题，我需要先查到北京的地理位置ID，然后调用天气预报接口获取未来3天的数据。拿到数据后按日期整理温度、天气状况和风力，最后给一个综合的出行建议。让我确认一下：数据要覆盖未来3天，温度单位是摄氏度，天气描述要清晰易懂。回答就按日期逐日列出，最后加一句出行提醒。\n"
-                "</thinking>\n\n"
-                "然后给出你的正式回答。\n"
-                "注意：<thinking> 标签内的内容是你的内部思考，标签外的内容才是给用户的正式回答。\n"
-                "每次回复中只能使用一次 <thinking> 标签，放在正式回答之前。"
-            )
-    else:
-        system_prompt += (
-            "\n\n重要：请直接给出最终回答，不要输出思考过程、分析过程或任何前置说明。"
+        if session_id:
+            messages = await _run_sync(_load_session_messages, session_id)
+            # 数据库中没有消息但内存中有，则使用内存中的（避免覆盖已有的会话）
+            if not messages and session_id in store:
+                messages = store[session_id].get("messages", [])
+            if messages:
+                compressed = await _run_sync(_compress_if_needed, messages, llm, cfg)
+                if len(compressed) < len(messages):
+                    _save_session_messages(session_id, compressed, user_id=user_id)
+                    messages = compressed
+            if session_id in store:
+                store[session_id]["messages"] = messages
+            else:
+                store[session_id] = {"title": "新对话", "created_at": __import__("time").time(), "messages": messages}
+        else:
+            messages = []
+
+        search_context = ""
+        search_scenario = "general"
+        search_info = None
+        if web_search in ("auto", "on"):
+            from server.database import get_search_config, get_user_by_id
+            search_cfg = get_search_config()
+            tavily_key = search_cfg.get("tavily_api_key", "")
+            if not tavily_key:
+                user = get_user_by_id(user_id)
+                is_admin = user and user.get("user_type") == "admin"
+                if is_admin:
+                    yield f"data: {json.dumps({'type': 'error', 'content': '联网搜索功能尚未配置，请到设置中配置 Tavily API Key'})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'error', 'content': '联网搜索功能尚未配置，请联系管理员进行联网搜索配置'})}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                _done_sent = True
+                return
+            if tavily_key:
+                search_scenario = _classify_query(message)
+                scenario_label = SCENARIO_CONFIG[search_scenario]["label"]
+                yield f"data: {json.dumps({'type': 'status', 'content': f'正在联网搜索（{scenario_label}）...'})}\n\n"
+                search_context = await _run_sync(_do_web_search, message, tavily_key, search_scenario)
+                if search_context:
+                    search_info = {
+                        "query": message,
+                        "scenario": scenario_label,
+                        "results": search_context,
+                    }
+                    yield f"data: {json.dumps({'type': 'web_search', 'query': message, 'scenario': scenario_label, 'results': search_context})}\n\n"
+                    yield f"data: {json.dumps({'type': 'status', 'content': '搜索完成，正在生成回答...'})}\n\n"
+
+        system_prompt = (
+            "你是一个智能助手，能够根据用户需求选择合适的工具。\n\n"
+            "工具使用原则：\n"
+            "1. 仔细阅读每个工具的 description（描述），判断是否与用户需求匹配\n"
+            "2. 只有当用户明确需要工具的功能时才调用工具，不要随意调用\n"
+            "3. 如果用户只是提问或聊天，直接回答即可，不需要调用任何工具\n"
+            "4. 如果用户说'放到word里'、'保存为文档'、'生成word'等，应使用 save_to_word 工具\n"
+            "5. 如果用户问时间日期，使用 get_current_datetime 工具\n"
+            "6. 如果用户需要计算，使用 simple_calculator 工具\n"
+            "7. 如果用户需要网页内容，使用 web_fetch 工具\n"
+            "8. 如果用户需要农历转换，使用 convert_gregorian_to_lunar 工具\n"
+            "9. 调用工具前先确认参数是否齐全，参数不齐时向用户询问\n\n"
+            "工具复用原则（重要）：\n"
+            "10. 调用工具前，先检查对话历史中是否已有该工具的执行结果\n"
+            "11. 如果之前的工具调用已经获取了所需数据，直接引用历史结果，不要重复调用\n"
+            "12. 只有以下情况才需要重新调用工具：\n"
+            "    - 之前没有相关数据\n"
+            "    - 用户明确要求重新查询（如'重新查一下'、'再查一下'、'刷新'）\n"
+            "    - 数据范围超出已有结果（如已有7天预报但用户问第8天）\n"
+            "    - 数据可能已过期（时间敏感数据，如股市行情、实时路况等）\n"
+            "13. 例如：已有北京7天天气预报结果，用户再问其中某天天气，直接引用已有数据回答即可\n\n"
+            "回答风格原则（重要）：\n"
+            "优先使用自然段落进行回答，像人类对话一样流畅自然。只在必要时使用格式：\n"
+            "- 简短问答、闲聊、一般性解释：直接用自然段落回答，不要使用任何列表或格式标记\n"
+            "- 步骤说明、教程、操作指南：使用有序列表（1. 2. 3.）\n"
+            "- 多个并列要点：使用无序列表（- 开头）\n"
+            "- 数据对比、规格参数：使用表格（| 列1 | 列2 |）\n"
+            "- 代码、命令、配置：使用代码块（```）\n"
+            "- 引用、名言：使用引用块（> 开头）\n"
+            "核心原则：默认用自然段落，格式只在确实能提升可读性时才使用。不要为了格式化而格式化。\n\n"
+            "回答简洁原则（重要）：\n"
+            "1. 直接回答用户问题，不要过度展开或添加用户未询问的额外信息\n"
+            "2. 优先给出核心结论或答案，必要时再补充简要说明\n"
+            "3. 如果用户没有明确要求详细分析，默认给出简洁版本\n"
+            "4. 避免重复表述，每句话都应有信息增量\n"
+            "5. 对于简单问题，用1-3句话回答即可，不要展开成段落"
         )
 
-    if search_context:
-        scenario_instruction = SCENARIO_CONFIG[search_scenario]["instruction"]
-        if web_search == "on":
-            system_prompt += (
-                f"\n\n=== 联网搜索结果（场景：{SCENARIO_CONFIG[search_scenario]['label']}） ===\n\n"
-                f"{search_context}\n\n"
-                f"=== 搜索信息结束 ===\n\n"
-                f"【场景指令 - 强制模式】\n{scenario_instruction}\n"
-                f"请务必严格遵循以上场景指令回答用户问题。"
-            )
+        if show_thought:
+            if needs_prompt_fallback:
+                system_prompt += (
+                    "\n\n思考过程格式（重要）：\n"
+                    "在给出最终回答之前，请用 <thinking>...</thinking> 标签包裹你的思考过程。\n"
+                    "思考过程请用自然流畅的独白形式书写，像自己在心里默默分析一样，不要使用列表或标签格式。\n"
+                    "应自然覆盖以下内容：先理解用户真正想问什么，然后把问题拆解成几个小步骤，\n"
+                    "判断需要哪些知识或工具，一步步推理出结论，最后检查一下有没有遗漏，规划好怎么组织回答。\n\n"
+                    "格式示例：\n"
+                    "<thinking>\n"
+                    "用户想知道北京未来三天天气，应该是为了出行做准备。要回答这个问题，我需要先查到北京的地理位置ID，然后调用天气预报接口获取未来3天的数据。拿到数据后按日期整理温度、天气状况和风力，最后给一个综合的出行建议。让我确认一下：数据要覆盖未来3天，温度单位是摄氏度，天气描述要清晰易懂。回答就按日期逐日列出，最后加一句出行提醒。\n"
+                    "</thinking>\n\n"
+                    "然后给出你的正式回答。\n"
+                    "注意：<thinking> 标签内的内容是你的内部思考，标签外的内容才是给用户的正式回答。\n"
+                    "每次回复中只能使用一次 <thinking> 标签，放在正式回答之前。"
+                )
         else:
             system_prompt += (
-                f"\n\n=== 联网搜索结果（场景：{SCENARIO_CONFIG[search_scenario]['label']}） ===\n\n"
-                f"{search_context}\n\n"
-                f"=== 搜索信息结束 ===\n\n"
-                f"【场景指令 - 自动模式】\n{scenario_instruction}\n"
-                f"请参考以上场景指令，灵活判断如何最佳地回答用户问题。"
+                "\n\n重要：请直接给出最终回答，不要输出思考过程、分析过程或任何前置说明。"
             )
 
-    if session_id and user_id:
-        upload_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "document_output", str(user_id), "uploads", session_id
+        if search_context:
+            scenario_instruction = SCENARIO_CONFIG[search_scenario]["instruction"]
+            if web_search == "on":
+                system_prompt += (
+                    f"\n\n=== 联网搜索结果（场景：{SCENARIO_CONFIG[search_scenario]['label']}） ===\n\n"
+                    f"{search_context}\n\n"
+                    f"=== 搜索信息结束 ===\n\n"
+                    f"【场景指令 - 强制模式】\n{scenario_instruction}\n"
+                    f"请务必严格遵循以上场景指令回答用户问题。"
+                )
+            else:
+                system_prompt += (
+                    f"\n\n=== 联网搜索结果（场景：{SCENARIO_CONFIG[search_scenario]['label']}） ===\n\n"
+                    f"{search_context}\n\n"
+                    f"=== 搜索信息结束 ===\n\n"
+                    f"【场景指令 - 自动模式】\n{scenario_instruction}\n"
+                    f"请参考以上场景指令，灵活判断如何最佳地回答用户问题。"
+                )
+
+        if session_id and user_id:
+            upload_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                "document_output", str(user_id), "uploads", session_id
+            )
+            if os.path.isdir(upload_dir):
+                uploaded = [os.path.join(upload_dir, f) for f in sorted(os.listdir(upload_dir))
+                            if os.path.isfile(os.path.join(upload_dir, f)) and not f.startswith(".")]
+                if uploaded:
+                    from agent.file_parser import parse_files, build_context_prompt
+                    parsed = await _run_sync(parse_files, uploaded)
+                    file_context = await _run_sync(build_context_prompt, parsed)
+                    system_prompt = file_context + "\n\n" + system_prompt
+
+        # 注入技能上下文
+        if skill_registry and user_id:
+            skill_context = await _run_sync(_build_skill_context, user_id, skill_registry)
+            if skill_context:
+                system_prompt += "\n" + skill_context
+
+        chat_messages = [{"role": "system", "content": system_prompt}]
+
+        for msg in messages:
+            chat_messages.append(msg)
+
+        chat_messages.append({"role": "user", "content": message})
+
+        cached_hint = _extract_cached_tool_context(messages)
+        if cached_hint:
+            chat_messages[0]["content"] = chat_messages[0]["content"] + "\n\n" + cached_hint
+
+        # 先剔除被禁用技能的工具，再按意图筛选，确保开关在工具层真正生效
+        _all_specs = await _run_sync(
+            _filter_disabled_tools, registry.get_all_openai_specs(), user_id, skill_registry
         )
-        if os.path.isdir(upload_dir):
-            uploaded = [os.path.join(upload_dir, f) for f in sorted(os.listdir(upload_dir))
-                        if os.path.isfile(os.path.join(upload_dir, f)) and not f.startswith(".")]
-            if uploaded:
-                from agent.file_parser import parse_files, build_context_prompt
-                parsed = parse_files(uploaded)
-                file_context = build_context_prompt(parsed)
-                system_prompt = file_context + "\n\n" + system_prompt
+        tool_specs = await _run_sync(select_tools_by_intent, message, _all_specs, user_id)
+        max_iterations = 10
+        all_tool_calls = []
+        all_thoughts = []
+        _consecutive_failures = {}  # {tool_name: count} — 连续失败计数器
 
-    # 注入技能上下文
-    if skill_registry and user_id:
-        skill_context = _build_skill_context(user_id, skill_registry)
-        if skill_context:
-            system_prompt += "\n" + skill_context
+        user_ctx = {
+            "user_id": user_id,
+            "username": "",
+            "user_type": "user",
+            "session_id": session_id or "",
+        }
+        try:
+            from server.database import get_user_by_id as _gbu
+            db_user = _gbu(user_id)
+            if db_user:
+                user_ctx["username"] = db_user.get("username", "")
+                user_ctx["user_type"] = db_user.get("user_type", "user")
+        except Exception:
+            pass
 
-    chat_messages = [{"role": "system", "content": system_prompt}]
+        try:
+            for iteration in range(max_iterations):
+                logger.debug(f"迭代开始 iteration={iteration + 1}/{max_iterations} (user={user_id}, session={session_id or '-'})")
+                if iteration == 0:
+                    yield f"data: {json.dumps({'type': 'status', 'content': '正在处理...'})}\n\n"
 
-    for msg in messages:
-        chat_messages.append(msg)
+                full_content = ""
+                full_reasoning = ""
+                tool_calls = None
+                _stream_buf = ""
+                _in_thinking = False
 
-    chat_messages.append({"role": "user", "content": message})
-
-    cached_hint = _extract_cached_tool_context(messages)
-    if cached_hint:
-        chat_messages[0]["content"] = chat_messages[0]["content"] + "\n\n" + cached_hint
-
-    tool_specs = select_tools_by_intent(message, registry.get_all_openai_specs(), user_id)
-    max_iterations = 10
-    all_tool_calls = []
-    all_thoughts = []
-
-    user_ctx = {
-        "user_id": user_id,
-        "username": "",
-        "user_type": "user",
-        "session_id": session_id or "",
-    }
-    try:
-        from server.database import get_user_by_id as _gbu
-        db_user = _gbu(user_id)
-        if db_user:
-            user_ctx["username"] = db_user.get("username", "")
-            user_ctx["user_type"] = db_user.get("user_type", "user")
-    except Exception:
-        pass
-
-    try:
-        for iteration in range(max_iterations):
-            if iteration == 0:
-                yield f"data: {json.dumps({'type': 'status', 'content': '正在处理...'})}\n\n"
-    
-            try:
-                stream = llm.chat_stream(chat_messages, tools=tool_specs, **api_params)
-            except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
-                return
-    
-            full_content = ""
-            full_reasoning = ""
-            tool_calls = None
-            _stream_buf = ""
-            _in_thinking = False
-    
-            try:
-                for chunk in stream:
-                    if chunk.get("reasoning_content"):
-                        reasoning_text = chunk["reasoning_content"]
-                        full_reasoning += reasoning_text
-                        if show_thought:
-                            yield f"data: {json.dumps({'type': 'thought', 'content': reasoning_text})}\n\n"
-    
-                    if chunk.get("content"):
-                        content = chunk["content"]
-                        full_content += content
-    
-                        if reasoning_field is not None:
-                            yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
-                        elif show_thought:
-                            _stream_buf += content
-                            while True:
-                                if _in_thinking:
-                                    think_end = _stream_buf.find("</thinking>")
-                                    if think_end != -1:
-                                        think_text = _stream_buf[:think_end]
-                                        if think_text.strip():
-                                            yield f"data: {json.dumps({'type': 'thought', 'content': think_text})}\n\n"
-                                        _stream_buf = _stream_buf[think_end + len("</thinking>"):]
-                                        _in_thinking = False
-                                        continue
-                                    safe_len = len(_stream_buf)
-                                    for k in range(1, len("</thinking>")):
-                                        if _stream_buf.endswith("</thinking>"[:k]):
-                                            safe_len = len(_stream_buf) - k
-                                            break
-                                    if safe_len > 0:
-                                        if _stream_buf[:safe_len].strip():
-                                            yield f"data: {json.dumps({'type': 'thought', 'content': _stream_buf[:safe_len]})}\n\n"
-                                        _stream_buf = _stream_buf[safe_len:]
-                                    break
-                                start_tag = _stream_buf.find("<thinking>")
-                                if start_tag == -1:
-                                    safe_len = len(_stream_buf)
-                                    for k in range(1, len("<thinking>")):
-                                        if _stream_buf.endswith("<thinking>"[:k]):
-                                            safe_len = len(_stream_buf) - k
-                                            break
-                                    if safe_len > 0:
-                                        yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:safe_len]})}\n\n"
-                                        _stream_buf = _stream_buf[safe_len:]
-                                    break
-                                else:
-                                    if start_tag > 0:
-                                        yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:start_tag]})}\n\n"
-                                    _stream_buf = _stream_buf[start_tag + len("<thinking>"):]
-                                    _in_thinking = True
-                                    continue
-                        else:
-                            _stream_buf += content
-                            while True:
-                                if "</thinking>" in _stream_buf:
-                                    end = _stream_buf.find("</thinking>") + len("</thinking>")
-                                    _stream_buf = _stream_buf[end:]
-                                    continue
-                                start = _stream_buf.find("<thinking>")
-                                if start == -1:
-                                    safe_len = len(_stream_buf)
-                                    for k in range(1, len("<thinking>")):
-                                        if _stream_buf.endswith("<thinking>"[:k]):
-                                            safe_len = len(_stream_buf) - k
-                                            break
-                                    if safe_len > 0:
-                                        yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:safe_len]})}\n\n"
-                                        _stream_buf = _stream_buf[safe_len:]
-                                    break
-                                else:
-                                    if start > 0:
-                                        yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:start]})}\n\n"
-                                    _stream_buf = _stream_buf[start + len("<thinking>"):]
-                    if chunk.get("finish_reason"):
-                        tool_calls = chunk.get("tool_calls")
-                        break
-            except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
-                return
-            finally:
-                # 确保流式生成器被正确关闭，避免连接泄漏导致光标卡住
-                if hasattr(stream, 'close'):
-                    stream.close()
-    
-            if reasoning_field is None and not _in_thinking and _stream_buf.strip():
-                yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf})}\n\n"
-    
-            if not tool_calls:
-                if all_tool_calls:
-                    yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
-    
-                if reasoning_field is not None:
-                    if full_reasoning and show_thought:
-                        all_thoughts.append(full_reasoning)
-                    answer = full_content
-                else:
-                    thinking, answer = _split_thinking(full_content)
-                    if thinking and show_thought:
-                        all_thoughts.append(thinking)
-    
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
-                # 后处理（标题生成、数据库保存等）放到后台任务，避免阻塞流关闭
-                _captured = {
-                    "session_id": session_id, "store": store, "message": message,
-                    "answer": answer, "full_content": full_content,
-                    "search_info": search_info, "all_thoughts": all_thoughts,
-                    "all_tool_calls": all_tool_calls, "llm": llm,
-                    "user_id": user_id, "iteration": iteration,
-                }
-                asyncio.create_task(_post_process_done(**_captured))
-                clear_context()
-                return
-    
-            if full_content:
-                if reasoning_field is not None:
-                    if full_reasoning:
-                        all_thoughts.append(full_reasoning)
-                else:
-                    thinking, _ = _split_thinking(full_content)
-                    if thinking:
-                        all_thoughts.append(thinking)
-    
-            assistant_msg = {
-                "role": "assistant",
-                "content": full_content,
-                "tool_calls": tool_calls
-            }
-            if full_reasoning:
-                assistant_msg["reasoning_content"] = full_reasoning
-            chat_messages.append(assistant_msg)
-    
-            for tool_call in tool_calls:
-                tool_name = tool_call["function"]["name"]
-                tool_arguments = json.loads(tool_call["function"]["arguments"])
-    
-                yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_name, 'arguments': tool_arguments})}\n\n"
-    
                 try:
-                    tool_result = registry.execute(tool_name, tool_arguments, user_id=user_id)
-                    tool_error = False
+                    async for chunk in _stream_llm_async(llm, chat_messages, tool_specs, api_params):
+                        if chunk.get("reasoning_content"):
+                            reasoning_text = chunk["reasoning_content"]
+                            full_reasoning += reasoning_text
+                            if show_thought:
+                                yield f"data: {json.dumps({'type': 'thought', 'content': reasoning_text})}\n\n"
+
+                        if chunk.get("content"):
+                            content = chunk["content"]
+                            full_content += content
+
+                            if reasoning_field is not None:
+                                yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
+                            elif show_thought:
+                                _stream_buf += content
+                                while True:
+                                    if _in_thinking:
+                                        think_end = _stream_buf.find("</thinking>")
+                                        if think_end != -1:
+                                            think_text = _stream_buf[:think_end]
+                                            if think_text.strip():
+                                                yield f"data: {json.dumps({'type': 'thought', 'content': think_text})}\n\n"
+                                            _stream_buf = _stream_buf[think_end + len("</thinking>"):]
+                                            _in_thinking = False
+                                            continue
+                                        safe_len = len(_stream_buf)
+                                        for k in range(1, len("</thinking>")):
+                                            if _stream_buf.endswith("</thinking>"[:k]):
+                                                safe_len = len(_stream_buf) - k
+                                                break
+                                        if safe_len > 0:
+                                            if _stream_buf[:safe_len].strip():
+                                                yield f"data: {json.dumps({'type': 'thought', 'content': _stream_buf[:safe_len]})}\n\n"
+                                            _stream_buf = _stream_buf[safe_len:]
+                                        break
+                                    start_tag = _stream_buf.find("<thinking>")
+                                    if start_tag == -1:
+                                        safe_len = len(_stream_buf)
+                                        for k in range(1, len("<thinking>")):
+                                            if _stream_buf.endswith("<thinking>"[:k]):
+                                                safe_len = len(_stream_buf) - k
+                                                break
+                                        if safe_len > 0:
+                                            yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:safe_len]})}\n\n"
+                                            _stream_buf = _stream_buf[safe_len:]
+                                        break
+                                    else:
+                                        if start_tag > 0:
+                                            yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:start_tag]})}\n\n"
+                                        _stream_buf = _stream_buf[start_tag + len("<thinking>"):]
+                                        _in_thinking = True
+                                        continue
+                            else:
+                                _stream_buf += content
+                                while True:
+                                    if "</thinking>" in _stream_buf:
+                                        end = _stream_buf.find("</thinking>") + len("</thinking>")
+                                        _stream_buf = _stream_buf[end:]
+                                        continue
+                                    start = _stream_buf.find("<thinking>")
+                                    if start == -1:
+                                        safe_len = len(_stream_buf)
+                                        for k in range(1, len("<thinking>")):
+                                            if _stream_buf.endswith("<thinking>"[:k]):
+                                                safe_len = len(_stream_buf) - k
+                                                break
+                                        if safe_len > 0:
+                                            yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:safe_len]})}\n\n"
+                                            _stream_buf = _stream_buf[safe_len:]
+                                        break
+                                    else:
+                                        if start > 0:
+                                            yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf[:start]})}\n\n"
+                                        _stream_buf = _stream_buf[start + len("<thinking>"):]
+                        if chunk.get("finish_reason"):
+                            tool_calls = chunk.get("tool_calls")
+                            break
                 except Exception as e:
-                    tool_result = f"工具执行错误: {str(e)}"
-                    tool_error = True
-    
-                if isinstance(tool_result, dict):
-                    tool_result_str = json.dumps(tool_result, ensure_ascii=False)
+                    yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                    return
+
+                if reasoning_field is None and _stream_buf.strip():
+                    if _in_thinking:
+                        # 流结束时有未闭合的 <thinking> 标签，作为思考内容输出
+                        yield f"data: {json.dumps({'type': 'thought', 'content': _stream_buf})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'token', 'content': _stream_buf})}\n\n"
+
+                if not tool_calls:
+                    if all_tool_calls:
+                        yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
+
+                    if reasoning_field is not None:
+                        if full_reasoning and show_thought:
+                            all_thoughts.append(full_reasoning)
+                        answer = full_content
+                    else:
+                        thinking, answer = _split_thinking(full_content)
+                        if thinking and show_thought:
+                            all_thoughts.append(thinking)
+
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    _done_sent = True
+
+                    # 后处理（标题生成、数据库保存等）放到后台任务，避免阻塞流关闭
+                    _captured = {
+                        "session_id": session_id, "store": store, "message": message,
+                        "answer": answer, "full_content": full_content,
+                        "search_info": search_info, "all_thoughts": all_thoughts,
+                        "all_tool_calls": all_tool_calls, "llm": llm,
+                        "user_id": user_id, "iteration": iteration,
+                    }
+                    threading.Thread(target=_post_process_done, kwargs=_captured, daemon=True).start()
+                    _messages_saved = True
+                    return
+
+                if full_content:
+                    if reasoning_field is not None:
+                        if full_reasoning:
+                            all_thoughts.append(full_reasoning)
+                    else:
+                        thinking, _ = _split_thinking(full_content)
+                        if thinking:
+                            all_thoughts.append(thinking)
+
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": full_content,
+                    "tool_calls": tool_calls
+                }
+                if full_reasoning:
+                    assistant_msg["reasoning_content"] = full_reasoning
+                chat_messages.append(assistant_msg)
+
+                for tool_call in tool_calls:
+                    tool_name = tool_call["function"]["name"]
+                    tool_arguments = json.loads(tool_call["function"]["arguments"])
+                    logger.debug(f"工具调用 iteration={iteration + 1} tool={tool_name} args={tool_arguments}")
+
+                    yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_name, 'arguments': tool_arguments})}\n\n"
+
+                # 根据工具数量决定执行方式：2+ 工具并行，单工具直接执行
+                tool_names = [tc["function"]["name"] for tc in tool_calls]
+                if len(tool_calls) == 1:
+                    yield f"data: {json.dumps({'type': 'status', 'content': f'正在调用工具: {tool_names[0]}...'})}\n\n"
+                elif len(tool_calls) >= 2:
+                    yield f"data: {json.dumps({'type': 'status', 'content': f'正在并行调用 {len(tool_calls)} 个工具...'})}\n\n"
+                if len(tool_calls) >= 2:
+                    _executor = ParallelToolExecutor()
+                    batch_results = await _run_sync(_executor.execute_batch, tool_calls, registry, user_id=user_id)
                 else:
-                    tool_result_str = str(tool_result)
-                yield f"data: {json.dumps({'type': 'tool_result', 'name': tool_name, 'content': tool_result_str})}\n\n"
+                    tc = tool_calls[0]
+                    name = tc["function"]["name"]
+                    args = json.loads(tc["function"]["arguments"])
+                    try:
+                        result = await _run_sync(registry.execute, name, args, user_id=user_id)
+                        if isinstance(result, dict):
+                            result_str = json.dumps(result, ensure_ascii=False)
+                        else:
+                            result_str = str(result)
+                        error = (
+                            result_str.startswith("Error")
+                            or result_str.startswith("[沙箱执行失败]")
+                            or result_str.startswith("[沙箱执行超时]")
+                            or result_str.startswith("[沙箱异常]")
+                            or result_str.startswith("[工具执行异常]")
+                        )
+                    except Exception as e:
+                        result_str = f"工具执行错误: {str(e)}"
+                        error = True
+                    batch_results = [{
+                        "name": name,
+                        "arguments": args,
+                        "result": result_str,
+                        "error": error,
+                        "tool_call_id": tc.get("id", ""),
+                    }]
+
+                for i, tool_call in enumerate(tool_calls):
+                    r = batch_results[i]
+                    yield f"data: {json.dumps({'type': 'tool_result', 'name': r['name'], 'content': r['result']})}\n\n"
+
+                    all_tool_calls.append({
+                        "name": r["name"],
+                        "arguments": r["arguments"],
+                        "result": r["result"],
+                        "error": r["error"],
+                    })
+
+                    chat_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "name": r["name"],
+                        "content": r["result"],
+                    })
+
+                    # 连续失败检测：同一工具连续失败 2 次则终止
+                    if r["error"]:
+                        _consecutive_failures[r["name"]] = _consecutive_failures.get(r["name"], 0) + 1
+                        if _consecutive_failures[r["name"]] >= 2:
+                            _fail_name = r["name"]
+                            yield f"data: {json.dumps({'type': 'status', 'content': f'工具 {_fail_name} 连续失败，停止重试'})}\n\n"
+                            if all_tool_calls:
+                                yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
+                            yield f"data: {json.dumps({'type': 'error', 'content': f'工具 {_fail_name} 连续执行失败，已停止重试。请检查该功能是否正常。'})}\n\n"
+                            _done_sent = True
+                            # 保存已有的对话内容
+                            _captured = {
+                                "session_id": session_id, "store": store, "message": message,
+                                "answer": f"工具 {_fail_name} 连续执行失败，已停止重试。", "full_content": "",
+                                "search_info": search_info, "all_thoughts": all_thoughts,
+                                "all_tool_calls": all_tool_calls, "llm": llm,
+                                "user_id": user_id, "iteration": iteration,
+                            }
+                            threading.Thread(target=_post_process_done, kwargs=_captured, daemon=True).start()
+                            _messages_saved = True
+                            return
+                    else:
+                        _consecutive_failures[r["name"]] = 0
+
+            if all_tool_calls:
+                yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
+            logger.info(
+                f"已达最大迭代次数 max_iterations={max_iterations} "
+                f"(user={user_id}, session={session_id or '-'}, "
+                f"使用工具={[t['name'] for t in all_tool_calls]})"
+            )
+            yield f"data: {json.dumps({'type': 'error', 'content': '已达到最大迭代次数'})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'content': f'对话处理异常: {str(e)}'})}\n\n"
+
+
+    finally:
+        if not _done_sent:
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        # Fallback: 如果消息未保存（异常退出），尝试保存用户消息
+        if not _messages_saved and session_id and message:
+            try:
+                if session_id not in store:
+                    store[session_id] = {"title": "新对话", "created_at": time.time(), "messages": []}
+                store[session_id]["messages"].append({"role": "user", "content": message})
+                store[session_id]["messages"].append({"role": "assistant", "content": "(任务执行中断)"})
+                _save_session_messages(session_id, store[session_id]["messages"], None, user_id)
+                logger.warning(f"消息通过 fallback 保存 (session={session_id})")
+            except Exception as e:
+                logger.error(f"Fallback 保存消息失败 (session={session_id}): {e}")
+        clear_context()
+
+
+async def _run_chat_background(task: SessionTask, message: str, session_id: str,
+                                web_search: str, user_id: int, show_thought: bool):
+    """后台运行聊天任务：消费 _stream_chat 生成器，将事件放入 SessionTask 缓冲区。
     
-                all_tool_calls.append({
-                    "name": tool_name,
-                    "arguments": tool_arguments,
-                    "result": tool_result_str,
-                    "error": tool_error or tool_result_str.startswith("[沙箱执行失败]") or tool_result_str.startswith("[沙箱执行超时]") or tool_result_str.startswith("[沙箱异常]") or tool_result_str.startswith("[工具执行异常]"),
-                })
-    
-                chat_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call["id"],
-                    "name": tool_name,
-                    "content": tool_result_str,
-                })
-    
-        if all_tool_calls:
-            yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
-        yield f"data: {json.dumps({'type': 'error', 'content': '已达到最大迭代次数'})}\n\n"
+    与客户端连接解耦 — 即使客户端断开，任务也继续运行直到完成。
+    """
+    try:
+        async for event in _stream_chat(message, session_id, web_search, user_id, show_thought):
+            task.add_event(event)
+    except asyncio.CancelledError:
+        # 用户主动停止任务
+        logger.info(f"后台任务被用户取消 (session={session_id})")
+        try:
+            task.add_event(f"data: {json.dumps({'type': 'done'})}\n\n")
+        except Exception:
+            pass
+        task.mark_failed("cancelled")
+        asyncio.get_running_loop().call_later(300, lambda: remove_running_task(session_id))
     except Exception as e:
-        yield f"data: {json.dumps({'type': 'error', 'content': f'对话处理异常: {str(e)}'})}\n\n"
+        logger.error(f"后台聊天任务异常 (session={session_id}): {e}", exc_info=True)
+        try:
+            task.add_event(f"data: {json.dumps({'type': 'error', 'content': f'内部错误: {str(e)}'})}\n\n")
+            task.add_event(f"data: {json.dumps({'type': 'done'})}\n\n")
+        except Exception:
+            pass
+        task.mark_failed(str(e))
+    else:
+        task.mark_completed()
+        # 任务完成后延迟清理（保留 5 分钟供前端查询状态）
+        asyncio.get_running_loop().call_later(300, lambda: remove_running_task(session_id))
+
+
+async def _subscribe_to_task(task: SessionTask):
+    """订阅任务事件并转发给客户端 SSE"""
+    q = await task.subscribe()
+    try:
+        while True:
+            event = await q.get()
+            if event is None:  # 流结束信号
+                break
+            yield event
+    finally:
+        task.unsubscribe(q)
+
+
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
 
 
 @router.post("/stream")
@@ -897,17 +1237,75 @@ async def chat_stream(body: ChatRequest, request: Request):
     if not body.message.strip():
         raise HTTPException(status_code=400, detail="消息不能为空")
 
+    # 消息长度限制
+    if len(body.message) > MAX_MESSAGE_LENGTH:
+        raise HTTPException(status_code=413, detail=f"消息过长，最大允许 {MAX_MESSAGE_LENGTH} 字符，当前 {len(body.message)} 字符")
+
     user = get_current_user(request)
 
-    return StreamingResponse(
-        _stream_chat(body.message, body.session_id, body.web_search, user["id"], body.show_thought),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+    # 验证会话存在性：如果提供了 session_id，检查是否在数据库中
+    if body.session_id:
+        from server.database import get_session
+        if not get_session(body.session_id):
+            raise HTTPException(status_code=404, detail="会话不存在")
+
+    # 检查该会话是否已有正在运行的任务
+    existing = get_running_task(body.session_id)
+    if existing and existing.status == "running":
+        raise HTTPException(status_code=409, detail="该会话有正在执行的任务，请等待完成")
+
+    # 创建后台任务
+    task = SessionTask(body.session_id, body.message, user["id"])
+    set_running_task(body.session_id, task)
+
+    # 启动后台 asyncio.Task（与客户端连接解耦）
+    task._bg_task = asyncio.create_task(
+        _run_chat_background(task, body.message, body.session_id, body.web_search, user["id"], body.show_thought)
     )
+
+    # 返回 SSE 响应（订阅任务事件）
+    return StreamingResponse(
+        _subscribe_to_task(task),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
+
+
+@router.get("/subscribe/{session_id}")
+async def subscribe_to_stream(session_id: str, request: Request):
+    """订阅正在运行的任务事件流（用于切换 session 后重连）"""
+    user = get_current_user(request)
+    task = get_running_task(session_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="没有正在运行的任务")
+    if task.user_id != user["id"]:
+        raise HTTPException(status_code=403, detail="无权访问")
+
+    return StreamingResponse(
+        _subscribe_to_task(task),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
+
+
+@router.post("/stop/{session_id}")
+async def stop_task(session_id: str, request: Request):
+    """停止正在运行的后台任务"""
+    user = get_current_user(request)
+    task = get_running_task(session_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="没有正在运行的任务")
+    if task.user_id != user["id"]:
+        raise HTTPException(status_code=403, detail="无权操作")
+    if task.status != "running":
+        raise HTTPException(status_code=400, detail="任务已结束")
+
+    # 取消后台 asyncio.Task
+    if task._bg_task and not task._bg_task.done():
+        task._bg_task.cancel()
+        logger.info(f"已取消 session {session_id} 的后台任务")
+
+    return {"success": True, "message": "任务已停止"}
 
 
 @router.get("/commands", response_model=list[dict])

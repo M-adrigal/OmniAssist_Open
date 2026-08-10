@@ -67,3 +67,7 @@ htmlcov/
 # Temporary
 tmp/
 temp/
+
+# Local project memory / runtime user skills (never commit)
+.workbuddy/
+agent/skills/user/

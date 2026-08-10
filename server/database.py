@@ -151,6 +151,21 @@ def init_db() -> str:
     except sqlite3.OperationalError:
         pass
 
+    # 按用户隔离的加密密钥（用于用户自带 API Key / 私有 host 的技能）
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_secrets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            key_name TEXT NOT NULL,
+            encrypted_value TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, key_name),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_secrets_user_id ON user_secrets(user_id)")
+
     _seed_default_permissions(conn)
 
     conn.execute(
@@ -309,6 +324,28 @@ def get_user_by_id(user_id: int) -> Optional[dict]:
     return None
 
 
+def get_user_role(user_id: int) -> str:
+    """获取用户角色（admin/user），用于诊断工具的权限网关。
+
+    注意：users 表使用 user_type 字段（'admin' / 'user'）标识管理员，
+    此处统一映射为 'admin' / 'user' 返回，未找到时返回 'user'（最小权限）。
+
+    Args:
+        user_id: 用户 ID
+
+    Returns:
+        str: 角色名
+    """
+    conn = _get_connection()
+    row = conn.execute(
+        "SELECT user_type FROM users WHERE id = ?", (user_id,)
+    ).fetchone()
+    if row:
+        ut = (row["user_type"] or "user")
+        return "admin" if ut == "admin" else "user"
+    return "user"
+
+
 def list_users() -> list[dict]:
     conn = _get_connection()
     rows = conn.execute(
@@ -452,6 +489,7 @@ def update_session_messages(session_id: str, messages: list, title: str = None, 
     existing = conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
     if not existing:
         if user_id is None:
+            logger.warning(f"会话 {session_id} 不存在且 user_id 为空，兜底使用 admin")
             user_id = 1  # 兜底使用 admin
         conn.execute(
             "INSERT INTO sessions (id, user_id, title, messages, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -738,22 +776,30 @@ def get_user_skills(user_id: int, enabled_only: bool = False, skill_name: str = 
     return [dict(r) for r in rows]
 
 
-def get_enabled_system_skills() -> set:
-    """获取所有启用的系统技能名称集合
+def get_disabled_system_skills(user_id: int = None) -> set:
+    """获取被禁用的技能名称集合
 
-    从 user_skills 表中查询所有 enabled=0 的记录（即禁用的系统技能），
-    返回所有系统技能名称减去禁用集合。
+    从 user_skills 表中查询 enabled=0 的记录。禁用状态按用户隔离：
+    传入 user_id 时只返回该用户禁用的技能；不传则返回全局（仅为兼容旧调用保留）。
+
+    Args:
+        user_id: 用户 ID
 
     Returns:
-        set: 启用的系统技能名称集合
+        set: 被禁用的技能名称集合
     """
     conn = _get_connection()
-    # 查询所有被禁用的技能
-    rows = conn.execute(
-        "SELECT DISTINCT skill_name FROM user_skills WHERE enabled = 0"
-    ).fetchall()
-    disabled = {r["skill_name"] for r in rows}
-    return disabled  # 返回禁用集合，调用方自行处理
+    if user_id is None:
+        rows = conn.execute(
+            "SELECT DISTINCT skill_name FROM user_skills WHERE enabled = 0"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT DISTINCT skill_name FROM user_skills "
+            "WHERE enabled = 0 AND user_id = ?",
+            (user_id,)
+        ).fetchall()
+    return {r["skill_name"] for r in rows}
 
 
 def save_user_skill(user_id: int, skill_name: str, skill_content: str,
