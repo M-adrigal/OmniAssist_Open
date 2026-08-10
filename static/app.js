@@ -2386,12 +2386,6 @@ function updateTrustUI(mode) {
 
   const permLabel = $('#perm-label');
   if (permLabel) permLabel.textContent = (m === 'full') ? '完全访问' : '请求批准';
-
-  const banner = $('#trust-banner');
-  if (banner) {
-    if (m === 'full') banner.classList.remove('hidden');
-    else banner.classList.add('hidden');
-  }
 }
 
 // 拉取当前会话的权限模式并刷新 UI（切换/新建会话时调用）
@@ -3313,7 +3307,18 @@ document.addEventListener('DOMContentLoaded', () => {
   // 权限按钮点击 → 切换模式（切到 full 时弹确认窗）
   if (btnPerm) {
     btnPerm.addEventListener('click', async () => {
-      if (!state.currentSessionId) { showToast('请先选择或创建一个会话', 'warning'); return; }
+      // 没有会话时自动创建，避免强制用户先手动建会话（直接对话也会触发创建）
+      if (!state.currentSessionId) {
+        try {
+          const s = await API.post('/api/sessions', { title: '新对话' });
+          state.currentSessionId = s.id;
+          await loadSessions();
+          await refreshTrustState();
+        } catch (e) {
+          showToast('创建会话失败: ' + (e.message || e), 'error');
+          return;
+        }
+      }
       const currentMode = btnPerm.dataset.mode || 'request';
 
       // 当前是 full → 直接切回 request（安全方向，无需确认）
@@ -3359,29 +3364,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // 权限范围说明气泡
-  const permHelp = $('#perm-help');
-  const permPop = $('#perm-popover');
-  function _togglePermPop(show) {
-    if (!permPop) return;
-    if (show === undefined) permPop.classList.toggle('hidden');
-    else if (show) permPop.classList.remove('hidden');
-    else permPop.classList.add('hidden');
-  }
-  if (permHelp && permPop) {
-    permHelp.addEventListener('click', (e) => { e.stopPropagation(); _togglePermPop(); });
-    permHelp.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _togglePermPop(); } });
-    // 点击其他地方关闭
-    document.addEventListener('click', (e) => {
-      if (!permPop.contains(e.target) && e.target !== permHelp && !permHelp.contains(e.target)) {
-        _togglePermPop(false);
-      }
-    });
-    // 点击权限按钮时收起气泡
-    if (btnPerm) {
-      btnPerm.addEventListener('click', () => _togglePermPop(false));
-    }
-  }
+  // 权限范围说明已统一放入切换确认弹窗（modal-perm-confirm），不再单独维护 ⓘ 气泡
 
   // 保存搜索配置
   // 配置标签页切换
