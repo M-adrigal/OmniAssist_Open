@@ -55,13 +55,15 @@
 }
 
 .dark .btn-web-search,
-.dark .btn-thought {
+.dark .btn-thought,
+.dark .btn-perm {
   background: #2a2a2a;
   color: #cccccc;
 }
 
 .dark .btn-web-search:hover,
-.dark .btn-thought:hover {
+.dark .btn-thought:hover,
+.dark .btn-perm:hover {
   background: #333333;
 }
 
@@ -69,6 +71,11 @@
 .dark .btn-thought.active {
   background: rgba(59, 130, 246, 0.2);
   color: #60a5fa;
+}
+
+.dark .btn-perm.active {
+  background: rgba(245, 158, 11, 0.2);
+  color: #FBBF24;
 }
 
 .dark .btn-web-search.auto {
@@ -96,14 +103,6 @@
   color: #60a5fa;
 }
 
-.dark .perm-switch { background: #2a2a2a; }
-.dark .perm-opt { color: #9CA3AF; }
-.dark .perm-opt:hover { color: #E5E7EB; }
-.dark .perm-switch[data-mode="request"] .perm-opt[data-mode="request"] {
-  background: #3a3a3a;
-  color: #60a5fa;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-}
 .dark .perm-help { color: #6B7280; }
 .dark .perm-help:hover, .dark .perm-help:focus { color: #9CA3AF; }
 .dark .perm-popover {
@@ -651,7 +650,8 @@ body {
 }
 
 .btn-web-search,
-.btn-thought {
+.btn-thought,
+.btn-perm {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -669,12 +669,14 @@ body {
 }
 
 .btn-web-search:hover,
-.btn-thought:hover {
+.btn-thought:hover,
+.btn-perm:hover {
   background: #E5E7EB;
 }
 
 .btn-web-search:active,
-.btn-thought:active {
+.btn-thought:active,
+.btn-perm:active {
   transform: scale(0.96);
 }
 
@@ -689,6 +691,16 @@ body {
   stroke: var(--accent);
 }
 
+/* 权限按钮激活态 = 完全访问（提权，用警告橙区分于普通蓝） */
+.btn-perm.active {
+  background: rgba(245, 158, 11, 0.14);
+  color: #D97706;
+}
+
+.btn-perm.active svg {
+  stroke: #D97706;
+}
+
 .btn-web-search.auto {
   background: rgba(16, 185, 129, 0.10);
   color: #059669;
@@ -698,46 +710,9 @@ body {
   stroke: #059669;
 }
 
-/* 权限模式分段控件（请求批准 / 完全访问） */
-.perm-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 3px;
-  border-radius: 999px;
-  background: #ECECF0;
-  border: none;
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  user-select: none;
-}
-.perm-opt {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 14px;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  color: #6B7280;
-  cursor: pointer;
-  font-size: 14px;
-  font-weight: 500;
-  transition: background-color 0.2s, color 0.2s, box-shadow 0.2s;
-}
-.perm-opt svg { stroke: currentColor; }
-.perm-opt:hover { color: #374151; }
-.perm-opt:active { transform: scale(0.97); }
-/* 选中态（请求批准 = 中性蓝；完全访问 = 提权橙） */
-.perm-switch[data-mode="request"] .perm-opt[data-mode="request"] {
-  background: #FFFFFF;
-  color: var(--accent);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
-}
-.perm-switch[data-mode="full"] .perm-opt[data-mode="full"] {
-  background: #F59E0B;
-  color: #FFFFFF;
-  box-shadow: 0 1px 2px rgba(245, 158, 11, 0.4);
-}
+/* 权限按钮图标切换（请求批准=盾牌 / 完全访问=开锁） */
+.btn-perm[data-mode="request"] .perm-icon-full { display: none; }
+.btn-perm[data-mode="full"] .perm-icon-request { display: none; }
 .perm-help {
   display: inline-flex;
   align-items: center;
@@ -794,6 +769,55 @@ body {
   line-height: 1.5;
 }
 .trust-banner b { color: #d97706; }
+
+/* 权限确认弹窗 */
+.perm-confirm-modal { max-width: 440px; }
+.perm-confirm-icon {
+  text-align: center;
+  font-size: 36px;
+  margin-bottom: 12px;
+}
+.perm-confirm-text {
+  text-align: center;
+  font-size: 16px;
+  font-weight: 600;
+  color: #111827;
+  margin: 0 0 6px;
+}
+.perm-confirm-sub {
+  font-size: 14px;
+  color: #4B5563;
+  margin: 0 0 10px;
+}
+.perm-confirm-list {
+  margin: 0 0 12px;
+  padding-left: 20px;
+  font-size: 13px;
+  color: #374151;
+  line-height: 1.7;
+}
+.perm-confirm-note {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  font-size: 12px;
+  color: #4B5563;
+  line-height: 1.5;
+  margin: 0;
+}
+.btn-danger {
+  background: #EF4444;
+  color: #fff;
+  border: none;
+  padding: 8px 18px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+.btn-danger:hover { background: #DC2626; }
 
 /* 免确认提示卡片（approval_skipped） */
 .approval-skipped {

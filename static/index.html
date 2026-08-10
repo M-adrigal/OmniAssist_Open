@@ -116,17 +116,12 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/><path d="M12 6v.01M12 10v4M12 17v.01"/></svg>
           <span>思考过程</span>
         </button>
-        <div class="perm-switch" id="perm-switch" data-mode="request" title="本会话的 Agent 权限模式">
-          <button class="perm-opt" data-mode="request" type="button">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
-            <span>请求批准</span>
-          </button>
-          <button class="perm-opt" data-mode="full" type="button">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
-            <span>完全访问</span>
-          </button>
-          <span class="perm-help" id="perm-help" tabindex="0" aria-label="权限范围说明">ⓘ</span>
-        </div>
+        <button id="btn-perm" class="btn-perm" data-mode="request" title="点击切换 Agent 权限模式">
+          <svg class="perm-icon perm-icon-request" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
+          <svg class="perm-icon perm-icon-full hidden" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+          <span id="perm-label">请求批准</span>
+        </button>
+        <span class="perm-help" id="perm-help" tabindex="0" aria-label="权限范围说明">ⓘ</span>
         <div id="perm-popover" class="perm-popover hidden">
           <div class="perm-popover-title">「完全访问权限」覆盖范围</div>
           <ul>
@@ -502,6 +497,34 @@
           <button id="btn-picker-confirm" class="btn-primary btn-sm-height">确认添加</button>
         </div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- 模态框: 权限模式确认 -->
+<div id="modal-perm-confirm" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-content perm-confirm-modal">
+    <div class="modal-header">
+      <h3>确认切换权限模式</h3>
+      <button class="btn-icon modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="perm-confirm-icon">⚠️</div>
+      <p class="perm-confirm-text">确定要将本会话切换为<strong>「完全访问权限」</strong>吗？</p>
+      <p class="perm-confirm-sub">切换后，Agent 在以下操作时将<strong>不再弹窗请求你的确认</strong>，直接执行：</p>
+      <ul class="perm-confirm-list">
+        <li>联网搜索与网页抓取</li>
+        <li>调用可操作工具（技能、诊断等）</li>
+        <li>执行沙箱命令（用户自建代码）</li>
+        <li>读取你上传的文件</li>
+        <li>生成/写入输出文件</li>
+      </ul>
+      <p class="perm-confirm-note">⛔ 软件本体、系统密钥与数据库受沙箱保护，任何模式下均不可被 Agent 控制。</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel modal-close" id="perm-confirm-cancel">取消，保持请求批准</button>
+      <button class="btn-primary btn-danger" id="perm-confirm-ok">确认，切换为完全访问</button>
     </div>
   </div>
 </div>

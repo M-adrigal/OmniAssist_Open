@@ -2372,6 +2372,40 @@ function closeAllModals() {
   $$('.modal').forEach(m => m.classList.add('hidden'));
 }
 
+// ===== 会话权限模式（请求批准 / 完全访问权限）=====
+// 定义在顶层作用域：switchSession / sendMessage 等顶层函数需要调用。
+function updateTrustUI(mode) {
+  const btnPerm = $('#btn-perm');
+  if (!btnPerm) return;
+  const m = (mode === 'full') ? 'full' : 'request';
+  btnPerm.dataset.mode = m;
+
+  // active 类复用 btn-web-search / btn-thought 的高亮样式
+  if (m === 'full') btnPerm.classList.add('active');
+  else btnPerm.classList.remove('active');
+
+  const permLabel = $('#perm-label');
+  if (permLabel) permLabel.textContent = (m === 'full') ? '完全访问' : '请求批准';
+
+  const banner = $('#trust-banner');
+  if (banner) {
+    if (m === 'full') banner.classList.remove('hidden');
+    else banner.classList.add('hidden');
+  }
+}
+
+// 拉取当前会话的权限模式并刷新 UI（切换/新建会话时调用）
+async function refreshTrustState() {
+  const sid = state.currentSessionId;
+  if (!sid) { updateTrustUI('request'); return; }
+  try {
+    const data = await API.get(`/api/chat/${sid}/trust`);
+    updateTrustUI(data && data.mode);
+  } catch (e) {
+    updateTrustUI('request');
+  }
+}
+
 // ===== 模型配置 =====
 let _configTab = 'personal';
 
@@ -3271,54 +3305,58 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // 会话权限模式（请求批准 / 完全访问权限）：UI 同步
-  function updateTrustUI(mode) {
-    const sw = $('#perm-switch');
-    const banner = $('#trust-banner');
-    if (!sw) return;
-    const m = (mode === 'full') ? 'full' : 'request';
-    sw.dataset.mode = m;
-    if (banner) {
-      if (m === 'full') banner.classList.remove('hidden');
-      else banner.classList.add('hidden');
-    }
-  }
+  // 会话权限模式（请求批准 / 完全访问权限）：事件绑定
+  // 注意：updateTrustUI / refreshTrustState 定义在顶层作用域，
+  // 因为 switchSession 等顶层函数需要调用它们。
+  const btnPerm = $('#btn-perm');
 
-  // 拉取当前会话的权限模式并刷新 UI（切换/新建会话时调用）
-  async function refreshTrustState() {
-    const sid = state.currentSessionId;
-    if (!sid) { updateTrustUI('request'); return; }
-    try {
-      const data = await API.get(`/api/chat/${sid}/trust`);
-      updateTrustUI(data && data.mode);
-    } catch (e) {
-      updateTrustUI('request');
-    }
-  }
+  // 权限按钮点击 → 切换模式（切到 full 时弹确认窗）
+  if (btnPerm) {
+    btnPerm.addEventListener('click', async () => {
+      if (!state.currentSessionId) { showToast('请先选择或创建一个会话', 'warning'); return; }
+      const currentMode = btnPerm.dataset.mode || 'request';
 
-  // 分段控件：切换权限模式
-  const permSwitch = $('#perm-switch');
-  if (permSwitch) {
-    permSwitch.querySelectorAll('.perm-opt').forEach(opt => {
-      opt.addEventListener('click', async () => {
-        const target = opt.dataset.mode;
-        if (!state.currentSessionId) { showToast('请先选择或创建一个会话', 'warning'); return; }
-        if (permSwitch.dataset.mode === target) return; // 已是该模式
+      // 当前是 full → 直接切回 request（安全方向，无需确认）
+      if (currentMode === 'full') {
         try {
-          const res = await API.post(`/api/chat/${state.currentSessionId}/trust`, { mode: target });
+          const res = await API.post(`/api/chat/${state.currentSessionId}/trust`, { mode: 'request' });
           if (!res || res.success !== true) throw new Error('返回异常');
-          updateTrustUI(target);
-          showToast(
-            target === 'full'
-              ? '已切换为「完全访问权限」：敏感操作将直接执行，不再确认'
-              : '已切换为「请求批准」：敏感操作前将再次需要你确认',
-            'info'
-          );
+          updateTrustUI('request');
+          showToast('已切回「请求批准」：敏感操作前将再次需要你确认', 'info');
         } catch (e) {
           showToast('切换权限模式失败: ' + (e.message || e), 'error');
         }
-      });
+        return;
+      }
+
+      // 当前是 request → 弹确认窗
+      openModal('modal-perm-confirm');
     });
+
+    // 确认弹窗：确认按钮
+    const permConfirmOk = $('#perm-confirm-ok');
+    if (permConfirmOk) {
+      permConfirmOk.addEventListener('click', async () => {
+        closeModal('modal-perm-confirm');
+        btnPerm.disabled = true;
+        try {
+          const res = await API.post(`/api/chat/${state.currentSessionId}/trust`, { mode: 'full' });
+          if (!res || res.success !== true) throw new Error('返回异常');
+          updateTrustUI('full');
+          showToast('已切换为「完全访问权限」：敏感操作将直接执行，不再确认', 'info');
+        } catch (e) {
+          showToast('切换权限模式失败: ' + (e.message || e), 'error');
+        } finally {
+          btnPerm.disabled = false;
+        }
+      });
+    }
+
+    // 确认弹窗：取消按钮
+    const permConfirmCancel = $('#perm-confirm-cancel');
+    if (permConfirmCancel) {
+      permConfirmCancel.addEventListener('click', () => closeModal('modal-perm-confirm'));
+    }
   }
 
   // 权限范围说明气泡
@@ -3339,11 +3377,9 @@ document.addEventListener('DOMContentLoaded', () => {
         _togglePermPop(false);
       }
     });
-    // 点击分段选项时收起气泡
-    if (permSwitch) {
-      permSwitch.querySelectorAll('.perm-opt').forEach(opt => {
-        opt.addEventListener('click', () => _togglePermPop(false));
-      });
+    // 点击权限按钮时收起气泡
+    if (btnPerm) {
+      btnPerm.addEventListener('click', () => _togglePermPop(false));
     }
   }
 
