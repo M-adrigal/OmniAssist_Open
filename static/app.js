@@ -457,6 +457,7 @@ async function switchSession(id) {
     state.currentSessionId = id;
     renderSessions();
     clearAttachedFiles();
+    refreshTrustState();
 
     // 显示目标 session 的容器（保留已有内容，不销毁 DOM）
     showSessionContainer(id);
@@ -1319,6 +1320,22 @@ function updateApprovalCardResolved(stream, parsed) {
   card.querySelectorAll('button').forEach(b => b.disabled = true);
 }
 
+function renderApprovalSkipped(stream, parsed) {
+  const container = stream.container;
+  if (!container) return;
+  const card = document.createElement('div');
+  card.className = 'approval-skipped';
+  let itemsHtml = '';
+  (parsed.items || []).forEach(it => {
+    itemsHtml += `<li><b>${escapeHtml(it.tool)}</b>：${escapeHtml(it.desc || '')}</li>`;
+  });
+  card.innerHTML = `
+    <div class="skipped-head"><span>⏩</span><span>${escapeHtml(parsed.reason || '本会话已信任，敏感操作直接执行')}</span></div>
+    <ul>${itemsHtml}</ul>`;
+  container.appendChild(card);
+  scrollToBottom();
+}
+
 function renderSearchArea(stream) {
   if (!stream.searchData) return;
 
@@ -1460,6 +1477,10 @@ function handleStreamEvent(stream, parsed) {
   }
   if (parsed.type === 'approval_resolved') {
     updateApprovalCardResolved(stream, parsed);
+    return null;
+  }
+  if (parsed.type === 'approval_skipped') {
+    renderApprovalSkipped(stream, parsed);
     return null;
   }
   if (parsed.type === 'tool_summary') {
@@ -1624,6 +1645,7 @@ async function sendMessage() {
       const s = await API.post('/api/sessions', { title: message.substring(0, 30) });
       state.currentSessionId = s.id;
       await loadSessions();
+      refreshTrustState();
     } catch (e) {
       showToast('创建会话失败: ' + e.message, 'error');
       return;
@@ -3246,6 +3268,56 @@ document.addEventListener('DOMContentLoaded', () => {
       showToast('保存思考设置失败: ' + e.message, 'error');
       state.showThought = !state.showThought;
       updateThoughtButton();
+    }
+  });
+
+  // 会话信任模式（敏感操作免确认）：UI 同步
+  function updateTrustUI(enabled) {
+    const btn = $('#btn-trust');
+    const banner = $('#trust-banner');
+    if (!btn) return;
+    if (enabled) {
+      btn.classList.add('active');
+      btn.dataset.mode = 'on';
+      btn.querySelector('span').textContent = '已信任';
+      if (banner) banner.classList.remove('hidden');
+    } else {
+      btn.classList.remove('active');
+      btn.dataset.mode = 'off';
+      btn.querySelector('span').textContent = '信任此会话';
+      if (banner) banner.classList.add('hidden');
+    }
+  }
+
+  // 拉取当前会话的信任状态并刷新 UI（切换/新建会话时调用）
+  async function refreshTrustState() {
+    const sid = state.currentSessionId;
+    if (!sid) { updateTrustUI(false); return; }
+    try {
+      const data = await API.get(`/api/chat/${sid}/trust`);
+      updateTrustUI(!!(data && data.enabled));
+    } catch (e) {
+      updateTrustUI(false);
+    }
+  }
+
+  $('#btn-trust').addEventListener('click', async () => {
+    const btn = $('#btn-trust');
+    if (!state.currentSessionId) { showToast('请先选择或创建一个会话', 'warning'); return; }
+    const target = !btn.classList.contains('active');
+    btn.disabled = true;
+    try {
+      const res = await API.post(`/api/chat/${state.currentSessionId}/trust`, { enabled: target });
+      if (!res || res.success !== true) throw new Error('返回异常');
+      updateTrustUI(target);
+      showToast(
+        target ? '已开启信任模式：本会话敏感操作将直接执行' : '已关闭信任模式：敏感操作将重新需要确认',
+        'info'
+      );
+    } catch (e) {
+      showToast('切换信任模式失败: ' + (e.message || e), 'error');
+    } finally {
+      btn.disabled = false;
     }
   });
 

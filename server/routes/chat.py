@@ -23,6 +23,20 @@ MAX_SESSION_TITLE_LENGTH = 200  # 会话标题最大字符数
 
 from server.routes.auth import get_current_user
 from server.approval_store import approval_store
+from server.trust_store import trust_store, audit_log
+
+
+def _is_role_exempt(user_id: int) -> bool:
+    """角色级免确认：持有 tools:execute_sensitive 权限的角色可跳过敏感操作确认。
+
+    通过数据库 permissions 表判断（role = user_type）。默认无此权限。
+    """
+    try:
+        from server.database import get_user_role, check_permission
+        role = get_user_role(user_id)
+        return bool(role) and check_permission(role, "tools", "execute_sensitive")
+    except Exception:
+        return False
 
 # 参数脱敏：密钥类字段不展示明文，超长字符串截断
 _SECRET_KEY_HINTS = ("password", "secret", "key", "token", "api_key", "apikey", "credential")
@@ -703,6 +717,8 @@ async def _stream_llm_async(llm, chat_messages, tools, api_params):
 
 async def _stream_chat(message: str, session_id: str = None, web_search: str = "off", user_id: int = None, show_thought: bool = False):
     set_context(user_id=user_id, session_id=session_id)
+    # 角色级免确认（tools:execute_sensitive），整个对话只判定一次
+    _role_exempt = _is_role_exempt(user_id)
     agent, _, registry, _, skill_registry = get_dependencies()
     store = get_session_store()
 
@@ -1092,37 +1108,61 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                     else:
                         _safe.append({"tc": tc, "name": _tname, "args": _targs})
 
-                # 2) 敏感工具审批门（逐项否决）
+                # 2) 敏感工具审批门（逐项否决；会话信任 / 角色免确认则跳过）
                 _results_by_id = {}
                 if _pending:
-                    _items = [{
-                        "item_id": p["tc"].get("id", ""),
-                        "tool": p["name"],
-                        "args": _mask_tool_args(p["name"], p["args"]),
-                        "risk": registry.get_risk_level(p["name"]),
-                        "desc": registry.describe_tool_risk(p["name"], p["args"]),
-                    } for p in _pending]
-                    _gid = approval_store.create(session_id, user_id, _items)
-                    yield f"data: {json.dumps({'type': 'approval_required', 'group_id': _gid, 'session_id': session_id, 'items': _items}, ensure_ascii=False)}\n\n"
-                    try:
-                        _decisions = await asyncio.wait_for(approval_store.wait(_gid), timeout=600)
-                    except asyncio.TimeoutError:
-                        _decisions = {it["item_id"]: "reject" for it in _items}
-                        logger.warning(f"审批等待超时，自动拒绝 (session={session_id}, group={_gid})")
-                    yield f"data: {json.dumps({'type': 'approval_resolved', 'group_id': _gid, 'decisions': _decisions}, ensure_ascii=False)}\n\n"
-                    approval_store.cleanup(_gid)
-                    for p in _pending:
-                        _iid = p["tc"].get("id", "")
-                        if _decisions.get(_iid) == "approve":
-                            _results_by_id[_iid] = None  # 待执行
+                    _trusted = trust_store.is_trusted(session_id, user_id)
+                    _skip = _trusted or _role_exempt
+                    if _skip:
+                        # 免确认：直接执行，前端展示「已免确认」提示而非确认卡片
+                        _reason = (
+                            "会话已信任，敏感操作将直接执行"
+                            if _trusted
+                            else "账号已授权免确认 (tools:execute_sensitive)，敏感操作将直接执行"
+                        )
+                        _items = [{
+                            "item_id": p["tc"].get("id", ""),
+                            "tool": p["name"],
+                            "args": _mask_tool_args(p["name"], p["args"]),
+                            "risk": registry.get_risk_level(p["name"]),
+                            "desc": registry.describe_tool_risk(p["name"], p["args"]),
+                        } for p in _pending]
+                        audit_log("APPROVAL_SKIP", session=session_id, user=user_id,
+                                   reason=_reason, tools=[i["tool"] for i in _items])
+                        logger.info(f"敏感操作免确认直接执行 (session={session_id}, reason={_reason})")
+                        yield f"data: {json.dumps({'type': 'approval_skipped', 'session_id': session_id, 'reason': _reason, 'items': _items}, ensure_ascii=False)}\n\n"
+                        for p in _pending:
+                            _results_by_id[p["tc"].get("id", "")] = None  # 待执行
                             yield f"data: {json.dumps({'type': 'tool_call', 'name': p['name'], 'arguments': p['args']}, ensure_ascii=False)}\n\n"
-                        else:
-                            _results_by_id[_iid] = {
-                                "name": p["name"], "arguments": p["args"],
-                                "result": "Error: 用户已拒绝执行该敏感操作", "error": True,
-                                "tool_call_id": _iid,
-                            }
-                            yield f"data: {json.dumps({'type': 'tool_call', 'name': p['name'], 'arguments': p['args']}, ensure_ascii=False)}\n\n"
+                    else:
+                        _items = [{
+                            "item_id": p["tc"].get("id", ""),
+                            "tool": p["name"],
+                            "args": _mask_tool_args(p["name"], p["args"]),
+                            "risk": registry.get_risk_level(p["name"]),
+                            "desc": registry.describe_tool_risk(p["name"], p["args"]),
+                        } for p in _pending]
+                        _gid = approval_store.create(session_id, user_id, _items)
+                        yield f"data: {json.dumps({'type': 'approval_required', 'group_id': _gid, 'session_id': session_id, 'items': _items}, ensure_ascii=False)}\n\n"
+                        try:
+                            _decisions = await asyncio.wait_for(approval_store.wait(_gid), timeout=600)
+                        except asyncio.TimeoutError:
+                            _decisions = {it["item_id"]: "reject" for it in _items}
+                            logger.warning(f"审批等待超时，自动拒绝 (session={session_id}, group={_gid})")
+                        yield f"data: {json.dumps({'type': 'approval_resolved', 'group_id': _gid, 'decisions': _decisions}, ensure_ascii=False)}\n\n"
+                        approval_store.cleanup(_gid)
+                        for p in _pending:
+                            _iid = p["tc"].get("id", "")
+                            if _decisions.get(_iid) == "approve":
+                                _results_by_id[_iid] = None  # 待执行
+                                yield f"data: {json.dumps({'type': 'tool_call', 'name': p['name'], 'arguments': p['args']}, ensure_ascii=False)}\n\n"
+                            else:
+                                _results_by_id[_iid] = {
+                                    "name": p["name"], "arguments": p["args"],
+                                    "result": "Error: 用户已拒绝执行该敏感操作", "error": True,
+                                    "tool_call_id": _iid,
+                                }
+                                yield f"data: {json.dumps({'type': 'tool_call', 'name': p['name'], 'arguments': p['args']}, ensure_ascii=False)}\n\n"
 
                 # 3) 无需审批的工具：标记执行并发送 tool_call
                 for p in _safe:

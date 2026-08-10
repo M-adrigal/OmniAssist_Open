@@ -11,6 +11,7 @@ from server.database import (
     delete_session as db_delete_session,
     search_sessions as db_search_sessions,
 )
+from server.trust_store import trust_store
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
@@ -82,6 +83,11 @@ def rename_session(session_id: str, body: SessionRename):
 def delete_session(session_id: str):
     if not db_delete_session(session_id):
         raise HTTPException(status_code=404, detail="会话不存在")
+    # 清理会话的信任模式状态
+    try:
+        trust_store.clear(session_id)
+    except Exception:
+        pass
     # 清理任务注册表中对应的运行中任务
     try:
         from server.routes.chat import remove_running_task

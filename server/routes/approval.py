@@ -16,7 +16,9 @@ from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
 
 from server.approval_store import approval_store
+from server.trust_store import trust_store, audit_log
 from server.routes.auth import get_current_user
+from server.database import get_session
 
 router = APIRouter(prefix="/api/chat", tags=["approval"])
 log = logging.getLogger("approval")
@@ -74,3 +76,42 @@ async def approve(session_id: str, body: ApproveBody, request: Request):
     _audit(session_id, body.group_id, user["id"], decisions)
     log.info(f"审批已提交 session={session_id} group={body.group_id} user={user['id']} decisions={decisions}")
     return {"success": True}
+
+
+class TrustBody(BaseModel):
+    enabled: bool
+
+
+def _check_session_owner(session_id: str, user: dict) -> dict:
+    """校验当前用户对该会话的归属；返回会话记录，否则抛 HTTP 异常。"""
+    s = get_session(session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if s.get("user_id") != user["id"] and user.get("user_type") != "admin":
+        raise HTTPException(status_code=403, detail="无权操作该会话")
+    return s
+
+
+@router.get("/{session_id}/trust")
+def get_trust(session_id: str, request: Request):
+    """查询该会话的信任模式状态。"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
+    _check_session_owner(session_id, user)
+    return trust_store.get(session_id, user["id"])
+
+
+@router.post("/{session_id}/trust")
+def set_trust(session_id: str, body: TrustBody, request: Request):
+    """开启/关闭该会话的信任模式（敏感操作免确认）。"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录")
+    _check_session_owner(session_id, user)
+    ok = trust_store.set(session_id, user["id"], body.enabled)
+    if not ok:
+        raise HTTPException(status_code=409, detail="信任状态更新冲突，请刷新后重试")
+    audit_log("TRUST", session=session_id, user=user["id"], enabled=body.enabled)
+    log.info(f"会话信任模式变更 session={session_id} user={user['id']} enabled={body.enabled}")
+    return {"success": True, "enabled": body.enabled}

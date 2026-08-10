@@ -116,6 +116,13 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/><path d="M12 6v.01M12 10v4M12 17v.01"/></svg>
           <span>思考过程</span>
         </button>
+        <button id="btn-trust" class="btn-trust" data-mode="off" title="开启后，本会话的敏感操作（如删除/修改技能）将不再弹确认框，直接执行">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/></svg>
+          <span>信任此会话</span>
+        </button>
+      </div>
+      <div id="trust-banner" class="trust-banner hidden">
+        ⚠ 当前会话已信任：敏感操作（删除/修改技能等）将<b>直接执行、不再确认</b>。请谨慎操作。
       </div>
     </div>
   </main>

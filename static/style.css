@@ -670,6 +670,61 @@ body {
   stroke: #059669;
 }
 
+/* 信任会话开关 */
+.btn-trust {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: #F2F2F5;
+  border: none;
+  color: #374151;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  transition: background-color 0.2s, transform 0.1s;
+  user-select: none;
+}
+.btn-trust:hover { background: #E5E7EB; }
+.btn-trust:active { transform: scale(0.96); }
+.btn-trust.active {
+  background: rgba(229, 72, 77, 0.14);
+  color: #e5484d;
+}
+.btn-trust.active svg { stroke: #e5484d; }
+
+/* 信任模式横幅 */
+.trust-banner {
+  margin: 0 0 8px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: rgba(229, 72, 77, 0.10);
+  border: 1px solid rgba(229, 72, 77, 0.35);
+  color: #c0392b;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.trust-banner b { color: #e5484d; }
+
+/* 免确认提示卡片（approval_skipped） */
+.approval-skipped {
+  margin: 10px 0;
+  border: 1px dashed var(--border, #ddd);
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: var(--bg-hover, #fafafa);
+  font-size: 13px;
+  color: var(--text-dim, #666);
+}
+.approval-skipped .skipped-head {
+  display: flex; align-items: center; gap: 8px;
+  font-weight: 600; color: #c0392b; margin-bottom: 6px;
+}
+.approval-skipped ul { margin: 6px 0 0; padding-left: 18px; }
+.approval-skipped li { margin: 2px 0; }
+
 /* 命令建议 */
 .command-suggestions {
   position: absolute;
