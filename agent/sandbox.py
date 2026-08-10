@@ -53,6 +53,10 @@ class ToolSandbox:
         self._ensure_venv()
         self._load_installed_deps()
 
+        # 可选：彻底禁止网络外联（默认关闭，以免破坏 web-fetch / gold-price 等系统技能）
+        if os.environ.get("SANDBOX_DISABLE_NETWORK"):
+            self._BLOCKED_MODULES = set(self._BLOCKED_MODULES) | self._NETWORK_BLOCK
+
     def get_shared_site_packages(self) -> str:
         """返回共享基础环境的 site-packages 路径（用户沙箱专用），无则返回空串"""
         if self._shared_site_packages is not None:
@@ -404,7 +408,7 @@ class ToolSandbox:
         logger.info(f"执行工具: {tool_name or '未知'} | user={user_id} | code={code_preview}")
         if user_id is not None:
             code = self._rewrite_user_paths(code, user_id, tool_name)
-        wrapper = self._build_wrapper(code, params)
+        wrapper = self._build_wrapper(code, params, user_id=user_id)
         base_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(base_dir)
 
@@ -487,6 +491,30 @@ class ToolSandbox:
         "multiprocessing", "asyncio", "select", "selectors",
         "smtplib", "imaplib", "poplib", "ftplib", "telnetlib",
         "shelve", "marshal",
+        # importlib 必须禁用：否则 attacker 可用 importlib.util 重新加载 os 模块，
+        # 恢复被删除的危险函数（os.system / os.popen 等），绕过沙箱。
+        "importlib",
+    }
+
+    # 密钥 / 敏感文件名（任何位置命中即禁止读取）
+    _SECRET_NAMES = {
+        ".tool_secrets", ".tool_secrets.bak", ".agent_config", ".agent_config.bak",
+        ".agent_salt", ".db_web_password", ".db_web_password.bak", ".db_web_password.old",
+        ".env", ".env.local", ".env.example", "id_rsa", "id_rsa.pub",
+        "id_ed25519", "id_ed25519.pub", ".pypirc", ".npmrc",
+        ".git-credentials", ".netrc",
+    }
+    # 仅这些命令名可经 run_command 运行（命令白名单，防 rm -rf / 等）
+    _ALLOWED_COMMANDS = {
+        "python3", "python", "node", "ls", "cat", "echo", "date", "pwd",
+        "wc", "sort", "head", "tail", "grep", "awk", "sed", "jq", "cut",
+        "tr", "uniq", "nl", "od", "base64", "xxd", "file", "stat", "printf",
+        "true", "false", "test", "expr", "tee", "diff", "comm",
+    }
+    # 可选网络外联熔断（默认不开启，避免破坏 web-fetch / gold-price 等系统技能）
+    _NETWORK_BLOCK = {
+        "socket", "ssl", "urllib", "http", "ftplib", "smtplib",
+        "telnetlib", "poplib", "imaplib", "webbrowser",
     }
 
     @staticmethod
@@ -550,14 +578,39 @@ class ToolSandbox:
             lines.append(''.join(current))
         return lines
 
-    def _build_wrapper(self, code: str, params: dict) -> str:
+    def _build_wrapper(self, code: str, params: dict, user_id: int = None) -> str:
         safe_imports = ", ".join(sorted(self._SAFE_MODULES))
         blocked_list = json.dumps(sorted(self._BLOCKED_MODULES))
         params_json = json.dumps(params, ensure_ascii=False)
         tmpdir = os.path.realpath(tempfile.gettempdir())
 
+        # 计算用户专属安全路径（用于在子进程中做文件读写边界控制）
+        base_dir = os.path.dirname(os.path.abspath(__file__))   # agent/
+        project_root = os.path.dirname(base_dir)                # 仓库根
+        doc_root = os.path.join(project_root, "document_output")
+        user_doc = os.path.realpath(os.path.join(doc_root, str(user_id or 0)))
+        user_skill_dir = os.path.realpath(
+            os.path.join(project_root, "agent", "skills", "user", str(user_id or 0))
+        )
+        data_dir = os.path.realpath(os.path.join(project_root, "data"))
+        workbuddy_dir = os.path.realpath(os.path.join(project_root, ".workbuddy"))
+        user_workbuddy = os.path.realpath(os.path.expanduser("~/.workbuddy"))
+
+        write_allowed = sorted({user_doc, tmpdir, user_skill_dir, os.path.realpath("/tmp")})
+        read_secret_dirs = sorted({data_dir, workbuddy_dir, user_workbuddy})
+        # 运维可通过环境变量追加写白名单目录
+        extra_dirs = os.environ.get("SANDBOX_WRITE_DIRS", "")
+        for _d in extra_dirs.split(","):
+            _d = _d.strip()
+            if _d:
+                _rp = os.path.realpath(_d)
+                if _rp not in write_allowed:
+                    write_allowed.append(_rp)
+        allowed_cmds = json.dumps(sorted(self._ALLOWED_COMMANDS))
+
         wrapper = (
             f"import {safe_imports}\n"
+            "import subprocess as _sb_subprocess\n"
             "import os as _os\n"
             f"_params = json.loads({json.dumps(params_json)})\n"
         )
@@ -577,26 +630,116 @@ class ToolSandbox:
             "    root = name.split('.')[0]\n"
             "    if root in _BLOCKED:\n"
             "        raise ImportError(f'模块 {name} 已被沙箱禁用')\n"
-            "    return _orig_import(name, *args, **kwargs)\n"
+            "    _mod = _orig_import(name, *args, **kwargs)\n"
+            "    if root == 'os':\n"
+            "        for _f in _DANGEROUS_OS:\n"
+            "            if hasattr(_mod, _f):\n"
+            "                delattr(_mod, _f)\n"
+            "    return _mod\n"
             "builtins.__import__ = _safe_import\n"
             "_orig_unlink = _os.unlink\n"
             "_orig_remove = _os.remove\n"
-            "_DANGEROUS_OS = ['system', 'popen', 'execv', 'execve', 'spawnl', 'spawnle', 'spawnlp', 'spawnlpe', 'spawnv', 'spawnve', 'spawnvp', 'spawnvpe', 'remove', 'rmdir', 'removedirs', 'renames', 'chmod', 'chown', 'link', 'symlink', 'kill', 'killpg', 'setuid', 'setgid', 'fork', 'forkpty', 'unlink']\n"
+            "_orig_makedirs = _os.makedirs\n"
+            "_orig_mkdir = _os.mkdir\n"
+            "_orig_rename = _os.rename\n"
+            "_orig_replace = _os.replace\n"
+            "_orig_symlink = _os.symlink\n"
+            "_orig_link = _os.link\n"
+            "_DANGEROUS_OS = ['system', 'popen', 'execv', 'execve', 'spawnl', 'spawnle', 'spawnlp', 'spawnlpe', 'spawnv', 'spawnve', 'spawnvp', 'spawnvpe', 'remove', 'rmdir', 'removedirs', 'renames', 'chmod', 'chown', 'kill', 'killpg', 'setuid', 'setgid', 'fork', 'forkpty', 'unlink', 'open']\n"
             "for _func in _DANGEROUS_OS:\n"
             "    if hasattr(_os, _func):\n"
             "        delattr(_os, _func)\n"
-            f"_SAFE_UNLINK_DIRS = [\n"
-            f"    _os.path.realpath(_os.path.join(_os.getcwd(), 'document_output')),\n"
-            f"    _os.path.realpath({json.dumps(tmpdir)}),\n"
-            "]\n"
+            # ---- 文件 / 目录安全边界 ----
+            f"_WRITE_ALLOWED_DIRS = {json.dumps(write_allowed)}\n"
+            f"_READ_SECRET_DIRS = {json.dumps(read_secret_dirs)}\n"
+            f"_SECRET_NAMES = {json.dumps(sorted(self._SECRET_NAMES))}\n"
+            "def _in_dirs(rp, dirs):\n"
+            "    for _d in dirs:\n"
+            "        if rp == _d or rp.startswith(_d + _os.sep):\n"
+            "            return True\n"
+            "    return False\n"
+            "def _is_secret(rp):\n"
+            "    if _os.path.basename(rp) in _SECRET_NAMES:\n"
+            "        return True\n"
+            "    return _in_dirs(rp, _READ_SECRET_DIRS)\n"
+            # 删除控制（仅白名单目录）
             "def _safe_unlink(path):\n"
             "    real = _os.path.realpath(path)\n"
-            "    for _allowed in _SAFE_UNLINK_DIRS:\n"
-            "        if real == _allowed or real.startswith(_allowed + _os.sep):\n"
-            "            return _orig_unlink(path)\n"
+            "    if _in_dirs(real, _WRITE_ALLOWED_DIRS):\n"
+            "        return _orig_unlink(path)\n"
             "    raise PermissionError(f'[沙箱] 禁止删除此路径的文件: {path}')\n"
             "_os.unlink = _safe_unlink\n"
             "_os.remove = _safe_unlink\n"
+            # 创建目录控制（仅白名单目录）
+            "def _safe_makedirs(path, mode=0o777, exist_ok=False):\n"
+            "    if _in_dirs(_os.path.realpath(path), _WRITE_ALLOWED_DIRS):\n"
+            "        return _orig_makedirs(path, mode, exist_ok)\n"
+            "    raise PermissionError(f'[沙箱] 禁止在禁区创建目录: {path}')\n"
+            "_os.makedirs = _safe_makedirs\n"
+            "def _safe_mkdir(path, mode=0o777):\n"
+            "    if _in_dirs(_os.path.realpath(path), _WRITE_ALLOWED_DIRS):\n"
+            "        return _orig_mkdir(path, mode)\n"
+            "    raise PermissionError(f'[沙箱] 禁止在禁区创建目录: {path}')\n"
+            "_os.mkdir = _safe_mkdir\n"
+            # 移动 / 重命名 / 链接控制
+            "def _safe_rename(src, dst):\n"
+            "    if _is_secret(_os.path.realpath(src)):\n"
+            "        raise PermissionError('[沙箱] 禁止移动密钥文件')\n"
+            "    if not _in_dirs(_os.path.realpath(dst), _WRITE_ALLOWED_DIRS):\n"
+            "        raise PermissionError(f'[沙箱] 禁止移动到禁区: {dst}')\n"
+            "    return _orig_rename(src, dst)\n"
+            "_os.rename = _safe_rename\n"
+            "_os.replace = _safe_rename\n"
+            "def _safe_symlink(target, link):\n"
+            "    if _is_secret(_os.path.realpath(target)):\n"
+            "        raise PermissionError('[沙箱] 禁止链接到密钥文件')\n"
+            "    if not _in_dirs(_os.path.realpath(link), _WRITE_ALLOWED_DIRS):\n"
+            "        raise PermissionError(f'[沙箱] 禁止在禁区创建链接: {link}')\n"
+            "    return _orig_symlink(target, link)\n"
+            "_os.symlink = _safe_symlink\n"
+            "def _safe_link(src, link):\n"
+            "    if _is_secret(_os.path.realpath(src)):\n"
+            "        raise PermissionError('[沙箱] 禁止硬链接密钥文件')\n"
+            "    if not _in_dirs(_os.path.realpath(link), _WRITE_ALLOWED_DIRS):\n"
+            "        raise PermissionError(f'[沙箱] 禁止在禁区创建链接: {link}')\n"
+            "    return _orig_link(src, link)\n"
+            "_os.link = _safe_link\n"
+            # 文件读写控制：读禁密钥区，写限白名单
+            "_orig_open = open\n"
+            "import io as _io\n"
+            "def _safe_open(path, mode='r', *args, **kwargs):\n"
+            "    _rp = _os.path.realpath(str(path))\n"
+            "    _mode = mode if isinstance(mode, str) else 'r'\n"
+            "    _read = ('r' in _mode) or ('+' in _mode)\n"
+            "    _write = ('w' in _mode) or ('a' in _mode) or ('x' in _mode) or ('+' in _mode)\n"
+            "    if _read and _is_secret(_rp):\n"
+            "        raise PermissionError(f'[沙箱] 禁止读取密钥文件: {path}')\n"
+            "    if _write and not _in_dirs(_rp, _WRITE_ALLOWED_DIRS):\n"
+            "        raise PermissionError(f'[沙箱] 禁止写入禁区: {path}')\n"
+            "    return _orig_open(path, mode, *args, **kwargs)\n"
+            "builtins.open = _safe_open\n"
+            "_io.open = _safe_open\n"
+            # 受控命令执行（命令白名单，默认禁用 rm/sudo/dd 等危险命令）
+            f"_ALLOWED_CMDS = set({allowed_cmds})\n"
+            f"_DEFAULT_CWD = {json.dumps(tmpdir)}\n"
+            "def run_command(cmd, cwd=None, timeout=30):\n"
+            "    import shlex as _shlex\n"
+            "    _parts = _shlex.split(cmd) if isinstance(cmd, str) else list(cmd)\n"
+            "    if not _parts:\n"
+            "        raise ValueError('空命令')\n"
+            "    if _parts[0] not in _ALLOWED_CMDS:\n"
+            "        raise PermissionError(f'[沙箱] 命令不在白名单: {_parts[0]}')\n"
+            "    if cwd is None:\n"
+            "        cwd = _DEFAULT_CWD\n"
+            "    _rcwd = _os.path.realpath(str(cwd))\n"
+            "    if not _in_dirs(_rcwd, _WRITE_ALLOWED_DIRS):\n"
+            "        raise PermissionError(f'[沙箱] 命令工作目录不在白名单: {cwd}')\n"
+            "    try:\n"
+            "        _r = _sb_subprocess.run(_parts, cwd=_rcwd, capture_output=True, text=True, timeout=timeout)\n"
+            "    except Exception as _e:\n"
+            "        return f'[命令执行失败] {type(_e).__name__}: {_e}'\n"
+            "    return ((_r.stdout or '') + (_r.stderr or ''))[:8000]\n"
+            # 绑定 os 别名供工具代码使用（已阉割 + 受控）
             "os = _os\n"
             # 注意：eval/exec/compile 是 Python 标准库和 import 系统的内部依赖，不可移除
             # 沙箱安全由其他 9 层防护保证（进程隔离、模块阻断、OS函数禁用、文件删除控制、内存限制、超时等）

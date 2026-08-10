@@ -106,6 +106,32 @@ signal.signal(signal.SIGINT, _signal_handler)
 atexit.register(_cleanup)
 
 
+def _classify_skill_risk(script) -> tuple:
+    """根据技能执行模式与来源判定工具的审批风险。
+
+    设计要点（纵深防御）：
+    - 系统内置技能（is_system=True）视为可信，在已加固的沙箱中执行，免审批；
+      local_execution 系统技能标为 read 级（展示用），不会触发确认弹窗。
+    - 用户自建技能（is_system=False）不可信，local_execution 标为 exec、
+      http_request 标为 write，且 require_approval=True —— 必须经过聊天框确认，
+      防止 LLM 自动执行用户自定义的危险代码。
+
+    Returns:
+        (risk_level, require_approval, risk_description)
+    """
+    mode = getattr(script, "execution_mode", "local_execution")
+    is_sys = getattr(script, "is_system", True)
+    if mode == "local_execution":
+        if is_sys:
+            return ("read", False, "系统技能：在沙箱中执行自定义代码（已隔离）")
+        return ("exec", True, "执行你自定义的 Python 代码（沙箱隔离，执行前需你确认）")
+    if mode == "http_request":
+        if is_sys:
+            return ("read", False, "系统技能：向外部接口发起请求")
+        return ("write", True, "向外部地址发起自定义请求（执行前需你确认）")
+    return ("safe", False, "")
+
+
 def init_services():
     global _config, _llm_client, _tool_registry, _agent, _sandbox_pool, _skill_registry, _agent_pool
 
@@ -170,6 +196,7 @@ def init_services():
     # 从技能注册中心加载所有脚本，注册为工具
     skill_scripts = _skill_registry.get_all_scripts()
     for script in skill_scripts:
+        _risk_level, _require_approval, _risk_desc = _classify_skill_risk(script)
         _tool_registry.register_tool(
             name=script.name,
             description=script.description,
@@ -178,7 +205,10 @@ def init_services():
                 script.name, script.description, script.execution_mode,
                 script.source, script.http_config, _llm_client,
                 script.dependencies, script.response_formatter, sandbox_pool=_sandbox_pool
-            )
+            ),
+            risk_level=_risk_level,
+            require_approval=_require_approval,
+            risk_description=_risk_desc,
         )
     logger.info(f"从技能中注册了 {len(skill_scripts)} 个工具脚本")
 

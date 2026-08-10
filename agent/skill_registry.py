@@ -31,7 +31,7 @@ class ScriptDef:
 
     def __init__(self, name, description, source, parameters,
                  execution_mode="local_execution", dependencies=None,
-                 http_config=None, response_formatter=None, path=""):
+                 http_config=None, response_formatter=None, path="", is_system=True):
         self.name = name
         self.description = description
         self.source = source
@@ -41,9 +41,10 @@ class ScriptDef:
         self.http_config = http_config or {}
         self.response_formatter = response_formatter
         self.path = path
+        self.is_system = is_system
 
     @classmethod
-    def from_file(cls, script_path: str) -> "ScriptDef":
+    def from_file(cls, script_path: str, is_system: bool = True) -> "ScriptDef":
         """从 .py 文件自动解析脚本定义
 
         Args:
@@ -113,7 +114,8 @@ class ScriptDef:
             dependencies=all_deps,
             http_config=http_config,
             response_formatter=response_formatter,
-            path=script_path
+            path=script_path,
+            is_system=is_system,
         )
 
     @classmethod
@@ -128,7 +130,8 @@ class ScriptDef:
             dependencies=data.get("dependencies", []),
             http_config=data.get("http_config", {}),
             response_formatter=data.get("response_formatter"),
-            path=""
+            path="",
+            is_system=data.get("is_system", False),
         )
 
     @staticmethod
