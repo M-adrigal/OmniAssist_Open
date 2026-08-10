@@ -1116,7 +1116,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                     if _skip:
                         # 免确认：直接执行，前端展示「已免确认」提示而非确认卡片
                         _reason = (
-                            "会话已信任，敏感操作将直接执行"
+                            "本会话为「完全访问权限」，敏感操作将直接执行"
                             if _trusted
                             else "账号已授权免确认 (tools:execute_sensitive)，敏感操作将直接执行"
                         )

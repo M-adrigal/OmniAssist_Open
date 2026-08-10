@@ -96,6 +96,34 @@
   color: #60a5fa;
 }
 
+.dark .perm-switch { background: #2a2a2a; }
+.dark .perm-opt { color: #9CA3AF; }
+.dark .perm-opt:hover { color: #E5E7EB; }
+.dark .perm-switch[data-mode="request"] .perm-opt[data-mode="request"] {
+  background: #3a3a3a;
+  color: #60a5fa;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+.dark .perm-help { color: #6B7280; }
+.dark .perm-help:hover, .dark .perm-help:focus { color: #9CA3AF; }
+.dark .perm-popover {
+  background: #1e1e1e;
+  border-color: #333333;
+  color: #cccccc;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.dark .perm-popover-title { color: #f0f0f0; }
+.dark .perm-popover-note {
+  border-top-color: #333333;
+  color: #fbbf24;
+}
+.dark .trust-banner {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.5);
+  color: #fbbf24;
+}
+.dark .trust-banner b { color: #fcd34d; }
+
 .dark .file-chip {
   background: rgba(59, 130, 246, 0.1);
   border-color: rgba(59, 130, 246, 0.2);
@@ -670,43 +698,102 @@ body {
   stroke: #059669;
 }
 
-/* 信任会话开关 */
-.btn-trust {
+/* 权限模式分段控件（请求批准 / 完全访问） */
+.perm-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: #ECECF0;
+  border: none;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  user-select: none;
+}
+.perm-opt {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 16px;
-  border-radius: 999px;
-  background: #F2F2F5;
+  padding: 6px 14px;
   border: none;
-  color: #374151;
+  border-radius: 999px;
+  background: transparent;
+  color: #6B7280;
   cursor: pointer;
   font-size: 14px;
   font-weight: 500;
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  transition: background-color 0.2s, transform 0.1s;
-  user-select: none;
+  transition: background-color 0.2s, color 0.2s, box-shadow 0.2s;
 }
-.btn-trust:hover { background: #E5E7EB; }
-.btn-trust:active { transform: scale(0.96); }
-.btn-trust.active {
-  background: rgba(229, 72, 77, 0.14);
-  color: #e5484d;
+.perm-opt svg { stroke: currentColor; }
+.perm-opt:hover { color: #374151; }
+.perm-opt:active { transform: scale(0.97); }
+/* 选中态（请求批准 = 中性蓝；完全访问 = 提权橙） */
+.perm-switch[data-mode="request"] .perm-opt[data-mode="request"] {
+  background: #FFFFFF;
+  color: var(--accent);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
-.btn-trust.active svg { stroke: #e5484d; }
+.perm-switch[data-mode="full"] .perm-opt[data-mode="full"] {
+  background: #F59E0B;
+  color: #FFFFFF;
+  box-shadow: 0 1px 2px rgba(245, 158, 11, 0.4);
+}
+.perm-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: 2px;
+  border-radius: 50%;
+  color: #9CA3AF;
+  cursor: help;
+  font-size: 13px;
+  font-style: italic;
+  font-weight: 700;
+}
+.perm-help:hover, .perm-help:focus { color: #6B7280; outline: none; }
+
+/* 权限范围气泡 */
+.perm-popover {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 10px;
+  width: 320px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: #FFFFFF;
+  border: 1px solid var(--border, #E5E7EB);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  z-index: 50;
+  font-size: 13px;
+  color: #374151;
+  line-height: 1.6;
+}
+.perm-popover.hidden { display: none; }
+.perm-popover-title { font-weight: 600; margin-bottom: 8px; color: #111827; }
+.perm-popover ul { margin: 0 0 8px; padding-left: 18px; }
+.perm-popover li { margin: 2px 0; }
+.perm-popover-note {
+  padding-top: 8px;
+  border-top: 1px dashed var(--border, #E5E7EB);
+  color: #b45309;
+  font-size: 12px;
+}
 
 /* 信任模式横幅 */
 .trust-banner {
   margin: 0 0 8px;
   padding: 8px 14px;
   border-radius: 8px;
-  background: rgba(229, 72, 77, 0.10);
-  border: 1px solid rgba(229, 72, 77, 0.35);
-  color: #c0392b;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: #b45309;
   font-size: 13px;
   line-height: 1.5;
 }
-.trust-banner b { color: #e5484d; }
+.trust-banner b { color: #d97706; }
 
 /* 免确认提示卡片（approval_skipped） */
 .approval-skipped {

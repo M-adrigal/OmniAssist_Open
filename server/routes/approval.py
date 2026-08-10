@@ -79,7 +79,8 @@ async def approve(session_id: str, body: ApproveBody, request: Request):
 
 
 class TrustBody(BaseModel):
-    enabled: bool
+    enabled: bool = None          # 兼容旧调用：True=full, False=request
+    mode: str = None              # 显式模式：request / full
 
 
 def _check_session_owner(session_id: str, user: dict) -> dict:
@@ -94,7 +95,7 @@ def _check_session_owner(session_id: str, user: dict) -> dict:
 
 @router.get("/{session_id}/trust")
 def get_trust(session_id: str, request: Request):
-    """查询该会话的信任模式状态。"""
+    """查询该会话的权限模式（request / full）。"""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
@@ -104,14 +105,18 @@ def get_trust(session_id: str, request: Request):
 
 @router.post("/{session_id}/trust")
 def set_trust(session_id: str, body: TrustBody, request: Request):
-    """开启/关闭该会话的信任模式（敏感操作免确认）。"""
+    """切换会话权限模式：request（请求批准） / full（完全访问权限）。"""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
     _check_session_owner(session_id, user)
-    ok = trust_store.set(session_id, user["id"], body.enabled)
+    # 校验模式取值（若显式给出）
+    if body.mode is not None and body.mode not in ("request", "full"):
+        raise HTTPException(status_code=400, detail="mode 仅支持 request / full")
+    ok = trust_store.set(session_id, user["id"], enabled=body.enabled, mode=body.mode)
     if not ok:
         raise HTTPException(status_code=409, detail="信任状态更新冲突，请刷新后重试")
-    audit_log("TRUST", session=session_id, user=user["id"], enabled=body.enabled)
-    log.info(f"会话信任模式变更 session={session_id} user={user['id']} enabled={body.enabled}")
-    return {"success": True, "enabled": body.enabled}
+    state = trust_store.get(session_id, user["id"])
+    audit_log("TRUST", session=session_id, user=user["id"], mode=state["mode"])
+    log.info(f"会话权限模式变更 session={session_id} user={user['id']} mode={state['mode']}")
+    return {"success": True, "enabled": state["enabled"], "mode": state["mode"]}

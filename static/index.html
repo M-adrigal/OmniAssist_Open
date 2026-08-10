@@ -116,13 +116,31 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/><path d="M12 6v.01M12 10v4M12 17v.01"/></svg>
           <span>思考过程</span>
         </button>
-        <button id="btn-trust" class="btn-trust" data-mode="off" title="开启后，本会话的敏感操作（如删除/修改技能）将不再弹确认框，直接执行">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/></svg>
-          <span>信任此会话</span>
-        </button>
+        <div class="perm-switch" id="perm-switch" data-mode="request" title="本会话的 Agent 权限模式">
+          <button class="perm-opt" data-mode="request" type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
+            <span>请求批准</span>
+          </button>
+          <button class="perm-opt" data-mode="full" type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+            <span>完全访问</span>
+          </button>
+          <span class="perm-help" id="perm-help" tabindex="0" aria-label="权限范围说明">ⓘ</span>
+        </div>
+        <div id="perm-popover" class="perm-popover hidden">
+          <div class="perm-popover-title">「完全访问权限」覆盖范围</div>
+          <ul>
+            <li><b>联网</b>：Web 搜索 / 网页抓取</li>
+            <li><b>可操作工具</b>：技能调用、诊断操作</li>
+            <li><b>沙箱命令</b>：在隔离沙箱中执行代码</li>
+            <li><b>用户上传</b>：读取你上传的文件</li>
+            <li><b>生成文件</b>：写入文档输出目录</li>
+          </ul>
+          <div class="perm-popover-note">⛔ 软件本体（agent/、server/ 源码）与系统配置（密钥、数据库）受沙箱保护，任何模式下均不可被 Agent 控制。</div>
+        </div>
       </div>
       <div id="trust-banner" class="trust-banner hidden">
-        ⚠ 当前会话已信任：敏感操作（删除/修改技能等）将<b>直接执行、不再确认</b>。请谨慎操作。
+        ⚠ 当前会话为<b>「完全访问权限」</b>：联网、可操作工具、沙箱命令、用户上传与生成文件将<b>直接执行、不再确认</b>。软件本体及系统配置受沙箱保护，不可被控制。
       </div>
     </div>
   </main>

@@ -1330,7 +1330,7 @@ function renderApprovalSkipped(stream, parsed) {
     itemsHtml += `<li><b>${escapeHtml(it.tool)}</b>：${escapeHtml(it.desc || '')}</li>`;
   });
   card.innerHTML = `
-    <div class="skipped-head"><span>⏩</span><span>${escapeHtml(parsed.reason || '本会话已信任，敏感操作直接执行')}</span></div>
+    <div class="skipped-head"><span>⏩</span><span>${escapeHtml(parsed.reason || '本会话为「完全访问权限」，敏感操作直接执行')}</span></div>
     <ul>${itemsHtml}</ul>`;
   container.appendChild(card);
   scrollToBottom();
@@ -3271,55 +3271,81 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // 会话信任模式（敏感操作免确认）：UI 同步
-  function updateTrustUI(enabled) {
-    const btn = $('#btn-trust');
+  // 会话权限模式（请求批准 / 完全访问权限）：UI 同步
+  function updateTrustUI(mode) {
+    const sw = $('#perm-switch');
     const banner = $('#trust-banner');
-    if (!btn) return;
-    if (enabled) {
-      btn.classList.add('active');
-      btn.dataset.mode = 'on';
-      btn.querySelector('span').textContent = '已信任';
-      if (banner) banner.classList.remove('hidden');
-    } else {
-      btn.classList.remove('active');
-      btn.dataset.mode = 'off';
-      btn.querySelector('span').textContent = '信任此会话';
-      if (banner) banner.classList.add('hidden');
+    if (!sw) return;
+    const m = (mode === 'full') ? 'full' : 'request';
+    sw.dataset.mode = m;
+    if (banner) {
+      if (m === 'full') banner.classList.remove('hidden');
+      else banner.classList.add('hidden');
     }
   }
 
-  // 拉取当前会话的信任状态并刷新 UI（切换/新建会话时调用）
+  // 拉取当前会话的权限模式并刷新 UI（切换/新建会话时调用）
   async function refreshTrustState() {
     const sid = state.currentSessionId;
-    if (!sid) { updateTrustUI(false); return; }
+    if (!sid) { updateTrustUI('request'); return; }
     try {
       const data = await API.get(`/api/chat/${sid}/trust`);
-      updateTrustUI(!!(data && data.enabled));
+      updateTrustUI(data && data.mode);
     } catch (e) {
-      updateTrustUI(false);
+      updateTrustUI('request');
     }
   }
 
-  $('#btn-trust').addEventListener('click', async () => {
-    const btn = $('#btn-trust');
-    if (!state.currentSessionId) { showToast('请先选择或创建一个会话', 'warning'); return; }
-    const target = !btn.classList.contains('active');
-    btn.disabled = true;
-    try {
-      const res = await API.post(`/api/chat/${state.currentSessionId}/trust`, { enabled: target });
-      if (!res || res.success !== true) throw new Error('返回异常');
-      updateTrustUI(target);
-      showToast(
-        target ? '已开启信任模式：本会话敏感操作将直接执行' : '已关闭信任模式：敏感操作将重新需要确认',
-        'info'
-      );
-    } catch (e) {
-      showToast('切换信任模式失败: ' + (e.message || e), 'error');
-    } finally {
-      btn.disabled = false;
+  // 分段控件：切换权限模式
+  const permSwitch = $('#perm-switch');
+  if (permSwitch) {
+    permSwitch.querySelectorAll('.perm-opt').forEach(opt => {
+      opt.addEventListener('click', async () => {
+        const target = opt.dataset.mode;
+        if (!state.currentSessionId) { showToast('请先选择或创建一个会话', 'warning'); return; }
+        if (permSwitch.dataset.mode === target) return; // 已是该模式
+        try {
+          const res = await API.post(`/api/chat/${state.currentSessionId}/trust`, { mode: target });
+          if (!res || res.success !== true) throw new Error('返回异常');
+          updateTrustUI(target);
+          showToast(
+            target === 'full'
+              ? '已切换为「完全访问权限」：敏感操作将直接执行，不再确认'
+              : '已切换为「请求批准」：敏感操作前将再次需要你确认',
+            'info'
+          );
+        } catch (e) {
+          showToast('切换权限模式失败: ' + (e.message || e), 'error');
+        }
+      });
+    });
+  }
+
+  // 权限范围说明气泡
+  const permHelp = $('#perm-help');
+  const permPop = $('#perm-popover');
+  function _togglePermPop(show) {
+    if (!permPop) return;
+    if (show === undefined) permPop.classList.toggle('hidden');
+    else if (show) permPop.classList.remove('hidden');
+    else permPop.classList.add('hidden');
+  }
+  if (permHelp && permPop) {
+    permHelp.addEventListener('click', (e) => { e.stopPropagation(); _togglePermPop(); });
+    permHelp.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _togglePermPop(); } });
+    // 点击其他地方关闭
+    document.addEventListener('click', (e) => {
+      if (!permPop.contains(e.target) && e.target !== permHelp && !permHelp.contains(e.target)) {
+        _togglePermPop(false);
+      }
+    });
+    // 点击分段选项时收起气泡
+    if (permSwitch) {
+      permSwitch.querySelectorAll('.perm-opt').forEach(opt => {
+        opt.addEventListener('click', () => _togglePermPop(false));
+      });
     }
-  });
+  }
 
   // 保存搜索配置
   // 配置标签页切换
