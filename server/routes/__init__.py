@@ -6,5 +6,6 @@ from .upload import router as upload_router
 from .auth import router as auth_router
 from .users import router as users_router
 from .skills import router as skills_router
+from .approval import router as approval_router
 
-routers = [chat_router, sessions_router, config_router, files_router, upload_router, auth_router, users_router, skills_router]
+routers = [chat_router, sessions_router, config_router, files_router, upload_router, auth_router, users_router, skills_router, approval_router]

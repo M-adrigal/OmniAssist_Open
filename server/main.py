@@ -206,7 +206,8 @@ def init_services():
         },
         func=lambda name, skill_md, tools=None, _user_id=None: json.dumps(
             create_user_skill(_user_id, name, skill_md, tools), ensure_ascii=False
-        )
+        ),
+        risk_level="write", risk_description="新建自定义技能：{name}",
     )
     _tool_registry.register_tool(
         name="update_user_skill",
@@ -222,7 +223,8 @@ def init_services():
         },
         func=lambda name, skill_md=None, tools=None, _user_id=None: json.dumps(
             update_user_skill(_user_id, name, skill_md, tools), ensure_ascii=False
-        )
+        ),
+        risk_level="write", risk_description="更新自定义技能：{name}",
     )
     _tool_registry.register_tool(
         name="delete_user_skill",
@@ -236,7 +238,8 @@ def init_services():
         },
         func=lambda name, _user_id=None: json.dumps(
             delete_user_skill(_user_id, name), ensure_ascii=False
-        )
+        ),
+        risk_level="write", risk_description="删除自定义技能：{name}",
     )
     _tool_registry.register_tool(
         name="list_user_skills",
@@ -360,8 +363,11 @@ def init_services():
         diag_validate_skill,
     )
 
-    def _reg(name, desc, params, fn):
-        _tool_registry.register_tool(name=name, description=desc, parameters=params, func=fn)
+    def _reg(name, desc, params, fn, risk_level="safe", risk_description=None):
+        _tool_registry.register_tool(
+            name=name, description=desc, parameters=params, func=fn,
+            risk_level=risk_level, risk_description=risk_description,
+        )
 
     _reg(
         "diag_read_logs",
@@ -383,6 +389,7 @@ def init_services():
         "【管理员】受控重启主服务。会先停掉旧进程再拉起新服务，当前请求可能短暂中断，稍后刷新即可。用于修复依赖/代码更新后需重启的场景。",
         {"type": "object", "properties": {}},
         lambda _user_id=None: diag_restart_service(_user_id),
+        risk_level="exec", risk_description="重启主服务（当前连接将短暂中断）",
     )
     _reg(
         "diag_check_env",
@@ -424,6 +431,7 @@ def init_services():
             "rel_path": {"type": "string", "description": "相对项目根目录的文件路径，必须位于 document_output 下"},
         }, "required": ["rel_path"]},
         lambda rel_path, _user_id=None: diag_delete_file(rel_path, _user_id),
+        risk_level="write", risk_description="删除文件：{rel_path}",
     )
     _reg(
         "diag_rename_file",
@@ -433,6 +441,7 @@ def init_services():
             "new_name": {"type": "string", "description": "新文件名（不含路径）"},
         }, "required": ["old_rel_path", "new_name"]},
         lambda old_rel_path, new_name, _user_id=None: diag_rename_file(old_rel_path, new_name, _user_id),
+        risk_level="write", risk_description="重命名文件：{old_rel_path} → {new_name}",
     )
     _reg(
         "diag_validate_skill",

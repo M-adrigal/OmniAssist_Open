@@ -22,6 +22,22 @@ MAX_MESSAGE_LENGTH = 10000      # 单条消息最大字符数
 MAX_SESSION_TITLE_LENGTH = 200  # 会话标题最大字符数
 
 from server.routes.auth import get_current_user
+from server.approval_store import approval_store
+
+# 参数脱敏：密钥类字段不展示明文，超长字符串截断
+_SECRET_KEY_HINTS = ("password", "secret", "key", "token", "api_key", "apikey", "credential")
+
+
+def _mask_tool_args(name: str, args: dict) -> dict:
+    masked = {}
+    for k, v in (args or {}).items():
+        if any(h in str(k).lower() for h in _SECRET_KEY_HINTS):
+            masked[k] = "******"
+        elif isinstance(v, str) and len(v) > 300:
+            masked[k] = v[:300] + f"... (截断，共 {len(v)} 字符)"
+        else:
+            masked[k] = v
+    return masked
 
 
 # ===== SessionTask: 后台任务管理（解耦客户端连接） =====
@@ -1065,28 +1081,67 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                     assistant_msg["reasoning_content"] = full_reasoning
                 chat_messages.append(assistant_msg)
 
-                for tool_call in tool_calls:
-                    tool_name = tool_call["function"]["name"]
-                    tool_arguments = json.loads(tool_call["function"]["arguments"])
-                    logger.debug(f"工具调用 iteration={iteration + 1} tool={tool_name} args={tool_arguments}")
+                # ===== 工具执行（含敏感操作审批门）=====
+                # 1) 划分无需审批 / 需要审批
+                _safe, _pending = [], []
+                for tc in tool_calls:
+                    _tname = tc["function"]["name"]
+                    _targs = json.loads(tc["function"]["arguments"])
+                    if registry.needs_approval(_tname, _targs):
+                        _pending.append({"tc": tc, "name": _tname, "args": _targs})
+                    else:
+                        _safe.append({"tc": tc, "name": _tname, "args": _targs})
 
-                    yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_name, 'arguments': tool_arguments})}\n\n"
-
-                # 根据工具数量决定执行方式：2+ 工具并行，单工具直接执行
-                tool_names = [tc["function"]["name"] for tc in tool_calls]
-                if len(tool_calls) == 1:
-                    yield f"data: {json.dumps({'type': 'status', 'content': f'正在调用工具: {tool_names[0]}...'})}\n\n"
-                elif len(tool_calls) >= 2:
-                    yield f"data: {json.dumps({'type': 'status', 'content': f'正在并行调用 {len(tool_calls)} 个工具...'})}\n\n"
-                if len(tool_calls) >= 2:
-                    _executor = ParallelToolExecutor()
-                    batch_results = await _run_sync(_executor.execute_batch, tool_calls, registry, user_id=user_id)
-                else:
-                    tc = tool_calls[0]
-                    name = tc["function"]["name"]
-                    args = json.loads(tc["function"]["arguments"])
+                # 2) 敏感工具审批门（逐项否决）
+                _results_by_id = {}
+                if _pending:
+                    _items = [{
+                        "item_id": p["tc"].get("id", ""),
+                        "tool": p["name"],
+                        "args": _mask_tool_args(p["name"], p["args"]),
+                        "risk": registry.get_risk_level(p["name"]),
+                        "desc": registry.describe_tool_risk(p["name"], p["args"]),
+                    } for p in _pending]
+                    _gid = approval_store.create(session_id, user_id, _items)
+                    yield f"data: {json.dumps({'type': 'approval_required', 'group_id': _gid, 'session_id': session_id, 'items': _items}, ensure_ascii=False)}\n\n"
                     try:
-                        result = await _run_sync(registry.execute, name, args, user_id=user_id)
+                        _decisions = await asyncio.wait_for(approval_store.wait(_gid), timeout=600)
+                    except asyncio.TimeoutError:
+                        _decisions = {it["item_id"]: "reject" for it in _items}
+                        logger.warning(f"审批等待超时，自动拒绝 (session={session_id}, group={_gid})")
+                    yield f"data: {json.dumps({'type': 'approval_resolved', 'group_id': _gid, 'decisions': _decisions}, ensure_ascii=False)}\n\n"
+                    approval_store.cleanup(_gid)
+                    for p in _pending:
+                        _iid = p["tc"].get("id", "")
+                        if _decisions.get(_iid) == "approve":
+                            _results_by_id[_iid] = None  # 待执行
+                            yield f"data: {json.dumps({'type': 'tool_call', 'name': p['name'], 'arguments': p['args']}, ensure_ascii=False)}\n\n"
+                        else:
+                            _results_by_id[_iid] = {
+                                "name": p["name"], "arguments": p["args"],
+                                "result": "Error: 用户已拒绝执行该敏感操作", "error": True,
+                                "tool_call_id": _iid,
+                            }
+                            yield f"data: {json.dumps({'type': 'tool_call', 'name': p['name'], 'arguments': p['args']}, ensure_ascii=False)}\n\n"
+
+                # 3) 无需审批的工具：标记执行并发送 tool_call
+                for p in _safe:
+                    _results_by_id[p["tc"].get("id", "")] = None
+                    yield f"data: {json.dumps({'type': 'tool_call', 'name': p['name'], 'arguments': p['args']}, ensure_ascii=False)}\n\n"
+
+                # 4) 汇总待执行列表，按 并行/串行 执行
+                _to_exec = [p for p in (_safe + _pending) if _results_by_id.get(p["tc"].get("id", "")) is None]
+                if len(_to_exec) > 0:
+                    if len(_to_exec) == 1:
+                        yield f"data: {json.dumps({'type': 'status', 'content': f'正在调用工具: {_to_exec[0]["name"]}...'})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'status', 'content': f'正在并行调用 {len(_to_exec)} 个工具...'})}\n\n"
+                if len(_to_exec) == 0:
+                    batch_results = [_results_by_id[tc.get("id", "")] for tc in tool_calls]
+                elif len(_to_exec) == 1:
+                    p = _to_exec[0]
+                    try:
+                        result = await _run_sync(registry.execute, p["name"], p["args"], user_id=user_id)
                         if isinstance(result, dict):
                             result_str = json.dumps(result, ensure_ascii=False)
                         else:
@@ -1101,13 +1156,23 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                     except Exception as e:
                         result_str = f"工具执行错误: {str(e)}"
                         error = True
-                    batch_results = [{
-                        "name": name,
-                        "arguments": args,
-                        "result": result_str,
-                        "error": error,
-                        "tool_call_id": tc.get("id", ""),
-                    }]
+                    _results_by_id[p["tc"].get("id", "")] = {
+                        "name": p["name"], "arguments": p["args"],
+                        "result": result_str, "error": error,
+                        "tool_call_id": p["tc"].get("id", ""),
+                    }
+                    batch_results = [_results_by_id[tc.get("id", "")] for tc in tool_calls]
+                else:
+                    _executor = ParallelToolExecutor()
+                    _exec_res = await _run_sync(_executor.execute_batch, [p["tc"] for p in _to_exec], registry, user_id=user_id)
+                    _map = {r["tool_call_id"]: r for r in _exec_res}
+                    for p in _to_exec:
+                        _results_by_id[p["tc"].get("id", "")] = _map.get(p["tc"].get("id", ""), {
+                            "name": p["name"], "arguments": p["args"],
+                            "result": "Error: 工具执行结果缺失", "error": True,
+                            "tool_call_id": p["tc"].get("id", ""),
+                        })
+                    batch_results = [_results_by_id[tc.get("id", "")] for tc in tool_calls]
 
                 for i, tool_call in enumerate(tool_calls):
                     r = batch_results[i]
@@ -1191,6 +1256,7 @@ async def _run_chat_background(task: SessionTask, message: str, session_id: str,
             task.add_event(event)
     except asyncio.CancelledError:
         # 用户主动停止任务
+        approval_store.cancel_session(session_id)
         logger.info(f"后台任务被用户取消 (session={session_id})")
         try:
             task.add_event(f"data: {json.dumps({'type': 'done'})}\n\n")
@@ -1303,6 +1369,7 @@ async def stop_task(session_id: str, request: Request):
     # 取消后台 asyncio.Task
     if task._bg_task and not task._bg_task.done():
         task._bg_task.cancel()
+        approval_store.cancel_session(session_id)
         logger.info(f"已取消 session {session_id} 的后台任务")
 
     return {"success": True, "message": "任务已停止"}

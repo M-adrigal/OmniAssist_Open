@@ -1210,6 +1210,115 @@ function renderToolSummary(stream, tools) {
   });
 }
 
+// ===== 敏感操作审批卡片 =====
+const RISK_LABELS = { safe: '安全', read: '只读', write: '写入', exec: '执行', admin: '管理员' };
+
+function renderApprovalCard(stream, parsed) {
+  const container = stream.container;
+  if (!container) return;
+  // 防止重连重放时重复渲染同一分组
+  if (container.querySelector('.approval-card[data-group="' + parsed.group_id + '"]')) return;
+
+  const card = document.createElement('div');
+  card.className = 'approval-card';
+  card.dataset.group = parsed.group_id;
+  card.dataset.session = parsed.session_id || '';
+
+  let itemsHtml = '';
+  (parsed.items || []).forEach(it => {
+    const risk = it.risk || 'write';
+    const argsStr = Object.keys(it.args || {}).length ? JSON.stringify(it.args, null, 2) : '(无参数)';
+    itemsHtml += `
+      <div class="approval-item" data-item="${escapeHtml(it.item_id)}">
+        <div class="approval-item-head">
+          <span class="approval-tool">${escapeHtml(it.tool)}</span>
+          <span class="risk-badge risk-${escapeHtml(risk)}">${RISK_LABELS[risk] || risk}</span>
+        </div>
+        <div class="approval-desc">${escapeHtml(it.desc || '')}</div>
+        <details class="approval-args"><summary>参数</summary><pre>${escapeHtml(argsStr)}</pre></details>
+        <div class="approval-actions">
+          <button class="btn-approve active" data-dec="approve">允许</button>
+          <button class="btn-reject" data-dec="reject">拒绝</button>
+        </div>
+      </div>`;
+  });
+
+  card.innerHTML = `
+    <div class="approval-card-header">
+      <span class="approval-icon">⚠️</span>
+      <span>检测到敏感操作，需要你确认</span>
+    </div>
+    <div class="approval-items">${itemsHtml}</div>
+    <div class="approval-footer">
+      <button class="approval-submit">提交</button>
+      <span class="approval-hint">逐项选择「允许 / 拒绝」，然后提交</span>
+    </div>`;
+  container.appendChild(card);
+  scrollToBottom();
+
+  // 逐项切换允许/拒绝
+  card.querySelectorAll('.approval-item').forEach(item => {
+    const btns = item.querySelectorAll('.approval-actions button');
+    btns.forEach(b => b.addEventListener('click', () => {
+      btns.forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+    }));
+  });
+
+  // 提交决议
+  card.querySelector('.approval-submit').addEventListener('click', async () => {
+    const decisions = [];
+    card.querySelectorAll('.approval-item').forEach(item => {
+      const dec = item.querySelector('.approval-actions button.active')?.dataset.dec || 'approve';
+      decisions.push({ item_id: item.dataset.item, decision: dec });
+    });
+    card.querySelectorAll('button').forEach(b => b.disabled = true);
+    const hint = card.querySelector('.approval-hint');
+    if (hint) hint.textContent = '提交中...';
+    try {
+      const sid = card.dataset.session;
+      const res = await fetch(`/api/chat/${sid}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ group_id: parsed.group_id, decisions }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        if (hint) hint.textContent = '提交失败：' + (err.detail || res.status);
+        card.querySelectorAll('button').forEach(b => b.disabled = false);
+        return;
+      }
+      card.classList.add('resolved');
+      if (hint) hint.textContent = '已提交，正在执行...';
+    } catch (e) {
+      if (hint) hint.textContent = '提交异常：' + e.message;
+      card.querySelectorAll('button').forEach(b => b.disabled = false);
+    }
+  });
+}
+
+function updateApprovalCardResolved(stream, parsed) {
+  const card = stream.container?.querySelector('.approval-card[data-group="' + parsed.group_id + '"]');
+  if (!card) return;
+  card.classList.add('resolved');
+  const decisions = parsed.decisions || {};
+  card.querySelectorAll('.approval-item').forEach(item => {
+    const dec = decisions[item.dataset.item];
+    if (dec) {
+      const head = item.querySelector('.approval-item-head');
+      if (head && !head.querySelector('.resolved-badge')) {
+        const badge = document.createElement('span');
+        badge.className = 'resolved-badge ' + (dec === 'approve' ? 'ok' : 'no');
+        badge.textContent = dec === 'approve' ? '已允许' : '已拒绝';
+        head.appendChild(badge);
+      }
+    }
+  });
+  const hint = card.querySelector('.approval-hint');
+  if (hint) hint.textContent = '已确认，正在继续...';
+  card.querySelectorAll('button').forEach(b => b.disabled = true);
+}
+
 function renderSearchArea(stream) {
   if (!stream.searchData) return;
 
@@ -1343,6 +1452,14 @@ function handleStreamEvent(stream, parsed) {
     }
     stream.thinkContent += `\u5de5\u5177\u7ed3\u679c: ${parsed.content || '(\u7a7a)'}\n`;
     updateThinkArea(stream);
+    return null;
+  }
+  if (parsed.type === 'approval_required') {
+    renderApprovalCard(stream, parsed);
+    return null;
+  }
+  if (parsed.type === 'approval_resolved') {
+    updateApprovalCardResolved(stream, parsed);
     return null;
   }
   if (parsed.type === 'tool_summary') {
