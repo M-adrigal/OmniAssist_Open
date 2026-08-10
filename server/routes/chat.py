@@ -566,6 +566,73 @@ def _do_web_search(query: str, api_key: str, scenario: str = "general") -> str:
         return f"搜索出错: {str(e)}"
 
 
+def _is_obvious_no_search(message: str) -> bool:
+    """自动联网搜索的『明显不需要搜索』启发式：命中即跳过，零额外开销。
+
+    覆盖问候、闲聊、自我介绍、情绪安抚、讲笑话、纯算术、纯标点/表情等
+    明显无需联网的场景，避免为每个此类消息都发起一次 LLM 判别调用。
+    """
+    m = (message or "").strip()
+    if not m:
+        return True
+    # 极短消息（你好 / 嗨 / 在吗 / 嗯 ...）
+    if len(m) <= 2:
+        return True
+    low = m.lower()
+    # 去掉所有标点/空白后再做问候匹配，兼容「你好！」「在吗？」等带标点的写法
+    norm = re.sub(r"[\s\W_]+", "", low)
+    _greet = (
+        "你好", "您好", "嗨", "哈喽", "在吗", "在不在", "有人吗",
+        "谢谢", "感谢", "多谢", "再见", "拜拜", "晚安", "早安", "午安",
+        "hello", "hi", "hey", "thanks", "thank you", "bye", "goodbye",
+        "你是谁", "你叫什么", "你是什么", "你能做什么", "你能干啥", "你会什么",
+        "讲个笑话", "说个笑话", "陪我聊聊", "在的", "嗯", "哦", "好的", "好", "ok", "okay",
+    )
+    if norm in _greet:
+        return True
+    # 纯数字 / 运算符（简单算术）
+    if re.fullmatch(r"[\d\s\+\-\*/\(\)\.\^=×÷%，。、]+", m):
+        return True
+    # 纯标点 / 表情 / 空白
+    if re.fullmatch(r"[\s\W_]+", m):
+        return True
+    return False
+
+
+def _llm_decide_search(message: str, llm) -> bool:
+    """自动联网搜索的 LLM 判别：判断是否需要联网搜索最新/实时/外部信息。
+
+    仅用于启发式无法确定的模糊消息。失败（含推理模型等异常）时保守返回 True，
+    即默认按『需要搜索』处理，避免漏搜导致回答失准。
+    """
+    if llm is None or getattr(llm, "client", None) is None:
+        return True
+    _prompt = [
+        {"role": "system", "content": (
+            "你是联网搜索需求判别器。判断用户的这条消息是否需要『联网搜索最新/实时/外部信息』"
+            "才能准确回答。只回答 YES 或 NO。\n"
+            "不需要搜索：闲聊问候、自我介绍、情绪安抚、讲笑话、写诗、纯观点/创作、"
+            "简单计算、你自身能力说明、仅凭常识即可回答的通用问题。\n"
+            "需要搜索：新闻/快讯、实时数据(天气/股价/汇率/赛事/交通)、最新版本或发布信息、"
+            "特定事实查证、地点相关、需最新资料的操作步骤/教程等。"
+        )},
+        {"role": "user", "content": message},
+    ]
+    try:
+        resp = llm.client.chat.completions.create(
+            model=llm.model,
+            messages=_prompt,
+            temperature=0,
+            max_tokens=4,
+            stream=False,
+        )
+        text = (resp.choices[0].message.content or "").strip().upper()
+        return text.startswith("Y")
+    except Exception as e:
+        logger.warning(f"联网搜索需求判别失败，保守按需要搜索处理: {e}")
+        return True
+
+
 async def _handle_command(message: str, session_id: str, user_id: int):
     agent, llm, registry, config, skill_registry = get_dependencies()
     store = get_session_store()
@@ -792,17 +859,30 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             from server.database import get_search_config, get_user_by_id
             search_cfg = get_search_config()
             tavily_key = search_cfg.get("tavily_api_key", "")
+
+            # 是否真正需要搜索：仅 auto 模式按需判断；on 模式强制搜索
+            need_search = True
             if not tavily_key:
-                user = get_user_by_id(user_id)
-                is_admin = user and user.get("user_type") == "admin"
-                if is_admin:
-                    yield f"data: {json.dumps({'type': 'error', 'content': '联网搜索功能尚未配置，请到设置中配置 Tavily API Key'})}\n\n"
+                if web_search == "on":
+                    user = get_user_by_id(user_id)
+                    is_admin = user and user.get("user_type") == "admin"
+                    if is_admin:
+                        yield f"data: {json.dumps({'type': 'error', 'content': '联网搜索功能尚未配置，请到设置中配置 Tavily API Key'})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'error', 'content': '联网搜索功能尚未配置，请联系管理员进行联网搜索配置'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    _done_sent = True
+                    return
                 else:
-                    yield f"data: {json.dumps({'type': 'error', 'content': '联网搜索功能尚未配置，请联系管理员进行联网搜索配置'})}\n\n"
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                _done_sent = True
-                return
-            if tavily_key:
+                    # 自动模式：未配置搜索 key 时优雅降级，直接走普通对话
+                    need_search = False
+            elif web_search == "auto":
+                if _is_obvious_no_search(message):
+                    need_search = False
+                else:
+                    need_search = await _run_sync(_llm_decide_search, message, llm)
+
+            if need_search and tavily_key:
                 search_scenario = _classify_query(message)
                 scenario_label = SCENARIO_CONFIG[search_scenario]["label"]
                 yield f"data: {json.dumps({'type': 'status', 'content': f'正在联网搜索（{scenario_label}）...'})}\n\n"
