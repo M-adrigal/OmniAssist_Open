@@ -69,6 +69,15 @@ function _saveAcknowledged() {
   } catch (e) { /* 忽略写入错误（隐私模式等） */ }
 }
 
+// ===== 会话持久化（刷新后恢复当前会话）=====
+const _SID_KEY = 'omni_current_session_id';
+function _saveCurrentSessionId() {
+  try { localStorage.setItem(_SID_KEY, state.currentSessionId || ''); } catch (e) { /* ignore */ }
+}
+function _loadCurrentSessionId() {
+  try { return localStorage.getItem(_SID_KEY) || ''; } catch (e) { return ''; }
+}
+
 function $(sel) { return document.querySelector(sel); }
 function $$(sel) { return document.querySelectorAll(sel); }
 
@@ -357,6 +366,7 @@ async function createSession() {
   try {
     const s = await API.post('/api/sessions', { title: '新对话' });
     state.currentSessionId = s.id;
+    _saveCurrentSessionId();
     await loadSessions();
     updateChatTitle();
     clearMessages();
@@ -402,6 +412,7 @@ async function deleteSession(id) {
 
     if (state.currentSessionId === id) {
       state.currentSessionId = null;
+      _saveCurrentSessionId();
       clearMessages();
       updateChatTitle();
     }
@@ -466,6 +477,7 @@ async function switchSession(id) {
       _saveAcknowledged();
     }
     state.currentSessionId = id;
+    _saveCurrentSessionId();
     renderSessions();
     updateChatTitle();
     clearAttachedFiles();
@@ -1790,6 +1802,7 @@ async function sendMessage() {
     try {
       const s = await API.post('/api/sessions', { title: message.substring(0, 30) });
       state.currentSessionId = s.id;
+      _saveCurrentSessionId();
       await loadSessions();
       updateChatTitle();
       refreshTrustState();
@@ -3179,6 +3192,17 @@ document.addEventListener('DOMContentLoaded', () => {
   updateThoughtButton();
 
   loadSessions();
+
+  // 恢复上次活跃的会话（刷新后不再丢失当前会话）
+  const _savedSid = _loadCurrentSessionId();
+  if (_savedSid) {
+    // 延迟一帧等待 loadSessions 渲染完成
+    requestAnimationFrame(() => {
+      const exists = state.sessions.some(s => s.id === _savedSid);
+      if (exists) { switchSession(_savedSid); }
+      else { localStorage.removeItem(_SID_KEY); }  // session 已被删除，清除残留
+    });
+  }
 
   $('#btn-new-session').addEventListener('click', createSession);
   $('#btn-settings').addEventListener('click', toggleDrawer);

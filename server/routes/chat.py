@@ -303,6 +303,25 @@ def _save_session_messages(session_id: str, messages: list, title: str = None, u
     update_session_messages(session_id, messages, title, user_id)
 
 
+def _save_user_message_immediate(session_id: str, message: str, user_id: int):
+    """立即将用户消息持久化到 DB（流开始时调用，不等待 LLM 响应完成）。
+
+    刷新/断连后用户消息不丢失。后续 _post_process_done 会追加助手消息并更新标题。
+    """
+    try:
+        store = get_session_store()
+        existing_msgs = _load_session_messages(session_id)
+        # 防重：如果最后一条已是同内容用户消息，跳过
+        if existing_msgs and existing_msgs[-1].get("role") == "user" and existing_msgs[-1].get("content") == message:
+            logger.debug(f"[IMMEDIATE_SAVE] 用户消息已存在，跳过 (session={session_id})")
+            return
+        existing_msgs.append({"role": "user", "content": message})
+        _save_session_messages(session_id, existing_msgs, user_id=user_id)
+        logger.info(f"[IMMEDIATE_SAVE] 用户消息已立即持久化 (session={session_id}, len={len(existing_msgs)})")
+    except Exception as e:
+        logger.warning(f"[IMMEDIATE_SAVE] 用户消息立即持久化失败 (session={session_id}): {e}")
+
+
 def _post_process_done(
     session_id: str, store: dict, message: str,
     answer: str, full_content: str,
@@ -311,7 +330,18 @@ def _post_process_done(
 ):
     """后台任务：保存消息、生成标题、记录任务日志"""
     if session_id:
-        store[session_id]["messages"].append({"role": "user", "content": message})
+        _store_msgs = store[session_id]["messages"]
+        # 防重：检查用户消息是否已被 _save_user_message_immediate 持久化
+        _last_user_idx = None
+        for _ri in range(len(_store_msgs) - 1, -1, -1):
+            if _store_msgs[_ri].get("role") == "user":
+                _last_user_idx = _ri
+                break
+        if _last_user_idx is not None and _store_msgs[_last_user_idx].get("content") == message:
+            # 用户消息已存在（立即保存写入的），不再重复追加
+            pass
+        else:
+            _store_msgs.append({"role": "user", "content": message})
         assistant_msg = {"role": "assistant", "content": answer or full_content}
         if search_info:
             assistant_msg["search"] = search_info
@@ -1530,6 +1560,17 @@ async def chat_stream(body: ChatRequest, request: Request):
     # 创建后台任务
     task = SessionTask(body.session_id, body.message, user["id"])
     set_running_task(body.session_id, task)
+
+    # 【立即持久化用户消息】刷新/断连后不再丢失用户输入
+    # 用独立线程写库，不阻塞 SSE 响应
+    _sid_for_save = body.session_id
+    _msg_for_save = body.message
+    _uid_for_save = user["id"]
+    threading.Thread(
+        target=_save_user_message_immediate,
+        args=(_sid_for_save, _msg_for_save, _uid_for_save),
+        daemon=True,
+    ).start()
 
     # 启动后台 asyncio.Task（与客户端连接解耦）
     task._bg_task = asyncio.create_task(
