@@ -10,6 +10,7 @@
   --text-primary: #1a1a2e;
   --text-secondary: #6b6b80;
   --text-muted: #9a9ab0;
+  --text-dim: #6b6b80;
   --accent: #1976d2;
   --accent-hover: #1565c0;
   --danger: #ef5350;
@@ -34,6 +35,7 @@
   --text-primary: #ffffff;
   --text-secondary: #aaaaaa;
   --text-muted: #666666;
+  --text-dim: #b0b0b0;
   --accent: #555555;
   --accent-hover: #777777;
   --danger: #ef5350;
@@ -706,30 +708,42 @@ body {
   text-align: center;
   font-size: 16px;
   font-weight: 600;
-  color: #111827;
+  color: var(--text-primary);
   margin: 0 0 6px;
 }
+.perm-confirm-text strong { color: var(--danger); }
 .perm-confirm-sub {
   font-size: 14px;
-  color: #4B5563;
+  color: var(--text-secondary);
   margin: 0 0 10px;
 }
+.perm-confirm-sub strong { color: var(--text-primary); }
 .perm-confirm-list {
   margin: 0 0 12px;
   padding-left: 20px;
   font-size: 13px;
-  color: #374151;
+  color: var(--text-primary);
   line-height: 1.7;
 }
 .perm-confirm-note {
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgba(59, 130, 246, 0.06);
-  border: 1px solid rgba(59, 130, 246, 0.18);
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.22);
   font-size: 12px;
-  color: #4B5563;
+  color: var(--text-secondary);
   line-height: 1.5;
   margin: 0;
+}
+/* 暗色模式：提升警告弹窗对比度（原硬编码深色文字在深背景上不可见）*/
+.dark .perm-confirm-list { color: #e5e5e5; }
+.dark .perm-confirm-sub { color: #bdbdbd; }
+.dark .perm-confirm-sub strong { color: #ffffff; }
+.dark .perm-confirm-text strong { color: #ff8a80; }
+.dark .perm-confirm-note {
+  background: rgba(96, 165, 250, 0.14);
+  border-color: rgba(96, 165, 250, 0.35);
+  color: #cfd8dc;
 }
 .btn-danger {
   background: #EF4444;
@@ -760,6 +774,13 @@ body {
 }
 .approval-skipped ul { margin: 6px 0 0; padding-left: 18px; }
 .approval-skipped li { margin: 2px 0; }
+/* 暗色模式：免确认提示卡片提高对比度 */
+.dark .approval-skipped {
+  background: #232323;
+  border-color: #4a4a4a;
+  color: #c9c9c9;
+}
+.dark .approval-skipped .skipped-head { color: #ff8a80; }
 
 /* 命令建议 */
 .command-suggestions {
