@@ -1262,6 +1262,17 @@ body {
   color: #137333;
   border: 1px solid #b7dfc3;
 }
+/* 暗色模式：来源徽标改为深底亮字，避免浅底色在深色界面过亮 */
+.dark .badge-source-upload {
+  background: rgba(26, 115, 232, 0.18);
+  color: #8ab4f8;
+  border-color: rgba(138, 180, 248, 0.35);
+}
+.dark .badge-source-generated {
+  background: rgba(19, 115, 51, 0.20);
+  color: #81c995;
+  border-color: rgba(129, 201, 149, 0.35);
+}
 /* 类型小徽标（扩展名） */
 .badge-type {
   display: inline-block;
