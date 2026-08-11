@@ -163,6 +163,7 @@ class LLMClient:
             "tool_choice": tool_choice,
             "temperature": temperature,
             "stream": True,
+            "timeout": 180,  # 防止上游无响应时无限挂起；超时将由调用方重试/降级处理
         }
         if reasoning_effort is not None:
             create_kwargs["reasoning_effort"] = reasoning_effort

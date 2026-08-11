@@ -797,6 +797,8 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
     # 统一出口标志：确保 done 事件和 clear_context 在任何代码路径都执行
     _done_sent = False
     _messages_saved = False
+    _assistant_content_produced = False  # 是否已向用户产出过真实助手内容（用于 fallback 去污染）
+    _llm_attempts = 0  # LLM 调用重试计数（应对网络抖动/临时错误）
 
     try:
         if user_id is None:
@@ -1043,16 +1045,24 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                 _in_thinking = False
 
                 try:
+                    # 防御：工具返回结果过长可能触发上游 413，发送前对 role=tool 内容做硬性截断
+                    for _m in chat_messages:
+                        if _m.get("role") == "tool" and isinstance(_m.get("content"), str) and len(_m["content"]) > 4000:
+                            _orig_len = len(_m["content"])
+                            _m["content"] = _m["content"][:4000] + f"\n... [工具输出过长已截断，原长 {_orig_len} 字符]"
+
                     async for chunk in _stream_llm_async(llm, chat_messages, tool_specs, api_params):
                         if chunk.get("reasoning_content"):
                             reasoning_text = chunk["reasoning_content"]
                             full_reasoning += reasoning_text
+                            _assistant_content_produced = True
                             if show_thought:
                                 yield f"data: {json.dumps({'type': 'thought', 'content': reasoning_text})}\n\n"
 
                         if chunk.get("content"):
                             content = chunk["content"]
                             full_content += content
+                            _assistant_content_produced = True
 
                             if reasoning_field is not None:
                                 yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
@@ -1121,7 +1131,16 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                             tool_calls = chunk.get("tool_calls")
                             break
                 except Exception as e:
-                    yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                    _llm_attempts += 1
+                    logger.error(
+                        f"LLM 流式调用失败 (user={user_id}, session={session_id}, "
+                        f"iteration={iteration + 1}, attempt={_llm_attempts}): {e}",
+                        exc_info=True,
+                    )
+                    if _llm_attempts <= 1:
+                        yield f"data: {json.dumps({'type': 'status', 'content': '模型调用异常，正在重试...'})}\n\n"
+                        continue  # 重试当前迭代（应对网络抖动 / 临时上游错误）
+                    yield f"data: {json.dumps({'type': 'error', 'content': f'模型调用失败: {str(e)[:200]}'})}\n\n"
                     return
 
                 if reasoning_field is None and _stream_buf.strip():
@@ -1345,21 +1364,24 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             )
             yield f"data: {json.dumps({'type': 'error', 'content': '已达到最大迭代次数'})}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'content': f'对话处理异常: {str(e)}'})}\n\n"
+            logger.error(f"对话处理异常 (user={user_id}, session={session_id}): {e}", exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'content': f'对话处理异常: {str(e)[:200]}'})}\n\n"
 
 
     finally:
         if not _done_sent:
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
-        # Fallback: 如果消息未保存（异常退出），尝试保存用户消息
+        # Fallback: 异常退出时兜底保存。仅当已产出过真实助手内容才写入助手消息，
+        # 否则只保留用户消息，避免"(任务执行中断)"等虚假内容污染对话上下文、导致下一轮继续失败。
         if not _messages_saved and session_id and message:
             try:
                 if session_id not in store:
                     store[session_id] = {"title": "新对话", "created_at": time.time(), "messages": []}
                 store[session_id]["messages"].append({"role": "user", "content": message})
-                store[session_id]["messages"].append({"role": "assistant", "content": "(任务执行中断)"})
+                if _assistant_content_produced:
+                    store[session_id]["messages"].append({"role": "assistant", "content": "(任务执行中断)"})
                 _save_session_messages(session_id, store[session_id]["messages"], None, user_id)
-                logger.warning(f"消息通过 fallback 保存 (session={session_id})")
+                logger.warning(f"消息通过 fallback 保存 (session={session_id}, has_content={_assistant_content_produced})")
             except Exception as e:
                 logger.error(f"Fallback 保存消息失败 (session={session_id}): {e}")
         clear_context()
