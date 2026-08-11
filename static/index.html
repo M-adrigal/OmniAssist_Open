@@ -83,6 +83,25 @@
 
   <!-- 主聊天区域 -->
   <main id="chat-area">
+    <!-- 顶部会话标题栏 + 模式切换按钮（同一行，不遮挡主题按钮） -->
+    <header id="chat-header" class="chat-header">
+      <div id="chat-title" class="chat-title">新对话</div>
+      <div class="chat-header-actions">
+        <button id="btn-web-search" class="btn-web-search" data-mode="off">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          <span>联网搜索</span>
+        </button>
+        <button id="btn-thought" class="btn-thought" data-mode="off">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/><path d="M12 6v.01M12 10v4M12 17v.01"/></svg>
+          <span>思考过程</span>
+        </button>
+        <button id="btn-perm" class="btn-perm" data-mode="request" title="点击在『请求批准』与『完全访问权限』之间切换（范围说明见弹窗）">
+          <svg class="perm-icon perm-icon-request" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
+          <svg class="perm-icon perm-icon-full hidden" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+          <span id="perm-label">请求批准</span>
+        </button>
+      </div>
+    </header>
     <div id="chat-messages" class="chat-messages">
       <div class="welcome-message">
         <h1>OmniAssist</h1>
@@ -105,21 +124,6 @@
         <button id="btn-send" class="btn-send" title="发送">
           <svg class="icon-send" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
           <svg class="icon-stop" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
-        </button>
-      </div>
-      <div class="chat-input-toolbar">
-        <button id="btn-web-search" class="btn-web-search" data-mode="off">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-          <span>联网搜索</span>
-        </button>
-        <button id="btn-thought" class="btn-thought" data-mode="off">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/><path d="M12 6v.01M12 10v4M12 17v.01"/></svg>
-          <span>思考过程</span>
-        </button>
-        <button id="btn-perm" class="btn-perm" data-mode="request" title="点击在『请求批准』与『完全访问权限』之间切换（范围说明见弹窗）">
-          <svg class="perm-icon perm-icon-request" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
-          <svg class="perm-icon perm-icon-full hidden" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
-          <span id="perm-label">请求批准</span>
         </button>
       </div>
     </div>

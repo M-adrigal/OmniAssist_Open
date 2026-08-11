@@ -227,9 +227,18 @@ async function loadSessions() {
   try {
     state.sessions = await API.get('/api/sessions');
     renderSessions();
+    updateChatTitle();
   } catch (e) {
     console.error('加载会话失败:', e);
   }
+}
+
+// 顶部标题栏：根据当前 session 显示其标题（取自 session 列表，与侧边栏标题同源）
+function updateChatTitle() {
+  const el = $('#chat-title');
+  if (!el) return;
+  const s = state.sessions.find(x => x.id === state.currentSessionId);
+  el.textContent = (s && s.title) ? s.title : '新对话';
 }
 
 function renderSessions() {
@@ -349,6 +358,7 @@ async function createSession() {
     const s = await API.post('/api/sessions', { title: '新对话' });
     state.currentSessionId = s.id;
     await loadSessions();
+    updateChatTitle();
     clearMessages();
     clearAttachedFiles();
     showToast('新对话已创建', 'success');
@@ -393,6 +403,7 @@ async function deleteSession(id) {
     if (state.currentSessionId === id) {
       state.currentSessionId = null;
       clearMessages();
+      updateChatTitle();
     }
     // 清理该 session 的任务状态，避免残留徽标
     delete state.taskStatuses[id];
@@ -456,6 +467,7 @@ async function switchSession(id) {
     }
     state.currentSessionId = id;
     renderSessions();
+    updateChatTitle();
     clearAttachedFiles();
     refreshTrustState();
 
@@ -1779,6 +1791,7 @@ async function sendMessage() {
       const s = await API.post('/api/sessions', { title: message.substring(0, 30) });
       state.currentSessionId = s.id;
       await loadSessions();
+      updateChatTitle();
       refreshTrustState();
     } catch (e) {
       showToast('创建会话失败: ' + e.message, 'error');
@@ -3486,17 +3499,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // 权限按钮点击 → 切换模式（切到 full 时弹确认窗）
   if (btnPerm) {
     btnPerm.addEventListener('click', async () => {
-      // 没有会话时自动创建，避免强制用户先手动建会话（直接对话也会触发创建）
+      // 未在任何 session 中：权限模式需绑定到具体会话，
+      // 先发送一条消息创建会话后再切换（符合「输入发送后创建新对话」的逻辑）
       if (!state.currentSessionId) {
-        try {
-          const s = await API.post('/api/sessions', { title: '新对话' });
-          state.currentSessionId = s.id;
-          await loadSessions();
-          await refreshTrustState();
-        } catch (e) {
-          showToast('创建会话失败: ' + (e.message || e), 'error');
-          return;
-        }
+        showToast('请先在下方输入并发送一条消息创建会话，再切换权限模式', 'info');
+        return;
       }
       const currentMode = btnPerm.dataset.mode || 'request';
 
