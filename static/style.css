@@ -904,11 +904,9 @@ body {
 
 /* 主题切换按钮 */
 .theme-toggle {
-  position: fixed;
-  top: 16px;
-  right: 24px;
-  width: 36px;
-  height: 36px;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
   border: 1px solid var(--border);
   background: var(--bg-secondary);
@@ -917,9 +915,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
-  z-index: 50;
+  font-size: 16px;
   transition: all var(--transition);
+  margin-left: 12px;
 }
 
 .theme-toggle:hover {
