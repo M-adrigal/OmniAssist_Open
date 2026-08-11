@@ -350,14 +350,12 @@ body {
   min-width: 0;
 }
 
-/* 顶部会话标题栏（标题 + 模式按钮，同一行） */
+/* 顶部会话标题栏（仅显示当前会话标题） */
 .chat-header {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 60px 14px 20px; /* 右侧留出主题切换按钮的空间，避免遮挡 */
+  padding: 14px 24px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
 }
@@ -371,13 +369,6 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.chat-header-actions {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .chat-messages {

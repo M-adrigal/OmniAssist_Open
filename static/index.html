@@ -83,10 +83,24 @@
 
   <!-- 主聊天区域 -->
   <main id="chat-area">
-    <!-- 顶部会话标题栏 + 模式切换按钮（同一行，不遮挡主题按钮） -->
+    <!-- 顶部会话标题栏（仅显示当前会话标题，不遮挡右上角主题按钮） -->
     <header id="chat-header" class="chat-header">
       <div id="chat-title" class="chat-title">新对话</div>
-      <div class="chat-header-actions">
+    </header>
+    <div id="chat-messages" class="chat-messages">
+      <div class="welcome-message">
+        <h1>OmniAssist</h1>
+        <p>计时算文查网，一站式全能辅助</p>
+        <p style="margin-top:8px;font-size:13px;">输入消息开始对话，工具管理现已支持自然语言交互</p>
+      </div>
+    </div>
+
+    <!-- 敏感操作审批栏（固定在输入框上方） -->
+    <div id="approval-bar" class="approval-bar hidden"></div>
+
+    <div class="chat-input-container">
+      <!-- 模式切换按钮（位于输入框上方） -->
+      <div class="chat-input-toolbar">
         <button id="btn-web-search" class="btn-web-search" data-mode="off">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
           <span>联网搜索</span>
@@ -101,19 +115,6 @@
           <span id="perm-label">请求批准</span>
         </button>
       </div>
-    </header>
-    <div id="chat-messages" class="chat-messages">
-      <div class="welcome-message">
-        <h1>OmniAssist</h1>
-        <p>计时算文查网，一站式全能辅助</p>
-        <p style="margin-top:8px;font-size:13px;">输入消息开始对话，工具管理现已支持自然语言交互</p>
-      </div>
-    </div>
-
-    <!-- 敏感操作审批栏（固定在输入框上方） -->
-    <div id="approval-bar" class="approval-bar hidden"></div>
-
-    <div class="chat-input-container">
       <div id="command-suggestions" class="command-suggestions hidden"></div>
       <div id="file-chips" class="file-chips hidden"></div>
       <div class="chat-input-wrapper">
