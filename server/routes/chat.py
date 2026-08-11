@@ -1241,7 +1241,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                             "risk": registry.get_risk_level(p["name"]),
                             "desc": registry.describe_tool_risk(p["name"], p["args"]),
                         } for p in _pending]
-                        _gid = approval_store.create(session_id, user_id, _items)
+                        _gid, _ = approval_store.create(session_id, user_id, _items)
                         yield f"data: {json.dumps({'type': 'approval_required', 'group_id': _gid, 'session_id': session_id, 'items': _items}, ensure_ascii=False)}\n\n"
                         try:
                             _decisions = await asyncio.wait_for(approval_store.wait(_gid), timeout=600)
