@@ -318,47 +318,59 @@
     }
 
     .dark .login-container {
-      background: rgba(26, 26, 26, 0.78);
+      background: rgba(30, 30, 38, 0.85);
       backdrop-filter: blur(24px);
       -webkit-backdrop-filter: blur(24px);
       box-shadow: 0 8px 40px rgba(0,0,0,0.5), 0 1px 3px rgba(255,255,255,0.04);
       border: 1px solid rgba(255, 255, 255, 0.08);
     }
 
+    .dark .login-form {
+      background: rgba(30, 30, 38, 0.95);
+    }
+
     .dark .login-form h1 {
-      color: #ffffff;
+      color: #f0f0f5;
     }
 
     .dark .login-form .subtitle {
-      color: #888888;
+      color: #9999aa;
     }
 
     .dark .form-group label {
-      color: #aaaaaa;
+      color: #bbbbcc;
     }
 
     .dark .form-group input {
-      background: #2a2a2a;
-      border-color: #333333;
-      color: #ffffff;
+      background: rgba(42, 42, 52, 0.9);
+      border-color: rgba(255, 255, 255, 0.1);
+      color: #e8e8f0;
+    }
+
+    .dark .form-group input::placeholder {
+      color: #666680;
     }
 
     .dark .form-group input:focus {
       border-color: #4a90d9;
-      box-shadow: 0 0 0 3px rgba(74, 144, 217, 0.2);
+      box-shadow: 0 0 0 3px rgba(74, 144, 217, 0.25);
     }
 
     .dark .login-illustration h2 {
-      color: #ffffff;
+      color: #e0e8ff;
     }
 
     .dark .login-illustration p {
-      color: #cccccc;
+      color: #aabbdd;
     }
 
     .dark .time-night .login-illustration h2,
     .dark .time-night .login-illustration p {
-      color: #ffffff;
+      color: #e0e8ff;
+    }
+
+    .dark .error-msg {
+      color: #f87171;
     }
 
     @media (max-width: 800px) {
