@@ -1959,6 +1959,13 @@ body {
   color: #ef4444;
 }
 
+.tool-item.skipped .tool-item-name {
+  color: #757575;
+}
+.dark .tool-item.skipped .tool-item-name {
+  color: #9e9e9e;
+}
+
 .tool-item-index {
   font-size: 10px;
   color: var(--text-muted);
@@ -1999,6 +2006,13 @@ body {
 
 .tool-result-text.error {
   color: #ef4444;
+}
+
+.tool-result-text.skipped {
+  color: #757575;
+}
+.dark .tool-result-text.skipped {
+  color: #9e9e9e;
 }
 
 .tool-result-expand {
@@ -3060,9 +3074,30 @@ body {
   background: var(--bg, #fff);
   cursor: pointer;
   font-size: 13px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
-.approval-actions .btn-approve.active { background: #4caf50; color: #fff; border-color: #4caf50; }
-.approval-actions .btn-reject.active { background: #e5484d; color: #fff; border-color: #e5484d; }
+.approval-actions button:hover:not(:disabled) { background: var(--bg-hover, #f0f0f0); }
+.approval-actions .btn-skip { color: #777; }
+.approval-actions .btn-approve { color: #2e7d32; border-color: #a5d6a7; }
+.approval-actions .btn-reject { color: #c62828; border-color: #ef9a9a; }
+/* 点击后选中的按钮：颜色固化，明确区分跳过/允许/拒绝 */
+.approval-actions .btn-skip.chosen { background: #757575; color: #fff; border-color: #757575; }
+.approval-actions .btn-approve.chosen { background: #4caf50; color: #fff; border-color: #4caf50; }
+.approval-actions .btn-reject.chosen { background: #e5484d; color: #fff; border-color: #e5484d; }
+.approval-actions button:disabled { opacity: 0.55; cursor: default; }
+
+.approval-status {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-dim, #888);
+  min-height: 16px;
+}
+.approval-status.dec-skip { color: #757575; }
+.approval-status.dec-approve { color: #2e7d32; }
+.approval-status.dec-reject { color: #c62828; }
+.approval-item.dec-skip { border-color: #bdbdbd; }
+.approval-item.dec-approve { border-color: #a5d6a7; }
+.approval-item.dec-reject { border-color: #ef9a9a; }
 .approval-footer {
   display: flex;
   align-items: center;
@@ -3101,18 +3136,26 @@ body {
   border-color: #444;
   color: #ccc;
 }
-/* 暗色模式下保留「允许/拒绝」的绿/红区分（修复 active 状态被覆盖看不清的问题）*/
-.dark .approval-bar .approval-actions .btn-approve.active {
+/* 暗色模式下保留「跳过/允许/拒绝」的清晰区分 */
+.dark .approval-bar .approval-actions .btn-skip { color: #bdbdbd; border-color: #555; }
+.dark .approval-bar .approval-actions .btn-approve { color: #81c784; border-color: #2e7d32; }
+.dark .approval-bar .approval-actions .btn-reject { color: #ef9a9a; border-color: #c62828; }
+.dark .approval-bar .approval-actions .btn-skip.chosen {
+  background: #616161;
+  border-color: #616161;
+  color: #fff;
+}
+.dark .approval-bar .approval-actions .btn-approve.chosen {
   background: #2e7d32;
   border-color: #2e7d32;
   color: #fff;
 }
-.dark .approval-bar .approval-actions .btn-reject.active {
+.dark .approval-bar .approval-actions .btn-reject.chosen {
   background: #c62828;
   border-color: #c62828;
   color: #fff;
 }
-.dark .approval-bar .approval-actions button:hover:not(.active) {
+.dark .approval-bar .approval-actions button:hover:not(:disabled) {
   background: #333;
   border-color: #555;
 }

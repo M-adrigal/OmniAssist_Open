@@ -1304,8 +1304,17 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                         approval_store.cleanup(_gid)
                         for p in _pending:
                             _iid = p["tc"].get("id", "")
-                            if _decisions.get(_iid) == "approve":
+                            _dec = _decisions.get(_iid)
+                            if _dec == "approve":
                                 _results_by_id[_iid] = None  # 待执行
+                                yield f"data: {json.dumps({'type': 'tool_call', 'name': p['name'], 'arguments': p['args']}, ensure_ascii=False)}\n\n"
+                            elif _dec == "skip":
+                                # 跳过：不执行该工具，返回中性提示，流程继续
+                                _results_by_id[_iid] = {
+                                    "name": p["name"], "arguments": p["args"],
+                                    "result": "⏭️ 用户已跳过此操作（未执行）", "skipped": True,
+                                    "tool_call_id": _iid,
+                                }
                                 yield f"data: {json.dumps({'type': 'tool_call', 'name': p['name'], 'arguments': p['args']}, ensure_ascii=False)}\n\n"
                             else:
                                 _results_by_id[_iid] = {

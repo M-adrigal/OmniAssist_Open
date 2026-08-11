@@ -28,6 +28,7 @@ class ApprovalStore:
             "owner_id": owner_id,
             "items": items,
             "created_at": time.time(),
+            "decisions": {},  # 逐项累积的决议，凑齐全部项后释放 future
         }
         return gid, fut
 
@@ -39,7 +40,7 @@ class ApprovalStore:
         return await g["future"]
 
     def resolve(self, group_id: str, decisions: dict, session_id: str, owner_id: int) -> bool:
-        """由 approve 端点调用，校验归属后写入决议。"""
+        """兼容旧路径：一次性写入整组决议并释放 future。"""
         g = self._groups.get(group_id)
         if not g:
             raise KeyError("not_found")
@@ -47,7 +48,26 @@ class ApprovalStore:
             raise PermissionError("forbidden")
         if g["future"].done():
             return False
-        g["future"].set_result(decisions)
+        g["decisions"].update(decisions)
+        g["future"].set_result(dict(g["decisions"]))
+        return True
+
+    def resolve_item(self, group_id: str, item_id: str, decision: str, session_id: str, owner_id: int) -> bool:
+        """增量写入单项决议；当全部项均已决策时释放 future。
+
+        支持 decision: approve | reject | skip。
+        """
+        g = self._groups.get(group_id)
+        if not g:
+            raise KeyError("not_found")
+        if g["session_id"] != session_id or g["owner_id"] != owner_id:
+            raise PermissionError("forbidden")
+        if g["future"].done():
+            return False
+        g["decisions"][item_id] = decision
+        remaining = {it["item_id"] for it in g["items"]} - set(g["decisions"].keys())
+        if not remaining:
+            g["future"].set_result(dict(g["decisions"]))
         return True
 
     def cancel_session(self, session_id: str):

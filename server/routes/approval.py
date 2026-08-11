@@ -26,7 +26,7 @@ log = logging.getLogger("approval")
 
 class DecisionItem(BaseModel):
     item_id: str
-    decision: str  # "approve" | "reject"
+    decision: str  # "approve" | "reject" | "skip"
 
 
 class ApproveBody(BaseModel):
@@ -63,15 +63,22 @@ async def approve(session_id: str, body: ApproveBody, request: Request):
         raise HTTPException(status_code=403, detail="无权操作该会话")
 
     decisions = {d.item_id: d.decision for d in body.decisions}
+    valid = {"approve", "reject", "skip"}
+    for d in body.decisions:
+        if d.decision not in valid:
+            raise HTTPException(status_code=400, detail=f"非法决议: {d.decision}")
+
     try:
-        ok = approval_store.resolve(body.group_id, decisions, session_id, user["id"])
+        # 增量提交：逐项写入决议，所有项决策齐备后由 store 释放 future。
+        # 即使只提交了部分项，也不会报错，等待其余项补齐。
+        for d in body.decisions:
+            approval_store.resolve_item(
+                body.group_id, d.item_id, d.decision, session_id, user["id"]
+            )
     except KeyError:
         raise HTTPException(status_code=409, detail="该确认请求已过期或不存在")
     except PermissionError:
         raise HTTPException(status_code=403, detail="无权操作该确认请求")
-
-    if not ok:
-        raise HTTPException(status_code=409, detail="该确认请求已过期")
 
     _audit(session_id, body.group_id, user["id"], decisions)
     log.info(f"审批已提交 session={session_id} group={body.group_id} user={user['id']} decisions={decisions}")

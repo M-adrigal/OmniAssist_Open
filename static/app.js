@@ -679,7 +679,7 @@ function renderHistoryMessage(m, targetContainer) {
           </div>
           <div class="tool-summary-body collapsed">
             ${tools.map((t, i) => `
-              <div class="tool-item${t.error ? ' error' : ''}">
+              <div class="tool-item${t.error ? ' error' : ''}${t.skipped ? ' skipped' : ''}">
                 <div class="tool-item-header">
                   <span class="tool-item-name">${escapeHtml(t.name)}</span>
                   <span class="tool-item-index">#${i + 1}</span>
@@ -690,7 +690,7 @@ function renderHistoryMessage(m, targetContainer) {
                 </div>
                 <div class="tool-item-result">
                   <span class="tool-item-label">结果：</span>
-                  <span class="tool-result-text${t.error ? ' error' : ''}">${escapeHtml((t.result || '').length > 200 ? (t.result || '').substring(0, 200) + '...' : (t.result || ''))}</span>
+                  <span class="tool-result-text${t.error ? ' error' : ''}${t.skipped ? ' skipped' : ''}">${escapeHtml((t.result || '').length > 200 ? (t.result || '').substring(0, 200) + '...' : (t.result || ''))}</span>
                   ${(t.result || '').length > 200 ? `<button class="tool-result-expand" data-full="${escapeHtml(t.result)}">展开全部</button>` : ''}
                 </div>
               </div>
@@ -1165,25 +1165,25 @@ function renderToolSummary(stream, tools) {
       <span class="tool-summary-title">工具调用 (${tools.length} 个)${errorBadge}</span>
       <span class="tool-summary-toggle">▸</span>
     </div>
-    <div class="tool-summary-body collapsed">
-      ${tools.map((t, i) => `
-        <div class="tool-item${t.error ? ' error' : ''}">
-          <div class="tool-item-header">
-            <span class="tool-item-name">${escapeHtml(t.name)}</span>
-            <span class="tool-item-index">#${i + 1}</span>
+      <div class="tool-summary-body collapsed">
+        ${tools.map((t, i) => `
+          <div class="tool-item${t.error ? ' error' : ''}${t.skipped ? ' skipped' : ''}">
+            <div class="tool-item-header">
+              <span class="tool-item-name">${escapeHtml(t.name)}</span>
+              <span class="tool-item-index">#${i + 1}</span>
+            </div>
+            <div class="tool-item-args">
+              <span class="tool-item-label">参数：</span>
+              <code>${escapeHtml(JSON.stringify(t.arguments, null, 2))}</code>
+            </div>
+            <div class="tool-item-result">
+              <span class="tool-item-label">结果：</span>
+              <span class="tool-result-text${t.error ? ' error' : ''}${t.skipped ? ' skipped' : ''}">${escapeHtml(t.result.length > 200 ? t.result.substring(0, 200) + '...' : t.result)}</span>
+              ${t.result.length > 200 ? `<button class="tool-result-expand" data-full="${escapeHtml(t.result)}">展开全部</button>` : ''}
+            </div>
           </div>
-          <div class="tool-item-args">
-            <span class="tool-item-label">参数：</span>
-            <code>${escapeHtml(JSON.stringify(t.arguments, null, 2))}</code>
-          </div>
-          <div class="tool-item-result">
-            <span class="tool-item-label">结果：</span>
-            <span class="tool-result-text${t.error ? ' error' : ''}">${escapeHtml(t.result.length > 200 ? t.result.substring(0, 200) + '...' : t.result)}</span>
-            ${t.result.length > 200 ? `<button class="tool-result-expand" data-full="${escapeHtml(t.result)}">展开全部</button>` : ''}
-          </div>
-        </div>
-      `).join('')}
-    </div>
+        `).join('')}
+      </div>
   `;
 
   stream.toolSummaryEl.classList.remove('hidden');
@@ -1359,9 +1359,11 @@ function renderApprovalCard(stream, parsed) {
         <div class="approval-desc">${escapeHtml(it.desc || '')}</div>
         <details class="approval-args"><summary>参数</summary><pre>${escapeHtml(argsStr)}</pre></details>
         <div class="approval-actions">
-          <button class="btn-approve active" data-dec="approve">允许</button>
+          <button class="btn-skip" data-dec="skip">跳过</button>
+          <button class="btn-approve" data-dec="approve">允许</button>
           <button class="btn-reject" data-dec="reject">拒绝</button>
         </div>
+        <div class="approval-status"></div>
       </div>`;
   });
 
@@ -1372,54 +1374,47 @@ function renderApprovalCard(stream, parsed) {
     </div>
     <div class="approval-items">${itemsHtml}</div>
     <div class="approval-footer">
-      <button class="approval-submit">提交</button>
-      <span class="approval-hint">逐项选择「允许 / 拒绝」，然后提交</span>
+      <span class="approval-hint">对每项点击「跳过 / 允许 / 拒绝」即可执行，无需提交</span>
     </div>`;
   bar.appendChild(card);
 
-  // 逐项切换允许/拒绝
-  card.querySelectorAll('.approval-item').forEach(item => {
-    const btns = item.querySelectorAll('.approval-actions button');
-    btns.forEach(b => b.addEventListener('click', () => {
-      btns.forEach(x => x.classList.remove('active'));
-      b.classList.add('active');
-    }));
-  });
+  const sid = parsed.session_id;
+  const gid = parsed.group_id;
 
-  // 提交决议
-  card.querySelector('.approval-submit').addEventListener('click', async () => {
-    const decisions = [];
-    card.querySelectorAll('.approval-item').forEach(item => {
-      const dec = item.querySelector('.approval-actions button.active')?.dataset.dec || 'approve';
-      decisions.push({ item_id: item.dataset.item, decision: dec });
-    });
-    card.querySelectorAll('button').forEach(b => b.disabled = true);
-    const hint = card.querySelector('.approval-hint');
-    if (hint) hint.textContent = '提交中...';
-    try {
-      const sid = card.dataset.session;
-      const res = await fetch(`/api/chat/${sid}/approve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ group_id: parsed.group_id, decisions }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        if (hint) hint.textContent = '提交失败：' + (err.detail || res.status);
-        card.querySelectorAll('button').forEach(b => b.disabled = false);
-        return;
+  // 每项三个按钮：点击即单项提交并执行
+  card.querySelectorAll('.approval-item').forEach(item => {
+    const itemId = item.dataset.item;
+    const status = item.querySelector('.approval-status');
+    const btns = item.querySelectorAll('.approval-actions button');
+    btns.forEach(b => b.addEventListener('click', async () => {
+      const dec = b.dataset.dec;
+      // 立即禁用该项所有按钮，防止重复点击
+      btns.forEach(x => { x.disabled = true; x.classList.remove('chosen'); });
+      b.classList.add('chosen');
+      if (status) status.textContent = '提交中...';
+      try {
+        const res = await fetch(`/api/chat/${sid}/approve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ group_id: gid, decisions: [{ item_id: itemId, decision: dec }] }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          if (status) status.textContent = '提交失败：' + (err.detail || res.status);
+          btns.forEach(x => { x.disabled = false; });
+          return;
+        }
+        const label = dec === 'skip' ? '已跳过' : dec === 'approve' ? '已允许' : '已拒绝';
+        if (status) {
+          status.textContent = label + '，正在执行...';
+          status.className = 'approval-status dec-' + dec;
+        }
+        item.classList.add('decided', 'dec-' + dec);
+      } catch (e) {
+        if (status) status.textContent = '提交异常：' + e.message;
+        btns.forEach(x => { x.disabled = false; });
       }
-      // 提交成功：延迟隐藏整个审批栏
-      if (hint) hint.textContent = '已提交，正在执行...';
-      setTimeout(() => {
-        const bar = $('#approval-bar');
-        if (bar) bar.classList.add('hidden');
-        bar.innerHTML = '';
-      }, 800);
-    } catch (e) {
-      if (hint) hint.textContent = '提交异常：' + e.message;
-      card.querySelectorAll('button').forEach(b => b.disabled = false);
-    }
+    }));
   });
 }
 
