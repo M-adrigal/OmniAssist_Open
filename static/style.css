@@ -3101,3 +3101,18 @@ body {
   border-color: #444;
   color: #ccc;
 }
+/* 暗色模式下保留「允许/拒绝」的绿/红区分（修复 active 状态被覆盖看不清的问题）*/
+.dark .approval-bar .approval-actions .btn-approve.active {
+  background: #2e7d32;
+  border-color: #2e7d32;
+  color: #fff;
+}
+.dark .approval-bar .approval-actions .btn-reject.active {
+  background: #c62828;
+  border-color: #c62828;
+  color: #fff;
+}
+.dark .approval-bar .approval-actions button:hover:not(.active) {
+  background: #333;
+  border-color: #555;
+}
