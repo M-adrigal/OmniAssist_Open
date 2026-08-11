@@ -1215,10 +1215,13 @@ function renderToolSummary(stream, tools) {
 const RISK_LABELS = { safe: '安全', read: '只读', write: '写入', exec: '执行', admin: '管理员' };
 
 function renderApprovalCard(stream, parsed) {
-  const container = stream.container;
-  if (!container) return;
+  // 渲染到底部操作栏 #approval-bar（而非消息内）
+  const bar = $('#approval-bar');
+  if (!bar) return;
   // 防止重连重放时重复渲染同一分组
-  if (container.querySelector('.approval-card[data-group="' + parsed.group_id + '"]')) return;
+  if (bar.querySelector('.approval-card[data-group="' + parsed.group_id + '"]')) return;
+
+  bar.classList.remove('hidden');
 
   const card = document.createElement('div');
   card.className = 'approval-card';
@@ -1254,8 +1257,7 @@ function renderApprovalCard(stream, parsed) {
       <button class="approval-submit">提交</button>
       <span class="approval-hint">逐项选择「允许 / 拒绝」，然后提交</span>
     </div>`;
-  container.appendChild(card);
-  scrollToBottom();
+  bar.appendChild(card);
 
   // 逐项切换允许/拒绝
   card.querySelectorAll('.approval-item').forEach(item => {
@@ -1289,8 +1291,13 @@ function renderApprovalCard(stream, parsed) {
         card.querySelectorAll('button').forEach(b => b.disabled = false);
         return;
       }
-      card.classList.add('resolved');
+      // 提交成功：延迟隐藏整个审批栏
       if (hint) hint.textContent = '已提交，正在执行...';
+      setTimeout(() => {
+        const bar = $('#approval-bar');
+        if (bar) bar.classList.add('hidden');
+        bar.innerHTML = '';
+      }, 800);
     } catch (e) {
       if (hint) hint.textContent = '提交异常：' + e.message;
       card.querySelectorAll('button').forEach(b => b.disabled = false);
@@ -1299,11 +1306,21 @@ function renderApprovalCard(stream, parsed) {
 }
 
 function updateApprovalCardResolved(stream, parsed) {
-  const card = stream.container?.querySelector('.approval-card[data-group="' + parsed.group_id + '"]');
-  if (!card) return;
-  card.classList.add('resolved');
+  // 底部审批栏也响应 resolved 事件并隐藏
+  const bar = $('#approval-bar');
+  const card = bar?.querySelector('.approval-card[data-group="' + parsed.group_id + '"]');
+  if (card) {
+    setTimeout(() => {
+      if (bar) { bar.classList.add('hidden'); bar.innerHTML = ''; }
+    }, 600);
+    return;
+  }
+  // 兜底：历史消息内嵌卡片（只更新状态，不隐藏）
+  const legacyCard = stream.container?.querySelector('.approval-card[data-group="' + parsed.group_id + '"]');
+  if (!legacyCard) return;
+  legacyCard.classList.add('resolved');
   const decisions = parsed.decisions || {};
-  card.querySelectorAll('.approval-item').forEach(item => {
+  legacyCard.querySelectorAll('.approval-item').forEach(item => {
     const dec = decisions[item.dataset.item];
     if (dec) {
       const head = item.querySelector('.approval-item-head');

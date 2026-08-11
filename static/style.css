@@ -2758,15 +2758,47 @@ body {
   background: var(--bg);
   color: var(--text);
 }
-/* ===== 敏感操作审批卡片 ===== */
-.approval-card {
+/* ===== 敏感操作审批底部操作栏 ===== */
+.approval-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  max-width: 800px;
+  margin: 0 auto 8px;
+  width: calc(100% - 40px);
+  animation: approvalSlideUp 0.25s ease;
+}
+
+@keyframes approvalSlideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.approval-bar.hidden { display: none !important; }
+
+/* 审批卡片（在底部栏中使用） */
+.approval-bar .approval-card {
+  margin: 0;
+  border: 1px solid var(--danger, #e5484d);
+  border-radius: var(--radius-lg);
+  background: var(--bg-primary, #fff);
+  overflow: hidden;
+  box-shadow: 0 4px 20px rgba(229, 72, 77, 0.15), 0 0 0 1px rgba(229, 72, 77, 0.08);
+}
+
+/* 内嵌在消息中的旧审批卡片（兼容历史消息渲染） */
+.message-body > .approval-card,
+.session-messages > .approval-card {
   margin: 12px 0;
   border: 1px solid var(--danger, #e5484d);
   border-radius: 10px;
   background: var(--bg-hover, #fafafa);
   overflow: hidden;
+  opacity: 0.7;
+  pointer-events: none;
 }
-.approval-card.resolved {
+.message-body > .approval-card.resolved,
+.session-messages > .approval-card.resolved {
   opacity: 0.85;
   border-color: var(--border, #ddd);
 }
@@ -2852,3 +2884,23 @@ body {
 }
 .approval-submit:disabled { opacity: 0.6; cursor: default; }
 .approval-hint { font-size: 12px; color: var(--text-dim, #888); }
+
+/* 审批栏暗色模式 */
+.dark .approval-bar .approval-card {
+  background: #1a1a1a;
+  border-color: rgba(239, 68, 68, 0.5);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(239, 68, 68, 0.15);
+}
+.dark .approval-bar .approval-card-header {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: #333;
+}
+.dark .approval-bar .approval-item {
+  background: #222;
+  border-color: #333;
+}
+.dark .approval-bar .approval-actions button {
+  background: #2a2a2a;
+  border-color: #444;
+  color: #ccc;
+}
