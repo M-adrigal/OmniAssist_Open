@@ -150,8 +150,11 @@ document_output/
 | text | `.txt .md .csv .json .xml .html .css .js .py .log .yaml .yml` | `<pre><code>` 语法高亮 |
 | image | `.png .jpg .jpeg .gif .bmp .svg .webp .ico` | `<img>` 标签 |
 | pdf | `.pdf` | `<iframe>` 浏览器内置 PDF 阅读器 |
+| docx | `.docx` | 提取正文文本（`word/document.xml`）后 `<pre>` 展示 |
+| xlsx | `.xlsx` | 解析共享字符串后渲染为 HTML 表格 |
+| csv | `.csv` | 直接渲染为 HTML 表格 |
 
-Office 文档（`.docx .xlsx .pptx`）不支持浏览器端预览，仅提供下载。
+> 注：pptx 等少数格式仍仅提供下载；文本类预览支持的扩展名同 text 行。预览逻辑位于 `server/routes/files.py` 的 `/api/files/preview`。
 
 ### 5.3 消息存储格式
 
@@ -336,6 +339,40 @@ agent/skills/
 - `task_reviewer.py`: `analyze_failures(user_id)` — 分析失败模式
 - `task_reviewer.py`: `generate_suggestions(user_id)` — 生成优化建议
 
+### 5.11 审批与权限模式系统
+
+平台对敏感操作提供**双权限模式**与**聊天框审批门**，防止 LLM 自动执行不可信（用户自建）代码。
+
+**两种权限模式（会话级，由 `server/trust_store.py` 管理）**：
+- `request`（请求批准，**默认**）：敏感操作执行前需在聊天框逐项确认
+- `full`（完全访问权限）：敏感操作直接执行，不再弹确认卡片（提权模式，前端持续提示）
+
+**风险分级（登录时由 `server/main.py` 的 `_classify_skill_risk()` 判定，写入工具 `require_approval`）**：
+- 系统内置技能（`is_system=True`）：视为可信，在已加固沙箱中执行，**免审批**
+- 用户自建技能 local_execution：标为 `exec`，`require_approval=True` → 必经审批门
+- 用户自建技能 http_request：标为 `write`，`require_approval=True` → 必经审批门
+
+**审批状态机（由 `server/approval_store.py` 管理，进程内 asyncio.Future）**：
+- `ApprovalStore.create()` 创建一组待确认请求（含若干 item），持有 `asyncio.Future`
+- Agent 循环在工具执行前 `await future`；`POST /api/chat/{session_id}/approve` 在同一事件循环内 `set_result` 唤醒，**不阻塞事件循环**
+- 三选项 **allow / reject / skip**，前端点击即执行；`resolve_item()` 增量累积决议，全部项齐备后释放 future
+- `cancel_session()`：任务被停止/取消时整组记为 reject 并清理
+- 以 `session_id + group_id` 隔离，多用户并发互不影响
+
+**关键端点**（`server/routes/approval.py`）：
+- `POST /api/chat/{session_id}/approve` — 提交决议（校验会话归属，防越权确认他人会话），写入 `logs/audit.log`
+- `GET/POST /api/chat/{session_id}/trust` — 查询/切换权限模式（同样校验归属）
+
+**信任模式（角色级免确认）**：持有 `tools:execute_sensitive` 权限的角色可在信任模式下免除逐项确认。
+
+> ⚠️ 部署注意：审批状态机与信任状态机均为**单进程内存态**；若启用多 worker（如 `gunicorn -w N`），需替换为 Redis 等跨进程共享存储（接口保持一致）。
+
+**关键文件**：
+- `server/approval_store.py` — 审批状态机（Future + 增量决议）
+- `server/trust_store.py` — 会话级权限模式状态机 + 统一 `audit_log()`
+- `server/routes/approval.py` — 审批/信任 API 端点
+- `server/main.py` — `_classify_skill_risk()` 风险分级
+
 ## 6. NEVER 规则
 
 1. **NEVER** 在代码中硬编码 API Key、密码或密钥 — 使用 `AgentConfig` 加密存储或数据库
@@ -351,6 +388,8 @@ agent/skills/
 11. **NEVER** 移除 `chat.py` 中的 `MAX_MESSAGE_LENGTH`（10000）和 `sessions.py` 中的 `MAX_TITLE_LENGTH`（200）输入校验 — 防止资源耗尽攻击
 12. **NEVER** 移除 `chat_stream` 中的 `get_session()` 会话存在性检查 — 不存在会话必须返回 404
 13. **NEVER** 移除 `.session-messages` 的 `display: flex; flex-direction: column` CSS — 用户消息右对齐（`align-self: flex-end`）依赖父容器为 flex 容器
+14. **NEVER** 修改 `server/main.py` 的 `_classify_skill_risk()` 使不可信（用户自建）技能返回 `require_approval=False` — 否则 LLM 会自动执行用户自定义的危险代码，破坏审批门纵深防御
+15. **NEVER** 在 `server/approval_store.py` / `server/trust_store.py` 中移除 `session_id` 归属校验 — 审批与权限模式以会话隔离，防越权确认/切换他人会话
 
 ## 7. 测试
 
