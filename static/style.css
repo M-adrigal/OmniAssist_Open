@@ -1214,7 +1214,7 @@ body {
   border-color: var(--accent, #4f7cff);
   color: var(--accent, #4f7cff);
 }
-.cloud-ops { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.cloud-ops { display: flex; gap: 8px; flex-wrap: nowrap; align-items: center; }
 .badge-category {
   background: var(--bg-hover, #ececf1);
   color: var(--text-dim, #666);
@@ -1323,6 +1323,42 @@ body {
   height: 70vh;
   border: none;
   border-radius: var(--radius);
+}
+
+/* CSV 表格预览样式 */
+.preview-csv-table th {
+  background: var(--bg-tertiary);
+  padding: 8px 12px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-bottom: 2px solid var(--border);
+  position: sticky;
+  top: 0;
+}
+.preview-csv-table td {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border, #e0e0e8);
+  font-size: 13px;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-csv-table tr:nth-child(even) td {
+  background: rgba(0, 0, 0, 0.02);
+}
+.preview-csv-table tr:hover td {
+  background: var(--bg-hover);
+}
+
+/* 文件预览面板 */
+.cloud-preview-panel {
+  padding: 16px;
+}
+.cloud-preview-panel strong {
+  font-size: 15px;
 }
 
 .preview-unsupported {
@@ -2572,6 +2608,13 @@ body {
   white-space: nowrap;
 }
 
+/* 操作列：不截断，让按钮完整显示 */
+.cloud-table td.cloud-ops {
+  max-width: none;
+  overflow: visible;
+  min-width: 280px;
+}
+
 .cloud-table tr:hover td {
   background: var(--bg-hover);
 }
@@ -2585,14 +2628,15 @@ body {
   justify-content: center;
   background: var(--bg, #fff);
   border: 1px solid var(--border, #ddd);
-  padding: 5px 14px;
-  border-radius: 6px;
+  padding: 3px 10px;
+  border-radius: 5px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.4;
   text-decoration: none;
   color: var(--text, #333);
   transition: all 0.15s;
+  white-space: nowrap;
 }
 
 .cloud-table .btn-preview:hover,

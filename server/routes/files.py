@@ -1,7 +1,10 @@
 import os
 import re
 import json
+import zipfile
 import mimetypes
+import csv as csv_mod
+import io
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -298,6 +301,69 @@ def delete_file(path: str = Query(...), request: Request = None):
     return {"success": True, "message": f"文件 '{os.path.basename(full_path)}' 已删除"}
 
 
+# ===== 预览格式解析辅助函数 =====
+
+def _extract_docx_text(full_path: str, max_chars: int = 15000) -> str:
+    """从 docx 文件（ZIP 格式）中提取纯文本内容。"""
+    try:
+        with zipfile.ZipFile(full_path, 'r') as z:
+            xml_path = 'word/document.xml'
+            if xml_path not in z.namelist():
+                return "[无法读取文档内容]"
+            content = z.read(xml_path).decode('utf-8', errors='ignore')
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(content)
+        ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+        paragraphs = root.findall('.//w:p', ns)
+        texts = []
+        for p in paragraphs:
+            runs = p.findall('.//w:t', ns)
+            line = ''.join(r.text or '' for r in runs)
+            texts.append(line)
+        result = '\n'.join(texts)
+        if len(result) > max_chars:
+            result = result[:max_chars] + '\n\n... (内容已截断，共 {} 字符)'.format(len(result))
+        return result
+    except Exception as e:
+        return "[文档解析失败: {}]".format(str(e)[:100])
+
+
+def _render_csv_table(full_path: str, max_rows: int = 200) -> dict:
+    """将 CSV 文件渲染为 HTML 表格数据返回。"""
+    try:
+        with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+            reader = csv_mod.reader(f)
+            rows = list(reader)
+        if not rows:
+            return {"type": "csv_table", "html": "<p style='color:#999'>空文件</p>",
+                    "filename": os.path.basename(full_path), "rows": 0, "cols": 0}
+        headers = rows[0]
+        data_rows = rows[1:max_rows+1]
+        truncated = len(rows) - 1 > max_rows
+        th_html = ''.join('<th>{}</th>'.format(h) for h in headers)
+        trs = []
+        for r in data_rows:
+            tds = ''.join('<td>{}</td>'.format(c) for c in r)
+            trs.append('<tr>{}</tr>'.format(tds))
+        table_html = (
+            "<table class='preview-csv-table' style='width:100%;border-collapse:collapse;font-size:13px;'>"
+            "<thead><tr>{}</tr></thead>"
+            "<tbody>{}</tbody></table>"
+        ).format(th_html, ''.join(trs))
+        if truncated:
+            table_html += '<p style="color:#999;font-size:12px;margin-top:8px;">仅显示前 {} 行，共 {} 行数据</p>'.format(max_rows, len(rows)-1)
+        return {
+            "type": "csv_table",
+            "html": table_html,
+            "filename": os.path.basename(full_path),
+            "rows": len(rows) - 1,
+            "cols": len(headers),
+        }
+    except Exception as e:
+        return {"type": "text", "content": "[CSV 解析失败: {}]".format(e),
+                "filename": os.path.basename(full_path)}
+
+
 @router.get("/preview")
 def preview_file(path: str = Query(...), request: Request = None):
     user = get_current_user(request) if request else None
@@ -309,28 +375,70 @@ def preview_file(path: str = Query(...), request: Request = None):
         raise HTTPException(status_code=403, detail="禁止访问项目外的文件")
 
     if user and not _check_file_access(full_path, project_root, user):
-        raise HTTPException(status_code=403, detail="无权访问此文件")
+        raise HTTPException(status_code=403, detail="无权操作此文件")
 
     if not os.path.isfile(full_path):
         raise HTTPException(status_code=404, detail="文件不存在")
 
     ext = os.path.splitext(full_path)[1].lower()
-    text_extensions = {'.txt', '.md', '.csv', '.json', '.xml', '.html', '.css', '.js', '.py', '.log', '.yaml', '.yml', '.ini', '.cfg', '.toml'}
+    basename = os.path.basename(full_path)
+
+    # ---- 文本类（直接读取，扩展支持更多编程语言） ----
+    text_extensions = {'.txt', '.md', '.json', '.xml', '.html', '.css', '.js', '.py',
+                       '.log', '.yaml', '.yml', '.ini', '.cfg', '.toml', '.sh', '.sql',
+                       '.ts', '.jsx', '.tsx', '.vue', '.java', '.c', '.cpp', '.h', '.go',
+                       '.rs', '.rb', '.php', '.swift', '.kt', '.scala', '.r', '.m'}
     image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.webp', '.ico'}
-    pdf_extensions = {'.pdf'}
+
+    # CSV 单独处理：渲染为表格
+    if ext == '.csv':
+        return _render_csv_table(full_path)
 
     if ext in text_extensions:
         try:
             with open(full_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-            return {"type": "text", "content": content, "filename": os.path.basename(full_path)}
+            if len(content) > 50000:
+                content = content[:50000] + '\n\n... (文件过大，已截断，共 {} 字符)'.format(len(content))
+            return {"type": "text", "content": content, "filename": basename}
         except Exception:
-            return {"type": "unsupported", "filename": os.path.basename(full_path)}
+            return {"type": "unsupported", "filename": basename, "hint": "无法读取文本内容"}
 
     if ext in image_extensions:
-        return {"type": "image", "path": path, "filename": os.path.basename(full_path)}
+        return {"type": "image", "path": path, "filename": basename}
 
-    if ext in pdf_extensions:
-        return {"type": "pdf", "path": path, "filename": os.path.basename(full_path)}
+    # docx：提取纯文本（ZIP 内 XML 解析）
+    if ext == '.docx':
+        text = _extract_docx_text(full_path)
+        return {"type": "docx_text", "content": text, "filename": basename}
 
-    return {"type": "unsupported", "filename": os.path.basename(full_path)}
+    # xlsx：提取共享字符串作为预览
+    if ext == '.xlsx':
+        try:
+            with zipfile.ZipFile(full_path, 'r') as z:
+                ss_path = 'xl/sharedStrings.xml'
+                if ss_path in z.namelist():
+                    xml_content = z.read(ss_path).decode('utf-8', errors='ignore')
+                    import xml.etree.ElementTree as ET
+                    root = ET.fromstring(xml_content)
+                    ns = {'main': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+                    strings = [si.text or '' for si in root.findall('.//main:t', ns)]
+                    preview = ' | '.join(strings[:100])
+                    if len(strings) > 100:
+                        preview += ' ... (共 {} 个字符串)'.format(len(strings))
+                    return {"type": "xlsx_preview", "content": preview, "filename": basename}
+                else:
+                    return {"type": "unsupported", "filename": basename,
+                            "hint": "Excel 文件暂无在线预览，可下载后打开"}
+        except Exception:
+            return {"type": "unsupported", "filename": basename, "hint": "Excel 解析失败"}
+
+    if ext == '.pdf':
+        return {"type": "pdf", "path": path, "filename": basename}
+
+    if ext == '.pptx':
+        return {"type": "unsupported", "filename": basename,
+                "hint": "PPT 暂无在线预览，可下载后用 PowerPoint 或 WPS 打开"}
+
+    return {"type": "unsupported", "filename": basename,
+            "hint": "暂不支持 .{} 格式的在线预览，可下载后用对应软件打开".format(ext)}
