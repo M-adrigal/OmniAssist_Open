@@ -82,7 +82,10 @@ def _recursive_list_library(user_id, project_root):
             full = os.path.join(dirpath, fn)
             rel = os.path.relpath(full, root)
             parts = rel.split(os.sep)
-            category = parts[0] if len(parts) > 1 else "其他"
+            top_dir = parts[0] if len(parts) > 1 else "其他"
+            # 来源：uploads/ 下为用户上传，其余（word_output 等）为平台生成
+            source = "upload" if top_dir == "uploads" else "generated"
+            category = LIBRARY_CATEGORY_LABELS.get(top_dir, top_dir)
             ext = os.path.splitext(fn)[1].lower().lstrip(".")
             stat = os.stat(full)
             entry = {
@@ -90,7 +93,8 @@ def _recursive_list_library(user_id, project_root):
                 "path": os.path.join(OUTPUT_ROOT, str(user_id), rel),
                 "size": stat.st_size,
                 "ext": ext,
-                "category": LIBRARY_CATEGORY_LABELS.get(category, category),
+                "source": source,
+                "category": category,
                 "mtime": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
             }
             if os.path.splitext(fn)[1].lower() in _LIBRARY_TEXT_EXTS:

@@ -2012,7 +2012,7 @@ async function loadCloudFiles() {
             try {
               const users = await API.get('/api/users');
               const cur = data.target_uid;
-              sel.innerHTML = users.map(u => `<option value="${u.id}"${u.id === cur ? ' selected' : ''}>${escapeHtml(u.username)} (ID:${u.id})</option>`).join('');
+              sel.innerHTML = users.map(u => `<option value="${u.id}"${u.id === cur ? ' selected' : ''}>${escapeHtml(u.username)}</option>`).join('');
             } catch (_) {
               sel.classList.add('hidden');
             }
@@ -2052,14 +2052,17 @@ function renderCloudFiles(files) {
     const icon = iconMap[f.ext] || 'F';
     const dpath = escapeHtml(f.path);
     const dname = escapeHtml(f.name);
+    // 来源徽标：用户上传（蓝）/ 平台生成（绿）
+    const isUpload = f.source === 'upload';
+    const sourceBadge = `<span class="badge badge-source ${isUpload ? 'badge-source-upload' : 'badge-source-generated'}">${isUpload ? '&#128229; 用户上传' : '&#129302; 平台生成'}</span>`;
     return `
       <tr>
         <td title="${dname}">
           <span class="picker-file-icon ${iconCls}" style="display:inline-flex;vertical-align:middle;margin-right:6px;">${icon}</span>
           ${dname}
         </td>
-        <td><span class="badge badge-category">${escapeHtml(f.category || '其他')}</span></td>
-        <td><span class="badge badge-${iconCls}">${(f.ext || 'file').toUpperCase()}</span></td>
+        <td>${sourceBadge}</td>
+        <td><span class="badge badge-type">${(f.ext || 'file').toUpperCase()}</span></td>
         <td>${sizeStr}</td>
         <td>${escapeHtml(f.mtime || '')}</td>
         <td class="cloud-ops">
