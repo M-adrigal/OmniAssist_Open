@@ -1197,6 +1197,39 @@ body {
   background: var(--accent-hover);
 }
 
+/* 文件库操作按钮（下载/重命名/删除）与类别徽标 */
+.btn-download, .btn-rename {
+  display: inline-block;
+  padding: 3px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #ddd);
+  background: var(--bg, #fff);
+  color: var(--text, #222);
+  text-decoration: none;
+  cursor: pointer;
+  line-height: 1.6;
+}
+.btn-download:hover, .btn-rename:hover {
+  border-color: var(--accent, #4f7cff);
+  color: var(--accent, #4f7cff);
+}
+.cloud-ops { display: flex; gap: 6px; flex-wrap: wrap; }
+.badge-category {
+  background: var(--bg-hover, #ececf1);
+  color: var(--text-dim, #666);
+  border: 1px solid var(--border, #e0e0e8);
+}
+#cloud-user-select {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #ddd);
+  background: var(--bg, #fff);
+  color: var(--text, #222);
+  font-size: 13px;
+  max-width: 220px;
+}
+
 /* 文件预览 */
 .modal-xl {
   width: 85vw;

@@ -1,6 +1,8 @@
 import os
+import re
 import json
 import mimetypes
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from server.models import FileItem
@@ -45,6 +47,61 @@ def _check_file_access(full_path: str, project_root: str, user: dict) -> bool:
     except ValueError:
         return False
     return file_user_id == user["id"]
+
+
+# 文件库类别标签：立即子目录名 -> 中文标签
+LIBRARY_CATEGORY_LABELS = {
+    "uploads": "上传文件",
+    "word_output": "Word 文档",
+    "excel_output": "Excel 表格",
+    "pdf_output": "PDF 文档",
+    "ppt_output": "PPT 演示",
+    "csv_output": "CSV 文件",
+    "image_output": "图片文件",
+    "text_output": "文本文件",
+    "generated": "生成文件",
+}
+
+_LIBRARY_TEXT_EXTS = {
+    '.txt', '.md', '.csv', '.json', '.xml', '.html', '.css', '.js', '.py',
+    '.log', '.yaml', '.yml', '.ini', '.cfg', '.toml', '.sh', '.sql',
+}
+
+
+def _recursive_list_library(user_id, project_root):
+    """递归扫描 document_output/{user_id}/ 下所有文件（合并生成文件与上传文件）。"""
+    root = os.path.join(project_root, OUTPUT_ROOT, str(user_id))
+    result = []
+    if not os.path.isdir(root):
+        return result
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for fn in filenames:
+            if fn.startswith("."):
+                continue
+            full = os.path.join(dirpath, fn)
+            rel = os.path.relpath(full, root)
+            parts = rel.split(os.sep)
+            category = parts[0] if len(parts) > 1 else "其他"
+            ext = os.path.splitext(fn)[1].lower().lstrip(".")
+            stat = os.stat(full)
+            entry = {
+                "name": fn,
+                "path": os.path.join(OUTPUT_ROOT, str(user_id), rel),
+                "size": stat.st_size,
+                "ext": ext,
+                "category": LIBRARY_CATEGORY_LABELS.get(category, category),
+                "mtime": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
+            }
+            if os.path.splitext(fn)[1].lower() in _LIBRARY_TEXT_EXTS:
+                try:
+                    with open(full, "r", encoding="utf-8") as f:
+                        entry["content_preview"] = f.read(300)
+                except Exception:
+                    entry["content_preview"] = ""
+            result.append(entry)
+    result.sort(key=lambda x: x["mtime"], reverse=True)
+    return result
 
 
 TYPE_LABELS = {
@@ -125,6 +182,66 @@ def list_files(request: Request):
         ))
 
     return result
+
+
+@router.get("/library")
+def list_library(request: Request, search: str = Query(""), user_id: int = Query(None)):
+    """列出某用户的统一文件库（合并生成文件与上传文件），支持搜索与管理员切换用户。"""
+    user = get_current_user(request)
+    project_root = get_project_root()
+
+    target_uid = user["id"]
+    if user_id is not None:
+        if not _is_admin(user):
+            raise HTTPException(status_code=403, detail="仅管理员可查看其他用户的文件库")
+        target_uid = int(user_id)
+
+    files = _recursive_list_library(target_uid, project_root)
+    if search and search.strip():
+        s = search.strip().lower()
+        files = [f for f in files if s in f["name"].lower()]
+
+    return {
+        "files": files,
+        "count": len(files),
+        "is_admin": _is_admin(user),
+        "target_uid": target_uid,
+    }
+
+
+@router.post("/rename")
+def rename_file(request: Request, body: dict):
+    """在用户文件库内重命名文件（仅限同目录内，带访问校验与字符白名单）。"""
+    user = get_current_user(request)
+    project_root = get_project_root()
+
+    path = (body.get("path") or "").strip()
+    new_name = (body.get("new_name") or "").strip()
+    if not path or not new_name:
+        raise HTTPException(status_code=400, detail="路径与新文件名均不能为空")
+
+    full = os.path.realpath(os.path.join(project_root, path))
+    out_root = os.path.realpath(os.path.join(project_root, OUTPUT_ROOT))
+    if not full.startswith(out_root):
+        raise HTTPException(status_code=403, detail="禁止访问项目外文件")
+    if not _check_file_access(full, project_root, user):
+        raise HTTPException(status_code=403, detail="无权操作此文件")
+    if not os.path.isfile(full):
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    # 仅允许同目录内重命名，且文件名做白名单净化
+    new_name = os.path.basename(new_name)
+    if not re.match(r"^[\w.\- ()（）]+$", new_name):
+        raise HTTPException(status_code=400, detail="文件名含非法字符")
+    if new_name == os.path.basename(full):
+        return {"success": True, "new_path": path, "new_name": new_name}
+
+    new_full = os.path.join(os.path.dirname(full), new_name)
+    if os.path.exists(new_full):
+        raise HTTPException(status_code=400, detail="同名文件已存在")
+    os.rename(full, new_full)
+    new_path = os.path.relpath(new_full, project_root)
+    return {"success": True, "new_path": new_path, "new_name": new_name}
 
 
 @router.get("/download")

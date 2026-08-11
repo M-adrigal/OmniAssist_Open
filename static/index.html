@@ -394,27 +394,28 @@
   </div>
 </div>
 
-<!-- 模态框: 云文件管理 -->
+<!-- 模态框: 我的文件库 -->
 <div id="modal-cloud-files" class="modal hidden">
   <div class="modal-overlay"></div>
   <div class="modal-content modal-xl">
     <div class="modal-header">
-      <h3>云文件管理</h3>
+      <h3>我的文件库</h3>
       <button class="btn-icon modal-close">&times;</button>
     </div>
     <div class="modal-body">
       <div class="cloud-toolbar">
         <input type="text" id="cloud-search" placeholder="搜索文件名...">
+        <select id="cloud-user-select" class="hidden"></select>
       </div>
       <div class="cloud-table-wrap">
         <table class="cloud-table">
           <thead>
             <tr>
               <th>文件名</th>
+              <th>类别</th>
               <th>类型</th>
               <th>大小</th>
-              <th>上传时间</th>
-              <th>所属会话</th>
+              <th>时间</th>
               <th>操作</th>
             </tr>
           </thead>

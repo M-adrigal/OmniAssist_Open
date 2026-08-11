@@ -1985,7 +1985,9 @@ function clearAttachedFiles() {
   renderFileChips();
 }
 
-// ===== 云文件管理 =====
+// ===== 我的文件库（合并生成文件与上传文件）=====
+let _libraryTargetUid = null;  // 管理员切换查看的目标用户
+
 async function loadCloudFiles() {
   const search = $('#cloud-search') ? $('#cloud-search').value : '';
   const tbody = $('#cloud-table-body');
@@ -1995,7 +1997,36 @@ async function loadCloudFiles() {
   if (previewPanel) previewPanel.remove();
 
   try {
-    const data = await API.get(`/api/files/all-uploads?search=${encodeURIComponent(search)}`);
+    const params = new URLSearchParams();
+    if (search) params.set('search', search);
+    if (_libraryTargetUid != null) params.set('user_id', _libraryTargetUid);
+    const data = await API.get(`/api/files/library?${params.toString()}`);
+    // 管理员：填充用户选择框，可切换查看任意用户的文件库
+    const sel = $('#cloud-user-select');
+    if (sel) {
+        if (data.is_admin) {
+          sel.classList.remove('hidden');
+          _libraryTargetUid = data.target_uid;
+          if (sel.dataset.loaded !== '1') {
+            sel.dataset.loaded = '1';
+            try {
+              const users = await API.get('/api/users');
+              const cur = data.target_uid;
+              sel.innerHTML = users.map(u => `<option value="${u.id}"${u.id === cur ? ' selected' : ''}>${escapeHtml(u.username)} (ID:${u.id})</option>`).join('');
+            } catch (_) {
+              sel.classList.add('hidden');
+            }
+            sel.addEventListener('change', () => {
+              _libraryTargetUid = sel.value ? parseInt(sel.value) : null;
+              loadCloudFiles();
+            });
+          } else {
+            sel.value = String(data.target_uid);
+          }
+        } else {
+        sel.classList.add('hidden');
+      }
+    }
     renderCloudFiles(data.files || []);
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="6" class="loading-text" style="color:var(--danger)">加载失败: ${escapeHtml(e.message)}</td></tr>`;
@@ -2005,68 +2036,79 @@ async function loadCloudFiles() {
 function renderCloudFiles(files) {
   const tbody = $('#cloud-table-body');
   if (!files || files.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="loading-text">暂无上传文件</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="loading-text">文件库为空</td></tr>';
     return;
   }
 
   const iconMap = {
-    text: 'T', pdf: 'P', docx: 'W', xlsx: 'E', pptx: 'S', csv: 'C',
+    txt: 'T', md: 'M', csv: 'C', json: 'J', xml: 'X', html: 'H', css: 'C', js: 'JS',
+    py: 'P', pdf: 'P', docx: 'W', xlsx: 'E', pptx: 'S', png: 'I', jpg: 'I', jpeg: 'I',
+    gif: 'I', bmp: 'I', svg: 'I', webp: 'I', ico: 'I',
   };
 
-  tbody.innerHTML = files.map(f => {
+  tbody.innerHTML = files.map((f, i) => {
     const sizeStr = f.size < 1024 ? `${f.size}B` : f.size < 1024 * 1024 ? `${(f.size / 1024).toFixed(1)}KB` : `${(f.size / (1024 * 1024)).toFixed(1)}MB`;
-    const icon = iconMap[f.type] || 'F';
-    const iconCls = iconMap[f.type] ? f.type : 'text';
+    const iconCls = iconMap[f.ext] ? f.ext : 'text';
+    const icon = iconMap[f.ext] || 'F';
+    const dpath = escapeHtml(f.path);
+    const dname = escapeHtml(f.name);
     return `
       <tr>
-        <td title="${escapeHtml(f.filename)}">
+        <td title="${dname}">
           <span class="picker-file-icon ${iconCls}" style="display:inline-flex;vertical-align:middle;margin-right:6px;">${icon}</span>
-          ${escapeHtml(f.filename)}
+          ${dname}
         </td>
-        <td><span class="badge badge-${iconCls}">${f.type.toUpperCase()}</span></td>
+        <td><span class="badge badge-category">${escapeHtml(f.category || '其他')}</span></td>
+        <td><span class="badge badge-${iconCls}">${(f.ext || 'file').toUpperCase()}</span></td>
         <td>${sizeStr}</td>
-        <td>${escapeHtml(f.upload_time || '')}</td>
-        <td>${escapeHtml(f.session_id || '')}</td>
-        <td>
-          <button class="btn-preview" data-path="${escapeHtml(f.path)}">预览</button>
-          <button class="btn-delete-cloud" data-path="${escapeHtml(f.path)}" data-filename="${escapeHtml(f.filename)}">删除</button>
+        <td>${escapeHtml(f.mtime || '')}</td>
+        <td class="cloud-ops">
+          <button class="btn-preview" data-idx="${i}">预览</button>
+          <a class="btn-download" href="/api/files/download?path=${encodeURIComponent(f.path)}" target="_blank" rel="noopener">下载</a>
+          <button class="btn-rename" data-idx="${i}">重命名</button>
+          <button class="btn-delete-cloud" data-idx="${i}">删除</button>
         </td>
       </tr>`;
   }).join('');
 
   tbody.querySelectorAll('.btn-preview').forEach(btn => {
     btn.addEventListener('click', () => {
-      const file = files.find(f => f.path === btn.dataset.path);
-      if (file) showCloudPreview(file);
+      const f = files[parseInt(btn.dataset.idx)];
+      if (f) previewOutputFile(f.path, f.name);
+    });
+  });
+
+  tbody.querySelectorAll('.btn-rename').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const f = files[parseInt(btn.dataset.idx)];
+      if (!f) return;
+      const newName = prompt(`重命名文件「${f.name}」为：`, f.name);
+      if (!newName || newName.trim() === f.name) return;
+      try {
+        await API.post('/api/files/rename', { path: f.path, new_name: newName.trim() });
+        showToast('已重命名', 'success');
+        loadCloudFiles();
+      } catch (e) {
+        showToast('重命名失败: ' + e.message, 'error');
+      }
     });
   });
 
   tbody.querySelectorAll('.btn-delete-cloud').forEach(btn => {
     btn.addEventListener('click', async () => {
-      const filename = btn.dataset.filename;
-      const confirmed = await showConfirmDialog('删除文件', `确定要删除 "${filename}" 吗？此操作不可撤销。`, '删除');
+      const f = files[parseInt(btn.dataset.idx)];
+      if (!f) return;
+      const confirmed = await showConfirmDialog('删除文件', `确定要删除 "${f.name}" 吗？此操作不可撤销。`, '删除');
       if (!confirmed) return;
       try {
-        await API.del(`/api/files/all-uploads?path=${encodeURIComponent(btn.dataset.path)}`);
-        showToast(`已删除 "${filename}"`, 'success');
+        await API.del(`/api/files?path=${encodeURIComponent(f.path)}`);
+        showToast(`已删除 "${f.name}"`, 'success');
         loadCloudFiles();
       } catch (e) {
         showToast('删除失败: ' + e.message, 'error');
       }
     });
   });
-}
-
-function showCloudPreview(file) {
-  const existingPanel = $('#cloud-preview-panel');
-  if (existingPanel) existingPanel.remove();
-
-  const modalBody = $('#modal-cloud-files').querySelector('.modal-body');
-  const panel = document.createElement('div');
-  panel.id = 'cloud-preview-panel';
-  panel.className = 'cloud-preview-panel';
-  panel.innerHTML = `<strong>${escapeHtml(file.filename)}</strong><br><br>${escapeHtml(file.content_preview || '(无内容预览)')}`;
-  modalBody.appendChild(panel);
 }
 
 // ===== 技能列表 =====
