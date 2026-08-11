@@ -650,7 +650,7 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 14px;
+  margin-top: 14px;
 }
 
 .btn-web-search,
