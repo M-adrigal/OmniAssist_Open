@@ -782,6 +782,51 @@ async def _stream_llm_async(llm, chat_messages, tools, api_params):
             await loop.run_in_executor(None, stream.close)
 
 
+def _snapshot_output_files(user_id):
+    """递归收集 document_output/{user_id}/ 下所有文件的相对路径集合（相对该目录）。"""
+    root = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "document_output", str(user_id),
+    )
+    result = set()
+    if not os.path.isdir(root):
+        return result
+    for dirpath, dirnames, filenames in os.walk(root):
+        # 排除隐藏目录（如 .DS_Store 所在目录）与隐藏文件
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for fn in filenames:
+            if fn.startswith("."):
+                continue
+            result.add(os.path.relpath(os.path.join(dirpath, fn), root))
+    return result
+
+
+def _collect_new_output_files(user_id, baseline):
+    """对比基线，返回本轮对话新增的文件列表（path 为相对项目根，供前端预览/下载）。"""
+    root = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "document_output", str(user_id),
+    )
+    if not os.path.isdir(root):
+        return []
+    current = _snapshot_output_files(user_id)
+    new = sorted(current - baseline)
+    files = []
+    for rel in new:
+        full = os.path.join(root, rel)
+        try:
+            size = os.path.getsize(full)
+        except OSError:
+            size = 0
+        files.append({
+            "name": os.path.basename(rel),
+            "path": os.path.join("document_output", str(user_id), rel),
+            "size": size,
+            "ext": os.path.splitext(rel)[1].lower().lstrip("."),
+        })
+    return files
+
+
 async def _stream_chat(message: str, session_id: str = None, web_search: str = "off", user_id: int = None, show_thought: bool = False):
     set_context(user_id=user_id, session_id=session_id)
     # 角色级免确认（tools:execute_sensitive），整个对话只判定一次
@@ -1016,6 +1061,8 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
         all_tool_calls = []
         all_thoughts = []
         _consecutive_failures = {}  # {tool_name: count} — 连续失败计数器
+        # 本轮对话开始前的产出文件基线，用于结束前 diff 出新增文件并推送给前端
+        _output_baseline = _snapshot_output_files(user_id)
 
         user_ctx = {
             "user_id": user_id,
@@ -1162,6 +1209,11 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                         thinking, answer = _split_thinking(full_content)
                         if thinking and show_thought:
                             all_thoughts.append(thinking)
+
+                    # 结束前推送本轮新增的产出文件，让前端在对话内可见可下载
+                    _new_files = _collect_new_output_files(user_id, _output_baseline)
+                    if _new_files:
+                        yield f"data: {json.dumps({'type': 'files_created', 'files': _new_files}, ensure_ascii=False)}\n\n"
 
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     _done_sent = True
@@ -1370,6 +1422,10 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
     finally:
         if not _done_sent:
+            # 异常/中断退出时仍推送本轮新增的产出文件，保证用户可见
+            _new_files = _collect_new_output_files(user_id, _output_baseline)
+            if _new_files:
+                yield f"data: {json.dumps({'type': 'files_created', 'files': _new_files}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         # Fallback: 异常退出时兜底保存。仅当已产出过真实助手内容才写入助手消息，
         # 否则只保留用户消息，避免"(任务执行中断)"等虚假内容污染对话上下文、导致下一轮继续失败。

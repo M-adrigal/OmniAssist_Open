@@ -1096,6 +1096,7 @@ function createAssistantContainer() {
       </div>
       <div class="tool-summary hidden"></div>
       <div class="answer-area streaming-cursor"></div>
+      <div class="output-files hidden"></div>
     </div>
   `;
   container.appendChild(div);
@@ -1119,6 +1120,7 @@ function createAssistantContainer() {
     thinkDone: false,
     toolSummaryEl: div.querySelector('.tool-summary'),
     answerEl: div.querySelector('.answer-area'),
+    outputFilesEl: div.querySelector('.output-files'),
     answerContent: '',
     tools: [],
     hasTools: false,
@@ -1209,6 +1211,88 @@ function renderToolSummary(stream, tools) {
       }
     });
   });
+}
+
+// ===== 产出文件卡片（对话内可见可下载）=====
+const OUTPUT_TEXT_EXTS = ['txt','md','csv','json','xml','html','css','js','py','log','yaml','yml','ini','cfg','toml'];
+const OUTPUT_PREVIEW_EXTS = [...OUTPUT_TEXT_EXTS, 'png','jpg','jpeg','gif','bmp','svg','webp','ico','pdf'];
+
+function outputFileIcon(ext) {
+  const map = {
+    txt:'📄', md:'📝', csv:'📊', json:'🔧', xml:'📄', html:'🌐', css:'🎨', js:'📜', py:'🐍',
+    pdf:'📕', png:'🖼️', jpg:'🖼️', jpeg:'🖼️', gif:'🖼️', bmp:'🖼️', svg:'🖼️', webp:'🖼️', ico:'🖼️',
+    doc:'📘', docx:'📘', xls:'📗', xlsx:'📗', ppt:'📙', pptx:'📙'
+  };
+  return map[ext] || '📄';
+}
+
+function formatFileSize(bytes) {
+  if (!bytes && bytes !== 0) return '';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+function renderOutputFiles(stream, files) {
+  if (!files || files.length === 0) return;
+  const el = stream.outputFilesEl;
+  if (!el) return;
+  stream.hasOutputFiles = true;
+
+  const cards = files.map(f => {
+    const ext = f.ext || '';
+    const previewable = OUTPUT_PREVIEW_EXTS.includes(ext);
+    const previewBtn = previewable
+      ? `<button class="of-preview" data-path="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}">预览</button>` : '';
+    const sizeStr = formatFileSize(f.size);
+    const meta = [ext ? ext.toUpperCase() : 'FILE', sizeStr].filter(Boolean).join(' · ');
+    return `<div class="output-file-card">
+      <span class="of-icon">${outputFileIcon(ext)}</span>
+      <div class="of-info">
+        <div class="of-name" title="${escapeHtml(f.path)}">${escapeHtml(f.name)}</div>
+        <div class="of-meta">${escapeHtml(meta)}</div>
+      </div>
+      <div class="of-actions">
+        ${previewBtn}
+        <a class="of-download" href="/api/files/download?path=${encodeURIComponent(f.path)}" target="_blank" rel="noopener">下载</a>
+      </div>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `<div class="output-files-header"><span class="of-title">📎 产出文件 (${files.length})</span></div>${cards}`;
+  el.classList.remove('hidden');
+
+  el.querySelectorAll('.of-preview').forEach(btn => {
+    btn.addEventListener('click', () => previewOutputFile(btn.dataset.path, btn.dataset.name));
+  });
+}
+
+async function previewOutputFile(path, filename) {
+  const modal = $('#modal-cloud-files');
+  if (!modal) {
+    showToast('预览组件未加载', 'error');
+    return;
+  }
+  const body = modal.querySelector('.modal-body');
+  if (body) body.innerHTML = '<p class="loading-text">加载预览...</p>';
+  openModal('modal-cloud-files');
+  try {
+    const res = await fetch(`/api/files/preview?path=${encodeURIComponent(path)}`);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if (!body) return;
+    if (data.type === 'text') {
+      body.innerHTML = `<div class="cloud-preview-panel"><strong>${escapeHtml(filename)}</strong><pre class="preview-text">${escapeHtml(data.content)}</pre></div>`;
+    } else if (data.type === 'image') {
+      body.innerHTML = `<div class="cloud-preview-panel"><strong>${escapeHtml(filename)}</strong><br><img src="/api/files/download?path=${encodeURIComponent(path)}&inline=true" style="max-width:100%;border-radius:8px;"></div>`;
+    } else if (data.type === 'pdf') {
+      body.innerHTML = `<div class="cloud-preview-panel"><strong>${escapeHtml(filename)}</strong><br><iframe src="/api/files/download?path=${encodeURIComponent(path)}&inline=true" style="width:100%;height:70vh;border:0;border-radius:8px;"></iframe></div>`;
+    } else {
+      body.innerHTML = `<div class="cloud-preview-panel"><strong>${escapeHtml(filename)}</strong><br><span style="color:var(--text-dim);">该文件类型暂不支持预览，请使用「下载」查看。</span></div>`;
+    }
+  } catch (e) {
+    if (body) body.innerHTML = `<p style="color:var(--danger)">预览失败: ${escapeHtml(e.message)}</p>`;
+  }
 }
 
 // ===== 敏感操作审批卡片 =====
@@ -1502,6 +1586,10 @@ function handleStreamEvent(stream, parsed) {
   }
   if (parsed.type === 'tool_summary') {
     renderToolSummary(stream, parsed.tools);
+    return null;
+  }
+  if (parsed.type === 'files_created') {
+    renderOutputFiles(stream, parsed.files);
     return null;
   }
   if ((parsed.type === 'content' || parsed.type === 'token') && parsed.content) {
