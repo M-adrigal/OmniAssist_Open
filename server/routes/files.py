@@ -189,17 +189,30 @@ def list_files(request: Request):
 
 @router.get("/library")
 def list_library(request: Request, search: str = Query("")):
-    """列出当前用户的统一文件库（合并生成文件与上传文件），支持搜索。
+    """列出当前用户的统一文件库（合并生成文件与上传文件），支持模糊搜索。
 
     仅返回当前登录用户自己的文件，管理员亦只能查看自身文件，实现用户隔离。
+
+    模糊匹配规则：查询词按空格拆分为多个关键词，文件名、内容摘要、文档类型、
+    扩展名、来源（上传/生成）中全部命中即视为匹配（不区分大小写、支持中英文子串）。
     """
     user = get_current_user(request)
     project_root = get_project_root()
 
     files = _recursive_list_library(user["id"], project_root)
     if search and search.strip():
-        s = search.strip().lower()
-        files = [f for f in files if s in f["name"].lower()]
+        tokens = [t for t in search.strip().lower().split() if t]
+        if tokens:
+            def _match(f):
+                haystack = " ".join([
+                    f.get("name", ""),
+                    f.get("content_preview", ""),
+                    f.get("category", ""),
+                    f.get("ext", ""),
+                    "上传" if f.get("source") == "upload" else "生成",
+                ]).lower()
+                return all(tok in haystack for tok in tokens)
+            files = [f for f in files if _match(f)]
 
     return {
         "files": files,

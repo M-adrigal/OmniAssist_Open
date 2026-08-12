@@ -3326,24 +3326,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  const cloudSearch = $('#cloud-search');
-  if (cloudSearch) {
-    let cloudSearchTimer;
-    cloudSearch.addEventListener('input', () => {
+  // 文件库搜索（事件委托：骨架重建后旧 input 会被销毁，绑定在 document 上可持久生效）
+  let cloudSearchTimer;
+  document.addEventListener('input', (e) => {
+    if (e.target && e.target.id === 'cloud-search') {
       clearTimeout(cloudSearchTimer);
       cloudSearchTimer = setTimeout(() => loadCloudFiles(), 300);
-    });
-  }
+    }
+  });
 
-  // 文件库「文档类型」「来源方式」筛选（前端即时筛选，无需重新请求）
-  const cloudTypeFilter = $('#cloud-type-filter');
-  if (cloudTypeFilter) {
-    cloudTypeFilter.addEventListener('change', _applyCloudFilters);
-  }
-  const cloudSourceFilter = $('#cloud-source-filter');
-  if (cloudSourceFilter) {
-    cloudSourceFilter.addEventListener('change', _applyCloudFilters);
-  }
+  // 文件库「文档类型」「来源方式」筛选（事件委托，同上原因）
+  document.addEventListener('change', (e) => {
+    if (e.target && (e.target.id === 'cloud-type-filter' || e.target.id === 'cloud-source-filter')) {
+      _applyCloudFilters();
+    }
+  });
 
   const pickerSearch = $('#picker-search');
   if (pickerSearch) {
