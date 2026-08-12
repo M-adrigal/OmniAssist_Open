@@ -2055,13 +2055,46 @@ function clearAttachedFiles() {
 // ===== 我的文件库（合并生成文件与上传文件）=====
 let _cloudFiles = [];  // 当前用户文件库全量缓存（用于前端按类型/来源筛选）
 
+// 重建文件库 modal-body 骨架（预览模式会通过 innerHTML 覆盖整个 body，导致工具栏/表格丢失）
+function _rebuildCloudFileSkeleton() {
+  const modal = $('#modal-cloud-files');
+  if (!modal) return;
+  const body = modal.querySelector('.modal-body');
+  if (!body) return;
+  // 如果关键元素已存在，说明骨架完好，无需重建
+  if ($('#cloud-search') && $('#cloud-table-body')) return;
+  body.innerHTML = `
+    <div class="cloud-toolbar">
+      <input type="text" id="cloud-search" class="cloud-search-input" placeholder="搜索文件名...">
+      <select id="cloud-type-filter" class="cloud-filter-select" title="按文档类型筛选">
+        <option value="">全部类型</option>
+      </select>
+      <select id="cloud-source-filter" class="cloud-filter-select" title="按来源方式筛选">
+        <option value="">全部来源</option>
+        <option value="generated">平台生成</option>
+        <option value="upload">用户上传</option>
+      </select>
+    </div>
+    <div class="cloud-table-wrap">
+      <table class="cloud-table">
+        <thead>
+          <tr>
+            <th>文件名</th><th>来源</th><th>类型</th><th>大小</th><th>时间</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="cloud-table-body"><tr><td colspan="6" class="loading-text">加载中...</td></tr></tbody>
+      </table>
+    </div>`;
+}
+
 async function loadCloudFiles() {
+  // 确保骨架存在（从预览返回时 innerHTML 已破坏原有结构）
+  _rebuildCloudFileSkeleton();
+
   const search = $('#cloud-search') ? $('#cloud-search').value.trim() : '';
   const tbody = $('#cloud-table-body');
+  if (!tbody) return; // 安全兜底：骨架重建失败时不崩溃
   tbody.innerHTML = '<tr><td colspan="6" class="loading-text">加载中...</td></tr>';
-
-  const previewPanel = $('#cloud-preview-panel');
-  if (previewPanel) previewPanel.remove();
 
   try {
     const params = new URLSearchParams();
@@ -2072,7 +2105,8 @@ async function loadCloudFiles() {
     _populateCloudTypeFilter();
     _applyCloudFilters();
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="6" class="loading-text" style="color:var(--danger)">加载失败: ${escapeHtml(e.message)}</td></tr>`;
+    const tb = $('#cloud-table-body');
+    if (tb) tb.innerHTML = `<tr><td colspan="6" class="loading-text" style="color:var(--danger)">加载失败: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
