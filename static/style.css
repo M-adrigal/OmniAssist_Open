@@ -1304,16 +1304,6 @@ body {
   color: var(--text-dim, #666);
   border: 1px solid var(--border, #e0e0e8);
 }
-#cloud-user-select {
-  padding: 6px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--border, #ddd);
-  background: var(--bg, #fff);
-  color: var(--text, #222);
-  font-size: 13px;
-  max-width: 220px;
-}
-
 /* 文件预览 */
 .modal-xl {
   width: 85vw;
@@ -2629,17 +2619,42 @@ body {
 .cloud-toolbar {
   display: flex;
   gap: 10px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+  align-items: center;
 }
 
-.cloud-toolbar input {
-  flex: 1;
+.cloud-toolbar .cloud-search-input {
+  flex: 1 1 220px;
+  min-width: 160px;
   padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   font-size: 14px;
   background: var(--bg-primary);
   color: var(--text-primary);
+}
+
+.cloud-toolbar .cloud-filter-select {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.cloud-toolbar .cloud-filter-select:hover {
+  border-color: var(--accent, #4f7cff);
+}
+
+.cloud-toolbar .cloud-filter-select:focus {
+  outline: none;
+  border-color: var(--accent, #4f7cff);
+  box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.15);
 }
 
 .cloud-table-wrap {

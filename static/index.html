@@ -403,8 +403,15 @@
     </div>
     <div class="modal-body">
       <div class="cloud-toolbar">
-        <input type="text" id="cloud-search" placeholder="搜索文件名...">
-        <select id="cloud-user-select" class="hidden"></select>
+        <input type="text" id="cloud-search" class="cloud-search-input" placeholder="搜索文件名...">
+        <select id="cloud-type-filter" class="cloud-filter-select" title="按文档类型筛选">
+          <option value="">全部类型</option>
+        </select>
+        <select id="cloud-source-filter" class="cloud-filter-select" title="按来源方式筛选">
+          <option value="">全部来源</option>
+          <option value="generated">平台生成</option>
+          <option value="upload">用户上传</option>
+        </select>
       </div>
       <div class="cloud-table-wrap">
         <table class="cloud-table">

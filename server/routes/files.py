@@ -29,17 +29,14 @@ def _get_user_display_name(user_id: int) -> str:
     return f"用户{user_id}"
 
 
-def _is_admin(user: dict) -> bool:
-    return user.get("user_type") == "admin"
-
-
 def _check_file_access(full_path: str, project_root: str, user: dict) -> bool:
+    """校验用户对文件的访问权限：仅允许访问自己 document_output/{uid}/ 下的文件。
+
+    管理员不再拥有跨用户访问权限，与普通用户一致按 uid 隔离。
+    """
     full_path = os.path.realpath(full_path)
     if not full_path.startswith(os.path.realpath(project_root)):
         return False
-
-    if _is_admin(user):
-        return True
 
     rel = os.path.relpath(full_path, os.path.join(project_root, OUTPUT_ROOT))
     parts = rel.split(os.sep)
@@ -131,8 +128,6 @@ def list_files(request: Request):
     if not os.path.isdir(output_root):
         return result
 
-    is_admin = _is_admin(user)
-
     for entry in sorted(os.listdir(output_root)):
         entry_path = os.path.join(output_root, entry)
         if not os.path.isdir(entry_path) or entry.startswith("."):
@@ -143,7 +138,8 @@ def list_files(request: Request):
         except ValueError:
             continue
 
-        if not is_admin and dir_user_id != user["id"]:
+        # 仅返回当前用户自己的文件目录（管理员亦不例外）
+        if dir_user_id != user["id"]:
             continue
 
         user_label = _get_user_display_name(dir_user_id)
@@ -192,18 +188,15 @@ def list_files(request: Request):
 
 
 @router.get("/library")
-def list_library(request: Request, search: str = Query(""), user_id: int = Query(None)):
-    """列出某用户的统一文件库（合并生成文件与上传文件），支持搜索与管理员切换用户。"""
+def list_library(request: Request, search: str = Query("")):
+    """列出当前用户的统一文件库（合并生成文件与上传文件），支持搜索。
+
+    仅返回当前登录用户自己的文件，管理员亦只能查看自身文件，实现用户隔离。
+    """
     user = get_current_user(request)
     project_root = get_project_root()
 
-    target_uid = user["id"]
-    if user_id is not None:
-        if not _is_admin(user):
-            raise HTTPException(status_code=403, detail="仅管理员可查看其他用户的文件库")
-        target_uid = int(user_id)
-
-    files = _recursive_list_library(target_uid, project_root)
+    files = _recursive_list_library(user["id"], project_root)
     if search and search.strip():
         s = search.strip().lower()
         files = [f for f in files if s in f["name"].lower()]
@@ -211,8 +204,6 @@ def list_library(request: Request, search: str = Query(""), user_id: int = Query
     return {
         "files": files,
         "count": len(files),
-        "is_admin": _is_admin(user),
-        "target_uid": target_uid,
     }
 
 

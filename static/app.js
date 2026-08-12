@@ -2038,10 +2038,10 @@ function clearAttachedFiles() {
 }
 
 // ===== 我的文件库（合并生成文件与上传文件）=====
-let _libraryTargetUid = null;  // 管理员切换查看的目标用户
+let _cloudFiles = [];  // 当前用户文件库全量缓存（用于前端按类型/来源筛选）
 
 async function loadCloudFiles() {
-  const search = $('#cloud-search') ? $('#cloud-search').value : '';
+  const search = $('#cloud-search') ? $('#cloud-search').value.trim() : '';
   const tbody = $('#cloud-table-body');
   tbody.innerHTML = '<tr><td colspan="6" class="loading-text">加载中...</td></tr>';
 
@@ -2051,38 +2051,39 @@ async function loadCloudFiles() {
   try {
     const params = new URLSearchParams();
     if (search) params.set('search', search);
-    if (_libraryTargetUid != null) params.set('user_id', _libraryTargetUid);
+    // 仅加载当前用户自己的文件库（后端已按登录用户隔离，管理员也不例外）
     const data = await API.get(`/api/files/library?${params.toString()}`);
-    // 管理员：填充用户选择框，可切换查看任意用户的文件库
-    const sel = $('#cloud-user-select');
-    if (sel) {
-        if (data.is_admin) {
-          sel.classList.remove('hidden');
-          _libraryTargetUid = data.target_uid;
-          if (sel.dataset.loaded !== '1') {
-            sel.dataset.loaded = '1';
-            try {
-              const users = await API.get('/api/users');
-              const cur = data.target_uid;
-              sel.innerHTML = users.map(u => `<option value="${u.id}"${u.id === cur ? ' selected' : ''}>${escapeHtml(u.username)}</option>`).join('');
-            } catch (_) {
-              sel.classList.add('hidden');
-            }
-            sel.addEventListener('change', () => {
-              _libraryTargetUid = sel.value ? parseInt(sel.value) : null;
-              loadCloudFiles();
-            });
-          } else {
-            sel.value = String(data.target_uid);
-          }
-        } else {
-        sel.classList.add('hidden');
-      }
-    }
-    renderCloudFiles(data.files || []);
+    _cloudFiles = data.files || [];
+    _populateCloudTypeFilter();
+    _applyCloudFilters();
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="6" class="loading-text" style="color:var(--danger)">加载失败: ${escapeHtml(e.message)}</td></tr>`;
   }
+}
+
+// 根据已加载文件动态填充「文档类型」筛选项（保留当前选择）
+function _populateCloudTypeFilter() {
+  const sel = $('#cloud-type-filter');
+  if (!sel) return;
+  const prev = sel.value;
+  const cats = [...new Set(_cloudFiles.map(f => f.category).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">全部类型</option>' +
+    cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+  sel.value = cats.includes(prev) ? prev : '';
+}
+
+// 按「文档类型」+「来源方式」+「文件名搜索」三重筛选并渲染
+function _applyCloudFilters() {
+  const typeSel = $('#cloud-type-filter');
+  const srcSel = $('#cloud-source-filter');
+  const typeFilter = typeSel ? typeSel.value : '';
+  const srcFilter = srcSel ? srcSel.value : '';
+  const filtered = _cloudFiles.filter(f => {
+    if (typeFilter && f.category !== typeFilter) return false;
+    if (srcFilter && f.source !== srcFilter) return false;
+    return true;
+  });
+  renderCloudFiles(filtered);
 }
 
 function renderCloudFiles(files) {
@@ -3280,6 +3281,16 @@ document.addEventListener('DOMContentLoaded', () => {
       clearTimeout(cloudSearchTimer);
       cloudSearchTimer = setTimeout(() => loadCloudFiles(), 300);
     });
+  }
+
+  // 文件库「文档类型」「来源方式」筛选（前端即时筛选，无需重新请求）
+  const cloudTypeFilter = $('#cloud-type-filter');
+  if (cloudTypeFilter) {
+    cloudTypeFilter.addEventListener('change', _applyCloudFilters);
+  }
+  const cloudSourceFilter = $('#cloud-source-filter');
+  if (cloudSourceFilter) {
+    cloudSourceFilter.addEventListener('change', _applyCloudFilters);
   }
 
   const pickerSearch = $('#picker-search');
