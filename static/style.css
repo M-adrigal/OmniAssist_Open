@@ -1469,6 +1469,7 @@ body {
 .btn-preview-back {
   display: inline-flex;
   align-items: center;
+  align-self: flex-start; /* 在 flex 纵列容器中不拉伸为全宽 */
   gap: 4px;
   padding: 6px 14px;
   border: 1px solid var(--border);
