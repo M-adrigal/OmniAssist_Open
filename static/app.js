@@ -1308,7 +1308,7 @@ async function previewOutputFile(path, filename) {
     const data = await res.json();
     if (!body) return;
 
-    const backBtn = `<button id="preview-back-btn" class="btn-preview-back" onclick="returnToFileList()">← 返回文件列表</button>`;
+    const backBtn = `<button id="preview-back-btn" class="btn-preview-back">← 返回文件列表</button>`;
 
     // ---- 文本预览（txt/md/json/py 等） ----
     if (data.type === 'text') {
@@ -3196,6 +3196,14 @@ document.addEventListener('DOMContentLoaded', () => {
   initTheme();
   // 刷新前已查看过的完成任务，恢复已读标记，避免完成气泡重复弹出
   _loadAcknowledged();
+
+  // 文件库预览「返回文件列表」按钮（事件委托，兼容动态生成的按钮）
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('#preview-back-btn')) {
+      e.preventDefault();
+      returnToFileList();
+    }
+  });
 
   $('#theme-toggle').addEventListener('click', toggleTheme);
 

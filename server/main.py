@@ -665,6 +665,18 @@ AUTH_WHITELIST = {"/api/auth/login", "/api/health", "/login.html", "/favicon.ico
 
 
 @app.middleware("http")
+async def no_cache_static(request: Request, call_next):
+    """静态资源与页面禁用缓存，避免浏览器使用旧版 app.js/style.css。"""
+    resp = await call_next(request)
+    path = request.url.path
+    if path.startswith("/static/") or path in ("/", "/login.html", "/favicon.ico"):
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+    return resp
+
+
+@app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
 
