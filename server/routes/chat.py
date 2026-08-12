@@ -322,13 +322,51 @@ def _save_user_message_immediate(session_id: str, message: str, user_id: int):
         logger.warning(f"[IMMEDIATE_SAVE] 用户消息立即持久化失败 (session={session_id}): {e}")
 
 
+def _save_assistant_message_immediate(
+    session_id: str, answer: str, full_content: str,
+    search_info: dict = None, all_thoughts: list = None,
+    all_tool_calls: list = None, user_id: int = None,
+):
+    """立即将助手回复持久化到 DB（流结束时、发 done 之前同步调用）。
+
+    确保用户刷新后助手消息不丢失。标题生成等非关键后处理仍由 _post_process_done 异步完成。
+    返回 True 表示已保存（_post_process_done 应跳过重复写入）。
+    """
+    try:
+        existing_msgs = _load_session_messages(session_id)
+        # 防重：如果最后一条已是同内容助手消息，跳过
+        content = answer or full_content
+        if existing_msgs and existing_msgs[-1].get("role") == "assistant" and existing_msgs[-1].get("content") == content:
+            logger.debug(f"[IMMEDIATE_SAVE_AST] 助手消息已存在，跳过 (session={session_id})")
+            return True
+        assistant_msg = {"role": "assistant", "content": content}
+        if search_info:
+            assistant_msg["search"] = search_info
+        if all_thoughts:
+            assistant_msg["thought"] = "\n\n".join(all_thoughts)
+        if all_tool_calls:
+            assistant_msg["tools"] = all_tool_calls
+        existing_msgs.append(assistant_msg)
+        _save_session_messages(session_id, existing_msgs, user_id=user_id)
+        logger.info(f"[IMMEDIATE_SAVE_AST] 助手消息已立即持久化 (session={session_id}, len={len(existing_msgs)})")
+        return True
+    except Exception as e:
+        logger.warning(f"[IMMEDIATE_SAVE_AST] 助手消息立即持久化失败 (session={session_id}): {e}")
+        return False
+
+
 def _post_process_done(
     session_id: str, store: dict, message: str,
     answer: str, full_content: str,
     search_info: dict, all_thoughts: list,
     all_tool_calls: list, llm, user_id: int, iteration: int,
+    _assistant_already_saved: bool = False,
 ):
-    """后台任务：保存消息、生成标题、记录任务日志"""
+    """后台任务：保存消息、生成标题、记录任务日志
+
+    若 _assistant_already_saved=True（助手消息已在发 done 前同步写入），
+    则仅做标题生成和日志，不再重复写消息。
+    """
     if session_id:
         _store_msgs = store[session_id]["messages"]
         # 防重：检查用户消息是否已被 _save_user_message_immediate 持久化
@@ -342,22 +380,31 @@ def _post_process_done(
             pass
         else:
             _store_msgs.append({"role": "user", "content": message})
-        assistant_msg = {"role": "assistant", "content": answer or full_content}
-        if search_info:
-            assistant_msg["search"] = search_info
-        if all_thoughts:
-            assistant_msg["thought"] = "\n\n".join(all_thoughts)
-        if all_tool_calls:
-            assistant_msg["tools"] = all_tool_calls
-        store[session_id]["messages"].append(assistant_msg)
-        title = None
-        if len(store[session_id]["messages"]) <= 2:
-            title = _generate_title(message, answer or full_content, llm)
-            store[session_id]["title"] = title
-        for i, m in enumerate(store[session_id]["messages"]):
-            if m.get("role") == "assistant":
-                logger.debug(f"保存消息 msg[{i}] has_thought={bool(m.get('thought'))} has_tools={bool(m.get('tools'))} thought_len={len(m.get('thought',''))} content_len={len(m.get('content',''))}")
-        _save_session_messages(session_id, store[session_id]["messages"], title, user_id)
+
+        if not _assistant_already_saved:
+            # 助手消息尚未同步保存，在此追加并写库
+            assistant_msg = {"role": "assistant", "content": answer or full_content}
+            if search_info:
+                assistant_msg["search"] = search_info
+            if all_thoughts:
+                assistant_msg["thought"] = "\n\n".join(all_thoughts)
+            if all_tool_calls:
+                assistant_msg["tools"] = all_tool_calls
+            store[session_id]["messages"].append(assistant_msg)
+            title = None
+            if len(store[session_id]["messages"]) <= 2:
+                title = _generate_title(message, answer or full_content, llm)
+                store[session_id]["title"] = title
+            for i, m in enumerate(store[session_id]["messages"]):
+                if m.get("role") == "assistant":
+                    logger.debug(f"保存消息 msg[{i}] has_thought={bool(m.get('thought'))} has_tools={bool(m.get('tools'))} thought_len={len(m.get('thought',''))} content_len={len(m.get('content',''))}")
+            _save_session_messages(session_id, store[session_id]["messages"], title, user_id)
+        else:
+            # 助手消息已同步保存，仅做标题生成（首两条消息时）
+            if len(store[session_id]["messages"]) <= 2:
+                title = _generate_title(message, answer or full_content, llm)
+                store[session_id]["title"] = title
+                _save_session_messages(session_id, store[session_id]["messages"], title, user_id)
 
         if all_tool_calls:
             from agent.task_reviewer import log_task_execution
@@ -1245,16 +1292,23 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                     if _new_files:
                         yield f"data: {json.dumps({'type': 'files_created', 'files': _new_files}, ensure_ascii=False)}\n\n"
 
+                    # 同步保存助手回复到 DB（在发 done 之前，确保刷新不丢）
+                    _ast_saved = _save_assistant_message_immediate(
+                        session_id, answer, full_content,
+                        search_info, all_thoughts, all_tool_calls, user_id,
+                    )
+
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     _done_sent = True
 
-                    # 后处理（标题生成、数据库保存等）放到后台任务，避免阻塞流关闭
+                    # 后处理（标题生成等非关键操作）放到后台任务，避免阻塞流关闭
                     _captured = {
                         "session_id": session_id, "store": store, "message": message,
                         "answer": answer, "full_content": full_content,
                         "search_info": search_info, "all_thoughts": all_thoughts,
                         "all_tool_calls": all_tool_calls, "llm": llm,
                         "user_id": user_id, "iteration": iteration,
+                        "_assistant_already_saved": _ast_saved,
                     }
                     threading.Thread(target=_post_process_done, kwargs=_captured, daemon=True).start()
                     _messages_saved = True
@@ -1432,13 +1486,20 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                                 yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
                             yield f"data: {json.dumps({'type': 'error', 'content': f'工具 {_fail_name} 连续执行失败，已停止重试。请检查该功能是否正常。'})}\n\n"
                             _done_sent = True
+                            # 同步保存已有对话内容（含错误回复）
+                            _fail_answer = f"工具 {_fail_name} 连续执行失败，已停止重试。"
+                            _save_assistant_message_immediate(
+                                session_id, _fail_answer, "",
+                                search_info, all_thoughts, all_tool_calls, user_id,
+                            )
                             # 保存已有的对话内容
                             _captured = {
                                 "session_id": session_id, "store": store, "message": message,
-                                "answer": f"工具 {_fail_name} 连续执行失败，已停止重试。", "full_content": "",
+                                "answer": _fail_answer, "full_content": "",
                                 "search_info": search_info, "all_thoughts": all_thoughts,
                                 "all_tool_calls": all_tool_calls, "llm": llm,
                                 "user_id": user_id, "iteration": iteration,
+                                "_assistant_already_saved": True,
                             }
                             threading.Thread(target=_post_process_done, kwargs=_captured, daemon=True).start()
                             _messages_saved = True
