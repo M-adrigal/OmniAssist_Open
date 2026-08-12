@@ -1323,18 +1323,25 @@ body {
   max-height: 90vh;
 }
 
-/* 预览模式：进一步放大 */
+/* 预览模式：进一步放大并自适应撑满视口 */
 .cloud-modal-lg.preview-mode {
   width: 94vw;
   max-width: 1400px;
   max-height: 92vh;
+  display: flex;
+  flex-direction: column;
 }
 
 .cloud-modal-lg.preview-mode .modal-body {
-  max-height: calc(92vh - 64px);
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .cloud-modal-lg .modal-body {
   max-height: calc(90vh - 64px);
+  overflow-y: auto;
 }
 
 .preview-content {
@@ -1352,8 +1359,13 @@ body {
   line-height: 1.65;
   white-space: pre;
   color: var(--text-primary);
-  max-height: 70vh;
-  overflow-y: auto;
+}
+/* 预览内容区自适应填充，文本/表格内容独立滚动 */
+.cloud-preview-content .preview-code {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  margin: 0;
 }
 
 .preview-image-wrap {
@@ -1372,7 +1384,9 @@ body {
 
 .preview-pdf {
   width: 100%;
-  height: 70vh;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
   border: none;
   border-radius: var(--radius);
 }
@@ -1405,13 +1419,50 @@ body {
   background: var(--bg-hover);
 }
 
-/* 文件预览面板 */
+/* 文件预览面板：flex 自适应纵列布局 */
 .cloud-preview-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
   padding: 20px 24px;
 }
 
-.cloud-preview-panel strong {
+/* 返回按钮独占一行（位于标题上方），标题独立一行 */
+.cloud-preview-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-size: 16px;
+  font-weight: 600;
+  margin: 6px 0 14px;
+}
+
+/* 内容区：自适应填充弹窗剩余空间并独立滚动 */
+.cloud-preview-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* CSV 表格滚动容器：填满剩余空间 */
+.preview-csv-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+/* 元信息小字（行数/提示等） */
+.preview-meta {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  margin: 0 0 8px;
 }
 
 /* 预览返回按钮 */
@@ -2766,12 +2817,8 @@ body {
 }
 
 .cloud-preview-panel {
-  margin-top: 12px;
-  padding: 12px;
   background: var(--bg-tertiary);
   border-radius: var(--radius);
-  max-height: 200px;
-  overflow-y: auto;
   font-size: 13px;
   color: var(--text-primary);
   white-space: pre-wrap;

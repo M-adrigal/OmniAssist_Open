@@ -1308,50 +1308,45 @@ async function previewOutputFile(path, filename) {
     const data = await res.json();
     if (!body) return;
 
+    // 返回按钮独占一行（置于标题上方），标题独立一行，内容区自适应填充并滚动
     const backBtn = `<button id="preview-back-btn" class="btn-preview-back">← 返回文件列表</button>`;
+    const titleRow = `<div class="cloud-preview-head"><strong>${escapeHtml(filename)}</strong></div>`;
+    const wrap = (inner) => `<div class="cloud-preview-panel">${backBtn}${titleRow}<div class="cloud-preview-content">${inner}</div></div>`;
 
     // ---- 文本预览（txt/md/json/py 等） ----
     if (data.type === 'text') {
-      body.innerHTML = `<div class="cloud-preview-panel">${backBtn}<strong>${escapeHtml(filename)}</strong><pre class="preview-code">${escapeHtml(data.content)}</pre></div>`;
+      body.innerHTML = wrap(`<pre class="preview-code">${escapeHtml(data.content)}</pre>`);
     }
     // ---- CSV 表格预览 ----
     else if (data.type === 'csv_table') {
-      body.innerHTML = `<div class="cloud-preview-panel">${backBtn}<strong>${escapeHtml(filename)}</strong>
-        <p style="font-size:12px;color:#888;margin:4px 0;">${data.rows} 行 × ${data.cols} 列</p>
-        <div style="overflow:auto;max-height:68vh;border:1px solid var(--border);border-radius:6px;">${data.html}</div>
-        </div>`;
+      body.innerHTML = wrap(`<p class="preview-meta">${data.rows} 行 × ${data.cols} 列</p><div class="preview-csv-scroll">${data.html}</div>`);
     }
     // ---- docx 文本提取预览 ----
     else if (data.type === 'docx_text') {
-      body.innerHTML = `<div class="cloud-preview-panel">${backBtn}<strong>${escapeHtml(filename)}</strong>
-        <span class="badge-source badge-source-generated" style="margin-left:8px;">Word 文档</span>
-        <pre class="preview-code">${escapeHtml(data.content)}</pre></div>`;
+      body.innerHTML = wrap(`<span class="badge-source badge-source-generated">Word 文档</span><pre class="preview-code">${escapeHtml(data.content)}</pre>`);
     }
     // ---- xlsx 字符串预览 ----
     else if (data.type === 'xlsx_preview') {
-      body.innerHTML = `<div class="cloud-preview-panel">${backBtn}<strong>${escapeHtml(filename)}</strong>
-        <span class="badge-source badge-source-generated" style="margin-left:8px;">Excel 表格</span>
-        <pre class="preview-code" style="white-space:pre-wrap;">${escapeHtml(data.content)}</pre>
-        <p style="font-size:12px;color:#888;margin-top:4px;">提示：仅显示文本内容，完整数据请下载文件查看</p></div>`;
+      body.innerHTML = wrap(`<span class="badge-source badge-source-generated">Excel 表格</span><pre class="preview-code" style="white-space:pre-wrap;">${escapeHtml(data.content)}</pre><p class="preview-meta">提示：仅显示文本内容，完整数据请下载文件查看</p>`);
     }
     // ---- 图片预览 ----
     else if (data.type === 'image') {
-      body.innerHTML = `<div class="cloud-preview-panel">${backBtn}<strong>${escapeHtml(filename)}</strong><br><img src="/api/files/download?path=${encodeURIComponent(path)}&inline=true" style="max-width:100%;border-radius:8px;"></div>`;
+      body.innerHTML = wrap(`<div class="preview-image-wrap"><img src="/api/files/download?path=${encodeURIComponent(path)}&inline=true" class="preview-image"></div>`);
     }
     // ---- PDF 预览 ----
     else if (data.type === 'pdf') {
-      body.innerHTML = `<div class="cloud-preview-panel">${backBtn}<strong>${escapeHtml(filename)}</strong><br><iframe src="/api/files/download?path=${encodeURIComponent(path)}&inline=true" style="width:100%;height:72vh;border:0;border-radius:8px;"></iframe></div>`;
+      body.innerHTML = wrap(`<iframe src="/api/files/download?path=${encodeURIComponent(path)}&inline=true" class="preview-pdf"></iframe>`);
     }
     // ---- 不支持（带提示） ----
     else {
       const hint = data.hint ? escapeHtml(data.hint) : '该文件类型暂不支持在线预览';
-      body.innerHTML = `<div class="cloud-preview-panel" style="text-align:center;padding:40px 20px;">
-        ${backBtn}<br><br>
-        <strong>${escapeHtml(filename)}</strong><br><br>
-        <span style="color:var(--text-muted);font-size:14px;">${hint}</span><br><br>
-        <a class="btn-download" href="/api/files/download?path=${encodeURIComponent(path)}" target="_blank" rel="noopener"
-           style="display:inline-flex;padding:8px 20px;font-size:14px;">下载文件</a>
-        </div>`;
+      body.innerHTML = `<div class="cloud-preview-panel">${backBtn}
+        <div class="preview-unsupported">
+          <strong>${escapeHtml(filename)}</strong><br><br>
+          <span style="color:var(--text-muted);font-size:14px;">${hint}</span><br><br>
+          <a class="btn-download" href="/api/files/download?path=${encodeURIComponent(path)}" target="_blank" rel="noopener"
+             style="display:inline-flex;padding:8px 20px;font-size:14px;">下载文件</a>
+        </div></div>`;
     }
   } catch (e) {
     if (body) body.innerHTML = `<p style="color:var(--danger)">预览失败: ${escapeHtml(e.message)}</p>`;
