@@ -5,6 +5,7 @@ import subprocess
 import signal
 import struct
 import atexit
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -67,6 +68,29 @@ from server.routes import routers
 from server.database import init_db, DB_PATH, _generate_random_password
 
 logger = get_logger("server")
+
+
+def _attach_uvicorn_logging():
+    """将 uvicorn 的内部日志接入应用日志系统（logs/app.log + logs/error.log）。
+
+    uvicorn 启动时会给 uvicorn / uvicorn.error / uvicorn.access 三个 logger
+    挂上 stdout handler 并设 propagate=False，导致所有启动/访问日志打到标准输出，
+    一旦启动命令带了 `> serverN.log` 重定向就会在项目根目录散落一堆文件。
+
+    本函数在应用 lifespan 启动事件中调用（此时 uvicorn 已完成自身日志初始化），
+    清除其 stdout handler、改向 root logger 传播，由 agent.logger 已配置好的
+    logs/ 文件 handler 统一接管，从而不再产生任何 serverN.log。
+    """
+    try:
+        get_logger("server")  # 确保 logging 已初始化（写入 logs/）
+    except Exception:
+        pass
+    for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        _lg = logging.getLogger(_name)
+        _lg.handlers = []
+        _lg.propagate = True
+    # 访问日志仅 WARNING 及以上进入 app.log，避免每个请求刷屏
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 _config: AgentConfig = None
 _llm_client: LLMClient = None
@@ -574,6 +598,9 @@ def get_session_store() -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan 事件处理（替代弃用的 on_event）"""
+    # 将 uvicorn 内部日志接入 logs/ 体系，避免散落 serverN.log
+    _attach_uvicorn_logging()
+
     admin_pw = init_db()
     pw_file = os.path.join(os.path.dirname(DB_PATH), ".db_web_password")
 
