@@ -3149,24 +3149,6 @@ body {
 .approval-item.dec-skip { border-color: #bdbdbd; }
 .approval-item.dec-approve { border-color: #a5d6a7; }
 .approval-item.dec-reject { border-color: #ef9a9a; }
-.approval-footer {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  border-top: 1px solid var(--border, #eee);
-}
-.approval-submit {
-  padding: 8px 24px;
-  border: none;
-  border-radius: 6px;
-  background: var(--accent, #2196f3);
-  color: #fff;
-  font-size: 14px;
-  cursor: pointer;
-}
-.approval-submit:disabled { opacity: 0.6; cursor: default; }
-.approval-hint { font-size: 12px; color: var(--text-dim, #888); }
 
 /* 审批栏暗色模式 */
 .dark .approval-bar .approval-card {

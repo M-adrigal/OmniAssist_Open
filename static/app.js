@@ -1396,10 +1396,7 @@ function renderApprovalCard(stream, parsed) {
       <span class="approval-icon">⚠️</span>
       <span>检测到敏感操作，需要你确认</span>
     </div>
-    <div class="approval-items">${itemsHtml}</div>
-    <div class="approval-footer">
-      <span class="approval-hint">对每项点击「跳过 / 允许 / 拒绝」即可执行，无需提交</span>
-    </div>`;
+    <div class="approval-items">${itemsHtml}</div>`;
   bar.appendChild(card);
 
   const sid = parsed.session_id;
@@ -1469,7 +1466,7 @@ function updateApprovalCardResolved(stream, parsed) {
       }
     }
   });
-  const hint = card.querySelector('.approval-hint');
+  const hint = legacyCard.querySelector('.approval-hint');
   if (hint) hint.textContent = '已确认，正在继续...';
   card.querySelectorAll('button').forEach(b => b.disabled = true);
 }
