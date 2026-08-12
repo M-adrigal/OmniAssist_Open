@@ -23,6 +23,7 @@ class ModelConfigUpdate(BaseModel):
     model_name: Optional[str] = None
     context_limit: Optional[str] = None
     show_thought: Optional[bool] = None
+    max_iterations: Optional[int] = None
 
 
 class ModelConfigResponse(BaseModel):
@@ -32,6 +33,7 @@ class ModelConfigResponse(BaseModel):
     context_limit: str
     config_type: str = "none"
     show_thought: bool = False
+    max_iterations: int = 10
 
 
 class SearchConfigResponse(BaseModel):

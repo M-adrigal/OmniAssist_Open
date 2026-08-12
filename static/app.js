@@ -2687,6 +2687,8 @@ async function loadConfig() {
     if (baseUrlEl) baseUrlEl.value = config.base_url || '';
     if (modelNameEl) modelNameEl.value = config.model_name || '';
     if (contextLimitEl) contextLimitEl.value = config.context_limit || '';
+    const maxIterEl = $('#cfg-max-iterations');
+    if (maxIterEl) maxIterEl.value = config.max_iterations != null ? config.max_iterations : '';
 
     if (localStorage.getItem('showThought') === null) {
       state.showThought = config.show_thought || false;
@@ -2710,6 +2712,8 @@ async function loadConfig() {
         if (gBaseUrlEl) gBaseUrlEl.value = globalCfg.base_url || '';
         if (gModelNameEl) gModelNameEl.value = globalCfg.model_name || '';
         if (gContextLimitEl) gContextLimitEl.value = globalCfg.context_limit || '';
+        const gMaxIterEl = $('#cfg-global-max-iterations');
+        if (gMaxIterEl) gMaxIterEl.value = globalCfg.max_iterations != null ? globalCfg.max_iterations : '';
       } catch (e) {
         // 全局配置加载失败不阻塞
       }
@@ -2768,6 +2772,11 @@ async function saveConfig() {
   if (baseUrlEl) body.base_url = baseUrlEl.value.trim();
   if (modelNameEl) body.model_name = modelNameEl.value.trim();
   if (contextLimitEl) body.context_limit = contextLimitEl.value.trim();
+  const maxIterEl = $(`#${prefix}max-iterations`);
+  if (maxIterEl) {
+    const v = parseInt(maxIterEl.value.trim(), 10);
+    if (!isNaN(v) && v >= 1) body.max_iterations = v;
+  }
 
   const url = isGlobal ? '/api/config/global' : '/api/config';
 

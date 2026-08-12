@@ -24,6 +24,7 @@ MAX_SESSION_TITLE_LENGTH = 200  # 会话标题最大字符数
 from server.routes.auth import get_current_user
 from server.approval_store import approval_store
 from server.trust_store import trust_store, audit_log
+from server.database import resolve_model_config
 
 
 def _is_role_exempt(user_id: int) -> bool:
@@ -1134,7 +1135,14 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             _filter_disabled_tools, registry.get_all_openai_specs(), user_id, skill_registry
         )
         tool_specs = await _run_sync(select_tools_by_intent, message, _all_specs, user_id)
-        max_iterations = 10
+        # 最大迭代次数：优先读取模型配置（个人 > 全局），未配置则用默认 10
+        try:
+            _mc = resolve_model_config(user_id)
+            max_iterations = int(_mc.get("max_iterations", 10) or 10)
+        except Exception:
+            max_iterations = 10
+        if max_iterations < 1:
+            max_iterations = 10
         all_tool_calls = []
         all_thoughts = []
         _consecutive_failures = {}  # {tool_name: count} — 连续失败计数器

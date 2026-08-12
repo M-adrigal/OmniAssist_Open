@@ -25,6 +25,7 @@ def get_config(request: Request):
         context_limit=cfg.get("context_limit", ""),
         config_type=cfg.get("config_type", "none"),
         show_thought=cfg.get("show_thought", False),
+        max_iterations=cfg.get("max_iterations", 10),
     )
 
 
@@ -44,6 +45,8 @@ def update_config(body: ModelConfigUpdate, request: Request):
         kwargs["context_limit"] = body.context_limit
     if body.show_thought is not None:
         kwargs["show_thought"] = body.show_thought
+    if body.max_iterations is not None:
+        kwargs["max_iterations"] = body.max_iterations
 
     cfg = save_model_config(user["id"], **kwargs)
 
@@ -61,6 +64,7 @@ def update_config(body: ModelConfigUpdate, request: Request):
         context_limit=cfg.get("context_limit", ""),
         config_type="personal",
         show_thought=cfg.get("show_thought", False),
+        max_iterations=cfg.get("max_iterations", 10),
     )
 
 
@@ -73,7 +77,7 @@ def get_global_config(request: Request):
         return ModelConfigResponse(
             model_name="", base_url="", api_key_masked="(未设置)",
             context_limit="", config_type="global",
-            show_thought=False,
+            show_thought=False, max_iterations=10,
         )
     return ModelConfigResponse(
         model_name=cfg.get("model_name", ""),
@@ -82,6 +86,7 @@ def get_global_config(request: Request):
         context_limit=cfg.get("context_limit", ""),
         config_type="global",
         show_thought=cfg.get("show_thought", False),
+        max_iterations=cfg.get("max_iterations", 10),
     )
 
 
@@ -101,6 +106,8 @@ def update_global_config(body: ModelConfigUpdate, request: Request):
         kwargs["context_limit"] = body.context_limit
     if body.show_thought is not None:
         kwargs["show_thought"] = body.show_thought
+    if body.max_iterations is not None:
+        kwargs["max_iterations"] = body.max_iterations
 
     cfg = save_model_config(None, **kwargs)
 
@@ -123,6 +130,7 @@ def update_global_config(body: ModelConfigUpdate, request: Request):
         context_limit=cfg.get("context_limit", ""),
         config_type="global",
         show_thought=cfg.get("show_thought", False),
+        max_iterations=cfg.get("max_iterations", 10),
     )
 
 

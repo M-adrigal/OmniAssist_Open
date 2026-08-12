@@ -160,6 +160,10 @@
           <label>上下文限制</label>
           <input type="text" id="cfg-context-limit" placeholder="如 32k、64k、128k，留空则使用模型最大上下文">
         </div>
+        <div class="form-group">
+          <label>最大迭代次数</label>
+          <input type="number" id="cfg-max-iterations" min="1" max="100" placeholder="默认 10，复杂排障任务可上调（如 15~30）">
+        </div>
       </div>
       <div id="config-tab-global" class="config-tab-content hidden">
         <div class="form-group">
@@ -177,6 +181,10 @@
         <div class="form-group">
           <label>上下文限制</label>
           <input type="text" id="cfg-global-context-limit" placeholder="如 32k、64k、128k，留空则使用模型最大上下文">
+        </div>
+        <div class="form-group">
+          <label>最大迭代次数</label>
+          <input type="number" id="cfg-global-max-iterations" min="1" max="100" placeholder="默认 10，复杂排障任务可上调（如 15~30）">
         </div>
       </div>
       <div id="config-tab-search" class="config-tab-content hidden">

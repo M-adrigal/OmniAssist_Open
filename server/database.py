@@ -91,6 +91,11 @@ def init_db() -> str:
     except sqlite3.OperationalError:
         pass
 
+    try:
+        conn.execute("ALTER TABLE model_configs ADD COLUMN max_iterations INTEGER DEFAULT 10")
+    except sqlite3.OperationalError:
+        pass
+
     conn.execute("CREATE INDEX IF NOT EXISTS idx_model_configs_user_id ON model_configs(user_id)")
 
     conn.execute("""
@@ -609,6 +614,10 @@ def get_model_config(user_id: int = None) -> Optional[dict]:
     d["api_key"] = _decrypt_db(d.get("api_key_encrypted", ""))
     d["api_key_masked"] = _mask_key(d["api_key"])
     d["show_thought"] = bool(d.get("show_thought", 0))
+    try:
+        d["max_iterations"] = int(d.get("max_iterations") or 10)
+    except (TypeError, ValueError):
+        d["max_iterations"] = 10
     return d
 
 
@@ -627,6 +636,7 @@ def resolve_model_config(user_id: int) -> dict:
         "api_key_masked": "(未设置)",
         "config_type": "none",
         "show_thought": False,
+        "max_iterations": 10,
     }
 
 
@@ -645,6 +655,11 @@ def save_model_config(user_id: int = None, **kwargs) -> dict:
         updates["context_limit"] = kwargs["context_limit"] or ""
     if "show_thought" in kwargs:
         updates["show_thought"] = 1 if kwargs["show_thought"] else 0
+    if "max_iterations" in kwargs:
+        try:
+            updates["max_iterations"] = max(1, int(kwargs["max_iterations"]))
+        except (TypeError, ValueError):
+            updates["max_iterations"] = 10
 
     if user_id is not None:
         existing = conn.execute("SELECT id FROM model_configs WHERE user_id = ?", (user_id,)).fetchone()
