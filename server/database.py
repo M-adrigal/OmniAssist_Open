@@ -622,22 +622,45 @@ def get_model_config(user_id: int = None) -> Optional[dict]:
 
 
 def resolve_model_config(user_id: int) -> dict:
-    personal = get_model_config(user_id)
-    if personal and personal.get("api_key"):
-        personal["config_type"] = "personal"
-        return personal
-    global_cfg = get_model_config(None)
-    if global_cfg:
-        global_cfg["config_type"] = "global"
-        return global_cfg
-    return {
+    """解析用户实际生效的模型配置（个人优先、全局兜底合并）。
+
+    策略：以全局配置为基底；若用户存在个人配置，则模型名 / BaseURL /
+    上下文限制 / 思考开关 / 最大迭代次数等非凭据字段「非空即覆盖」个人值，
+    API Key 缺省时回落全局。这样用户在「个人」 tab 调整模型或迭代次数，
+    即使未单独填写 API Key 也能生效（旧逻辑要求必须填个人 Key 才生效）。
+    """
+    base = {
         "api_key": "", "base_url": "", "model_name": "",
         "context_limit": "",
         "api_key_masked": "(未设置)",
-        "config_type": "none",
+        "config_type": "global",
         "show_thought": False,
         "max_iterations": 10,
     }
+    global_cfg = get_model_config(None) or {}
+    personal = get_model_config(user_id) or {}
+
+    merged = dict(base)
+    merged.update({k: v for k, v in global_cfg.items() if v not in (None, "")})
+    merged["config_type"] = "global"
+
+    if personal:
+        for key in ("model_name", "base_url", "context_limit", "show_thought", "max_iterations"):
+            val = personal.get(key)
+            if key in ("show_thought", "max_iterations"):
+                if val is not None:
+                    merged[key] = val
+            elif val not in (None, ""):
+                merged[key] = val
+        if personal.get("api_key"):
+            merged["api_key"] = personal["api_key"]
+            merged["api_key_masked"] = personal.get("api_key_masked", "(未设置)")
+        else:
+            merged["api_key"] = global_cfg.get("api_key")
+            merged["api_key_masked"] = global_cfg.get("api_key_masked")
+        merged["config_type"] = "personal"
+
+    return merged
 
 
 def save_model_config(user_id: int = None, **kwargs) -> dict:
