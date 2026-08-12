@@ -15,6 +15,13 @@ import re
 import urllib.request
 import urllib.error
 
+# 强制直连外网，忽略 HTTP_PROXY/HTTPS_PROXY 环境变量（与沙箱行为对齐）。
+# 系统技能在主进程执行会继承部署环境代理，若代理不可达则联网失败；
+# 此处强制直连，确保无论服务器是否带代理都能稳定联网。
+urllib.request.install_opener(
+    urllib.request.build_opener(urllib.request.ProxyHandler({}))
+)
+
 
 def execute(type: str = "all") -> str:
     result = {}

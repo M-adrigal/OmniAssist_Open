@@ -15,6 +15,14 @@ import urllib.error
 import html
 import re
 
+# 强制直连外网，忽略 HTTP_PROXY/HTTPS_PROXY 环境变量。
+# 原因：系统技能在主进程执行，会继承部署环境的代理变量；
+# 若代理指向不可达地址（如本机端口）会导致联网失败，而沙箱子进程剥离了代理反而直连成功。
+# 此处与沙箱行为对齐，确保联网稳定（与 main.py 启动逻辑无关）。
+urllib.request.install_opener(
+    urllib.request.build_opener(urllib.request.ProxyHandler({}))
+)
+
 
 def execute(url: str, mode: str = "text", selector: str = "") -> str:
     if not url.startswith(("http://", "https://")):
