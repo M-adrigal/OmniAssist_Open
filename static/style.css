@@ -1322,6 +1322,17 @@ body {
   max-width: 1280px;
   max-height: 90vh;
 }
+
+/* 预览模式：进一步放大 */
+.cloud-modal-lg.preview-mode {
+  width: 94vw;
+  max-width: 1400px;
+  max-height: 92vh;
+}
+
+.cloud-modal-lg.preview-mode .modal-body {
+  max-height: calc(92vh - 64px);
+}
 .cloud-modal-lg .modal-body {
   max-height: calc(90vh - 64px);
 }
@@ -1334,14 +1345,14 @@ body {
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 16px;
+  padding: 18px;
   overflow-x: auto;
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: 13.5px;
+  line-height: 1.65;
   white-space: pre;
   color: var(--text-primary);
-  max-height: 65vh;
+  max-height: 70vh;
   overflow-y: auto;
 }
 
@@ -1396,10 +1407,33 @@ body {
 
 /* 文件预览面板 */
 .cloud-preview-panel {
-  padding: 16px;
+  padding: 20px 24px;
 }
+
 .cloud-preview-panel strong {
-  font-size: 15px;
+  font-size: 16px;
+}
+
+/* 预览返回按钮 */
+.btn-preview-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-bottom: 12px;
+}
+
+.btn-preview-back:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--accent);
 }
 
 .preview-unsupported {

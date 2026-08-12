@@ -1299,6 +1299,8 @@ async function previewOutputFile(path, filename) {
   }
   const body = modal.querySelector('.modal-body');
   if (body) body.innerHTML = '<p class="loading-text">加载预览...</p>';
+  // 预览模式：放大弹窗
+  modal.querySelector('.modal-content').classList.add('preview-mode');
   openModal('modal-cloud-files');
   try {
     const res = await fetch(`/api/files/preview?path=${encodeURIComponent(path)}`);
@@ -1306,42 +1308,45 @@ async function previewOutputFile(path, filename) {
     const data = await res.json();
     if (!body) return;
 
+    const backBtn = `<button id="preview-back-btn" class="btn-preview-back" onclick="returnToFileList()">← 返回文件列表</button>`;
+
     // ---- 文本预览（txt/md/json/py 等） ----
     if (data.type === 'text') {
-      body.innerHTML = `<div class="cloud-preview-panel"><strong>${escapeHtml(filename)}</strong><pre class="preview-code">${escapeHtml(data.content)}</pre></div>`;
+      body.innerHTML = `<div class="cloud-preview-panel">${backBtn}<strong>${escapeHtml(filename)}</strong><pre class="preview-code">${escapeHtml(data.content)}</pre></div>`;
     }
     // ---- CSV 表格预览 ----
     else if (data.type === 'csv_table') {
-      body.innerHTML = `<div class="cloud-preview-panel"><strong>${escapeHtml(filename)}</strong>
+      body.innerHTML = `<div class="cloud-preview-panel">${backBtn}<strong>${escapeHtml(filename)}</strong>
         <p style="font-size:12px;color:#888;margin:4px 0;">${data.rows} 行 × ${data.cols} 列</p>
-        <div style="overflow:auto;max-height:60vh;border:1px solid var(--border);border-radius:6px;">${data.html}</div>
+        <div style="overflow:auto;max-height:68vh;border:1px solid var(--border);border-radius:6px;">${data.html}</div>
         </div>`;
     }
     // ---- docx 文本提取预览 ----
     else if (data.type === 'docx_text') {
-      body.innerHTML = `<div class="cloud-preview-panel"><strong>${escapeHtml(filename)}</strong>
+      body.innerHTML = `<div class="cloud-preview-panel">${backBtn}<strong>${escapeHtml(filename)}</strong>
         <span class="badge-source badge-source-generated" style="margin-left:8px;">Word 文档</span>
         <pre class="preview-code">${escapeHtml(data.content)}</pre></div>`;
     }
     // ---- xlsx 字符串预览 ----
     else if (data.type === 'xlsx_preview') {
-      body.innerHTML = `<div class="cloud-preview-panel"><strong>${escapeHtml(filename)}</strong>
+      body.innerHTML = `<div class="cloud-preview-panel">${backBtn}<strong>${escapeHtml(filename)}</strong>
         <span class="badge-source badge-source-generated" style="margin-left:8px;">Excel 表格</span>
         <pre class="preview-code" style="white-space:pre-wrap;">${escapeHtml(data.content)}</pre>
         <p style="font-size:12px;color:#888;margin-top:4px;">提示：仅显示文本内容，完整数据请下载文件查看</p></div>`;
     }
     // ---- 图片预览 ----
     else if (data.type === 'image') {
-      body.innerHTML = `<div class="cloud-preview-panel"><strong>${escapeHtml(filename)}</strong><br><img src="/api/files/download?path=${encodeURIComponent(path)}&inline=true" style="max-width:100%;border-radius:8px;"></div>`;
+      body.innerHTML = `<div class="cloud-preview-panel">${backBtn}<strong>${escapeHtml(filename)}</strong><br><img src="/api/files/download?path=${encodeURIComponent(path)}&inline=true" style="max-width:100%;border-radius:8px;"></div>`;
     }
     // ---- PDF 预览 ----
     else if (data.type === 'pdf') {
-      body.innerHTML = `<div class="cloud-preview-panel"><strong>${escapeHtml(filename)}</strong><br><iframe src="/api/files/download?path=${encodeURIComponent(path)}&inline=true" style="width:100%;height:70vh;border:0;border-radius:8px;"></iframe></div>`;
+      body.innerHTML = `<div class="cloud-preview-panel">${backBtn}<strong>${escapeHtml(filename)}</strong><br><iframe src="/api/files/download?path=${encodeURIComponent(path)}&inline=true" style="width:100%;height:72vh;border:0;border-radius:8px;"></iframe></div>`;
     }
     // ---- 不支持（带提示） ----
     else {
       const hint = data.hint ? escapeHtml(data.hint) : '该文件类型暂不支持在线预览';
       body.innerHTML = `<div class="cloud-preview-panel" style="text-align:center;padding:40px 20px;">
+        ${backBtn}<br><br>
         <strong>${escapeHtml(filename)}</strong><br><br>
         <span style="color:var(--text-muted);font-size:14px;">${hint}</span><br><br>
         <a class="btn-download" href="/api/files/download?path=${encodeURIComponent(path)}" target="_blank" rel="noopener"
@@ -1351,6 +1356,16 @@ async function previewOutputFile(path, filename) {
   } catch (e) {
     if (body) body.innerHTML = `<p style="color:var(--danger)">预览失败: ${escapeHtml(e.message)}</p>`;
   }
+}
+
+/** 从预览状态返回文件列表 */
+function returnToFileList() {
+  const modal = $('#modal-cloud-files');
+  if (modal) {
+    const content = modal.querySelector('.modal-content');
+    if (content) content.classList.remove('preview-mode');
+  }
+  loadCloudFiles();
 }
 
 // ===== 敏感操作审批卡片 =====
