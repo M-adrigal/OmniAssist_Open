@@ -556,6 +556,7 @@ def main():
 
     agent = SimpleAgent(llm_client, tool_registry, context_limit=context_limit,
                         show_thought=config.get('show_thought', False),
+                        reasoning_effort=config.get('reasoning_effort', 'medium') or 'medium',
                         skill_context=skill_context)
 
     print("\n轻量级 AI Agent 底座已启动（输入 /help 查看可用命令）")

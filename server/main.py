@@ -509,13 +509,20 @@ def init_services():
 
     show_thought = False
     context_limit = ""
+    reasoning_effort = ""
 
     if global_cfg:
         show_thought = global_cfg.get("show_thought", False)
         context_limit = global_cfg.get("context_limit", "")
+        reasoning_effort = global_cfg.get("reasoning_effort", "")
     else:
         show_thought = _config.get("show_thought", False)
         context_limit = _config.get("context_limit", "")
+        reasoning_effort = _config.get("reasoning_effort", "")
+
+    # 推理强度默认值：未配置时给 medium，降低高推理强度带来的 token 消耗
+    if not reasoning_effort:
+        reasoning_effort = "medium"
 
     # 构建技能上下文
     skill_context = _skill_registry.build_context()
@@ -524,7 +531,8 @@ def init_services():
         _llm_client, _tool_registry,
         context_limit=context_limit,
         show_thought=show_thought,
-        skill_context=skill_context
+        skill_context=skill_context,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -563,6 +571,12 @@ def update_agent_show_thought(show_thought: bool):
     global _agent
     if _agent:
         _agent.set_show_thought(show_thought)
+
+
+def update_agent_reasoning_effort(reasoning_effort: str):
+    global _agent
+    if _agent:
+        _agent.set_reasoning_effort(reasoning_effort or "")
 
 
 def refresh_global_llm():

@@ -82,6 +82,7 @@ def init_db() -> str:
             model_name TEXT DEFAULT '',
             context_limit TEXT DEFAULT '',
             show_thought INTEGER DEFAULT 0,
+            reasoning_effort TEXT DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -95,6 +96,11 @@ def init_db() -> str:
 
     try:
         conn.execute("ALTER TABLE model_configs ADD COLUMN max_iterations INTEGER DEFAULT 10")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        conn.execute("ALTER TABLE model_configs ADD COLUMN reasoning_effort TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
 
@@ -692,6 +698,7 @@ def get_model_config(user_id: int = None) -> Optional[dict]:
         d["max_iterations"] = int(d.get("max_iterations") or 10)
     except (TypeError, ValueError):
         d["max_iterations"] = 10
+    d["reasoning_effort"] = (d.get("reasoning_effort") or "").strip()
     return d
 
 
@@ -710,6 +717,7 @@ def resolve_model_config(user_id: int) -> dict:
         "config_type": "global",
         "show_thought": False,
         "max_iterations": 10,
+        "reasoning_effort": "",
     }
     global_cfg = get_model_config(None) or {}
     personal = get_model_config(user_id) or {}
@@ -719,7 +727,8 @@ def resolve_model_config(user_id: int) -> dict:
     merged["config_type"] = "global"
 
     if personal:
-        for key in ("model_name", "base_url", "context_limit", "show_thought", "max_iterations"):
+        for key in ("model_name", "base_url", "context_limit", "show_thought",
+                    "max_iterations", "reasoning_effort"):
             val = personal.get(key)
             if key in ("show_thought", "max_iterations"):
                 if val is not None:
@@ -734,6 +743,10 @@ def resolve_model_config(user_id: int) -> dict:
             merged["api_key_masked"] = global_cfg.get("api_key_masked")
         merged["config_type"] = "personal"
 
+    # 推理强度默认值：未显式配置时给 medium，降低 deepseek 等模型的
+    # reasoning_effort=high 带来的高 token 消耗（可在配置中调到 high 或 minimal）
+    if not merged.get("reasoning_effort"):
+        merged["reasoning_effort"] = "medium"
     return merged
 
 
@@ -757,6 +770,11 @@ def save_model_config(user_id: int = None, **kwargs) -> dict:
             updates["max_iterations"] = max(1, int(kwargs["max_iterations"]))
         except (TypeError, ValueError):
             updates["max_iterations"] = 10
+    if "reasoning_effort" in kwargs:
+        val = (kwargs["reasoning_effort"] or "").strip()
+        if val and val not in ("minimal", "low", "medium", "high"):
+            raise ValueError("推理强度必须是 minimal/low/medium/high 之一")
+        updates["reasoning_effort"] = val
 
     if user_id is not None:
         existing = conn.execute("SELECT id FROM model_configs WHERE user_id = ?", (user_id,)).fetchone()

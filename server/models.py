@@ -24,6 +24,7 @@ class ModelConfigUpdate(BaseModel):
     context_limit: Optional[str] = None
     show_thought: Optional[bool] = None
     max_iterations: Optional[int] = None
+    reasoning_effort: Optional[str] = None  # minimal/low/medium/high，调节推理强度以控制 token 消耗
 
 
 class ModelConfigResponse(BaseModel):
@@ -34,6 +35,7 @@ class ModelConfigResponse(BaseModel):
     config_type: str = "none"
     show_thought: bool = False
     max_iterations: int = 10
+    reasoning_effort: str = "medium"
 
 
 class SearchConfigResponse(BaseModel):

@@ -30,7 +30,7 @@ class SimpleAgent:
     """Agent 主循环类，处理多轮对话和工具调用"""
 
     def __init__(self, llm_client, tool_registry, context_limit='', show_thought=False,
-                 skill_context="", silent=False):
+                 skill_context="", silent=False, reasoning_effort=None):
         """初始化 SimpleAgent
 
         Args:
@@ -40,6 +40,8 @@ class SimpleAgent:
             show_thought: 是否显示思考过程
             skill_context: 技能上下文，注入系统提示词
             silent: 静默模式，不打印终端输出（用于子 Agent）
+            reasoning_effort: 推理强度（"minimal"/"low"/"medium"/"high"），
+                None 表示沿用模型网关默认；用于按需调节 token 消耗。
         """
         self.llm = llm_client
         self.tool_registry = tool_registry
@@ -47,6 +49,7 @@ class SimpleAgent:
         self.context_limit = context_limit
         self.skill_context = skill_context
         self.silent = silent
+        self.reasoning_effort = reasoning_effort
         self.user_id = None  # 当前用户 ID，用于加载用户级配置
         self._system_prompt = SYSTEM_PROMPT
         self._context_limit_tokens = self._parse_context_limit(context_limit)
@@ -119,6 +122,14 @@ class SimpleAgent:
         """
         self.show_thought = enabled
         self._rebuild_system_message()
+
+    def set_reasoning_effort(self, effort: str):
+        """设置推理强度（minimal/low/medium/high），按需调节 token 消耗
+
+        Args:
+            effort: 推理强度字符串，None/空表示沿用模型网关默认
+        """
+        self.reasoning_effort = effort or None
 
     def set_skill_context(self, context: str):
         """设置技能上下文
@@ -315,7 +326,9 @@ class SimpleAgent:
         tool_specs = self._select_tools(user_input)
 
         for _ in range(max_iterations):
-            gw_cfg = self._gateway.build_params(self.show_thought, temperature=0)
+            gw_cfg = self._gateway.build_params(
+                self.show_thought, temperature=0, reasoning_effort=self.reasoning_effort
+            )
 
             # 使用流式调用，实时打印 token
             content = ""

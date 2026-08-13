@@ -25,6 +25,7 @@ MODEL_CAPABILITIES = {
         "reasoning_field": None,
         "needs_prompt_fallback": True,
         "supports_temperature": True,
+        "supports_reasoning_effort": True,
     },
     "gpt-5-nano*": {
         "provider": "openai",
@@ -34,6 +35,7 @@ MODEL_CAPABILITIES = {
         "reasoning_field": None,
         "needs_prompt_fallback": True,
         "supports_temperature": True,
+        "supports_reasoning_effort": True,
     },
     "gpt-5*": {
         "provider": "openai",
@@ -43,6 +45,7 @@ MODEL_CAPABILITIES = {
         "reasoning_field": None,
         "needs_prompt_fallback": True,
         "supports_temperature": True,
+        "supports_reasoning_effort": True,
     },
     "o3*": {
         "provider": "openai",
@@ -52,6 +55,7 @@ MODEL_CAPABILITIES = {
         "reasoning_field": None,
         "needs_prompt_fallback": True,
         "supports_temperature": False,
+        "supports_reasoning_effort": True,
     },
     "o4*": {
         "provider": "openai",
@@ -61,6 +65,7 @@ MODEL_CAPABILITIES = {
         "reasoning_field": None,
         "needs_prompt_fallback": True,
         "supports_temperature": False,
+        "supports_reasoning_effort": True,
     },
     "o1*": {
         "provider": "openai",
@@ -70,6 +75,7 @@ MODEL_CAPABILITIES = {
         "reasoning_field": None,
         "needs_prompt_fallback": True,
         "supports_temperature": False,
+        "supports_reasoning_effort": True,
     },
     "deepseek-reasoner*": {
         "provider": "deepseek",
@@ -95,6 +101,7 @@ MODEL_CAPABILITIES = {
         "needs_prompt_fallback": False,
         "supports_temperature": True,
         "temperature_unsupported_when_thinking": True,
+        "supports_reasoning_effort": True,
     },
     "deepseek-v4-flash*": {
         "provider": "deepseek",
@@ -110,6 +117,7 @@ MODEL_CAPABILITIES = {
         "needs_prompt_fallback": False,
         "supports_temperature": True,
         "temperature_unsupported_when_thinking": True,
+        "supports_reasoning_effort": True,
     },
     "deepseek*": {
         "provider": "deepseek",
@@ -125,6 +133,7 @@ MODEL_CAPABILITIES = {
         "needs_prompt_fallback": False,
         "supports_temperature": True,
         "temperature_unsupported_when_thinking": True,
+        "supports_reasoning_effort": True,
     },
     "qwq*": {
         "provider": "qwen",
@@ -192,12 +201,16 @@ class ModelGateway:
                 return cap
         return DEFAULT_CAPABILITY
 
-    def build_params(self, show_thought: bool, temperature: float = 0) -> dict:
+    def build_params(self, show_thought: bool, temperature: float = 0,
+                     reasoning_effort: str = None) -> dict:
         """根据思考开关和温度，构建模型特定的 API 参数
 
         Args:
             show_thought: 是否开启思考模式
             temperature: 温度参数（0-2）
+            reasoning_effort: 推理强度覆盖（"minimal"/"low"/"medium"/"high"）。
+                仅当模型支持（supports_reasoning_effort）且开启思考时生效，
+                用于在不改模型默认行为的前提下按需调低/调高 token 消耗。
 
         Returns:
             dict: {
@@ -237,6 +250,15 @@ class ModelGateway:
             pass
         elif thinking_type == "prompt":
             pass
+
+        # 推理强度覆盖：仅当模型支持且处于思考开启状态才覆盖（思考关闭时设
+        # reasoning_effort 对多数模型无意义甚至报错）
+        if (
+            reasoning_effort
+            and show_thought
+            and self.cap.get("supports_reasoning_effort", False)
+        ):
+            params["reasoning_effort"] = reasoning_effort
 
         result["api_params"] = params
         return result

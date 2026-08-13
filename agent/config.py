@@ -144,6 +144,7 @@ class AgentConfig:
             'api_key': self.get_masked_api_key(),
             'show_thought': self.get('show_thought', False),
             'context_limit': self.get('context_limit', ''),
+            'reasoning_effort': self.get('reasoning_effort', 'medium') or 'medium',
         }
 
     def toggle_thought(self) -> bool:

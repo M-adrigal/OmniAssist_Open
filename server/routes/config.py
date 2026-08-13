@@ -26,6 +26,7 @@ def get_config(request: Request):
         config_type=cfg.get("config_type", "none"),
         show_thought=cfg.get("show_thought", False),
         max_iterations=cfg.get("max_iterations", 10),
+        reasoning_effort=cfg.get("reasoning_effort", "medium"),
     )
 
 
@@ -47,15 +48,18 @@ def update_config(body: ModelConfigUpdate, request: Request):
         kwargs["show_thought"] = body.show_thought
     if body.max_iterations is not None:
         kwargs["max_iterations"] = body.max_iterations
+    if body.reasoning_effort is not None:
+        kwargs["reasoning_effort"] = body.reasoning_effort
 
     cfg = save_model_config(user["id"], **kwargs)
 
     try:
-        from __main__ import update_agent_context_limit, update_agent_show_thought
+        from __main__ import update_agent_context_limit, update_agent_show_thought, update_agent_reasoning_effort
     except ImportError:
-        from server.main import update_agent_context_limit, update_agent_show_thought
+        from server.main import update_agent_context_limit, update_agent_show_thought, update_agent_reasoning_effort
     update_agent_context_limit(cfg.get("context_limit", ""))
     update_agent_show_thought(cfg.get("show_thought", False))
+    update_agent_reasoning_effort(cfg.get("reasoning_effort", ""))
 
     return ModelConfigResponse(
         model_name=cfg.get("model_name", ""),
@@ -65,6 +69,7 @@ def update_config(body: ModelConfigUpdate, request: Request):
         config_type="personal",
         show_thought=cfg.get("show_thought", False),
         max_iterations=cfg.get("max_iterations", 10),
+        reasoning_effort=cfg.get("reasoning_effort", "medium"),
     )
 
 
@@ -77,7 +82,7 @@ def get_global_config(request: Request):
         return ModelConfigResponse(
             model_name="", base_url="", api_key_masked="(未设置)",
             context_limit="", config_type="global",
-            show_thought=False, max_iterations=10,
+            show_thought=False, max_iterations=10, reasoning_effort="medium",
         )
     return ModelConfigResponse(
         model_name=cfg.get("model_name", ""),
@@ -87,6 +92,7 @@ def get_global_config(request: Request):
         config_type="global",
         show_thought=cfg.get("show_thought", False),
         max_iterations=cfg.get("max_iterations", 10),
+        reasoning_effort=cfg.get("reasoning_effort", "medium"),
     )
 
 
@@ -108,15 +114,18 @@ def update_global_config(body: ModelConfigUpdate, request: Request):
         kwargs["show_thought"] = body.show_thought
     if body.max_iterations is not None:
         kwargs["max_iterations"] = body.max_iterations
+    if body.reasoning_effort is not None:
+        kwargs["reasoning_effort"] = body.reasoning_effort
 
     cfg = save_model_config(None, **kwargs)
 
     try:
-        from __main__ import update_agent_context_limit, refresh_global_llm, update_agent_show_thought
+        from __main__ import update_agent_context_limit, refresh_global_llm, update_agent_show_thought, update_agent_reasoning_effort
     except ImportError:
-        from server.main import update_agent_context_limit, refresh_global_llm, update_agent_show_thought
+        from server.main import update_agent_context_limit, refresh_global_llm, update_agent_show_thought, update_agent_reasoning_effort
     update_agent_context_limit(cfg.get("context_limit", ""))
     update_agent_show_thought(cfg.get("show_thought", False))
+    update_agent_reasoning_effort(cfg.get("reasoning_effort", ""))
     try:
         refresh_global_llm()
     except Exception as e:
@@ -131,6 +140,7 @@ def update_global_config(body: ModelConfigUpdate, request: Request):
         config_type="global",
         show_thought=cfg.get("show_thought", False),
         max_iterations=cfg.get("max_iterations", 10),
+        reasoning_effort=cfg.get("reasoning_effort", "medium"),
     )
 
 
