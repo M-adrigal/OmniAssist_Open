@@ -325,24 +325,32 @@ def _build_skill_context(user_id: int, skill_registry) -> str:
     return skill_registry.build_context(user_id, _get_disabled_skills(user_id))
 
 
-def _filter_disabled_tools(tool_specs: list, user_id: int, skill_registry) -> list:
-    """从工具列表中剔除已禁用技能的脚本
+def _filter_disabled_tools(tool_specs: list, user_id: int, skill_registry,
+                           disable_web_search: bool = False) -> list:
+    """从工具列表中剔除已禁用技能的脚本，以及（可选）联网搜索工具
 
     仅从提示词里拿掉技能说明是不够的 —— 工具在服务启动时被全量注册，
     模型依然可以直接调用被禁用技能的脚本。这里在下发工具列表前做一次过滤。
+    disable_web_search=True 时，即使已配置 Tavily，也完全不把 web_search 工具
+    交给模型（比仅靠 prompt 约束更强，对齐『关闭即彻底不可用』的开关语义）。
     """
-    if not tool_specs or skill_registry is None:
+    if not tool_specs:
         return tool_specs
 
-    disabled = _get_disabled_skills(user_id)
-    if not disabled:
-        return tool_specs
+    blocked = set()
 
-    try:
-        blocked = skill_registry.get_script_names_of(disabled, user_id)
-    except Exception as e:
-        logger.debug(f"解析禁用技能脚本失败 (user={user_id}): {e}")
-        return tool_specs
+    # 1) 用户级禁用技能对应的脚本
+    if skill_registry is not None:
+        disabled = _get_disabled_skills(user_id)
+        if disabled:
+            try:
+                blocked |= skill_registry.get_script_names_of(disabled, user_id)
+            except Exception as e:
+                logger.debug(f"解析禁用技能脚本失败 (user={user_id}): {e}")
+
+    # 2) 联网搜索关闭时剔除 web_search 工具
+    if disable_web_search:
+        blocked.add("web_search")
 
     if not blocked:
         return tool_specs
@@ -353,8 +361,9 @@ def _filter_disabled_tools(tool_specs: list, user_id: int, skill_registry) -> li
     ]
     if len(filtered) != len(tool_specs):
         logger.info(
-            f"已屏蔽 {len(tool_specs) - len(filtered)} 个禁用技能的工具 "
-            f"(user={user_id}, skills={sorted(disabled)})"
+            f"已屏蔽 {len(tool_specs) - len(filtered)} 个工具 "
+            f"(user={user_id}, web_search_off={disable_web_search}, "
+            f"skills={sorted(disabled) if skill_registry is not None else []})"
         )
     return filtered
 
@@ -1103,9 +1112,11 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
         if cached_hint:
             chat_messages[0]["content"] = chat_messages[0]["content"] + "\n\n" + cached_hint
 
-        # 先剔除被禁用技能的工具，再按意图筛选，确保开关在工具层真正生效
+        # 先剔除被禁用技能的工具，以及（联网搜索关闭时）web_search 工具，
+        # 再按意图筛选，确保开关在工具层真正生效（关闭即模型完全看不到该工具）
         _all_specs = await _run_sync(
-            _filter_disabled_tools, registry.get_all_openai_specs(), user_id, skill_registry
+            _filter_disabled_tools, registry.get_all_openai_specs(), user_id,
+            skill_registry, web_search == "off"
         )
         tool_specs = await _run_sync(select_tools_by_intent, message, _all_specs, user_id)
         # 最大迭代次数：优先读取模型配置（个人 > 全局），未配置则用默认 10
