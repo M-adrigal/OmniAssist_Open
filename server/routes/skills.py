@@ -8,7 +8,7 @@ import json
 import re
 from fastapi import APIRouter, HTTPException, Request
 from server.models import SkillCreate, SkillUpdate, SkillToggle
-from server.routes.auth import get_current_user, require_permission
+from server.routes.auth import get_current_user, require_permission, require_admin
 from server.database import (
     get_user_skills,
     save_user_skill,
@@ -27,6 +27,34 @@ def get_skill_registry():
     except ImportError:
         from server.main import get_skill_registry as gsr
     return gsr()
+
+
+def _requires_admin_privilege(scripts_str: str) -> bool:
+    """检测技能脚本是否包含需要管理员权限的能力。
+
+    仅 HTTP 工具（http_config）与可 exec 任意 Python 的响应格式化器
+    （response_formatter）需管理员创建——否则任意登录用户可通过
+    response_formatter 在服务主进程执行任意代码（RCE）。
+    """
+    if not scripts_str:
+        return False
+    if "http_config" not in scripts_str and "response_formatter" not in scripts_str:
+        return False
+    try:
+        arr = json.loads(scripts_str)
+        if isinstance(arr, list):
+            for item in arr:
+                if isinstance(item, dict) and (
+                    "http_config" in item
+                    or "response_formatter" in item
+                    or item.get("type") == "http"
+                    or item.get("execution_mode") == "http"
+                ):
+                    return True
+    except Exception:
+        # 命中关键字但解析失败，保守起见按需管理员处理
+        return True
+    return False
 
 
 def _is_disable_marker(row: dict) -> bool:
@@ -262,6 +290,10 @@ def create_skill(body: SkillCreate, request: Request):
     user = get_current_user(request)
     user_id = user["id"]
 
+    # 含 HTTP 工具 / 任意代码格式化器的技能仅管理员可创建（防止 RCE）
+    if _requires_admin_privilege(scripts):
+        require_admin(request)
+
     name = body.name
     if not name or not name.strip():
         raise HTTPException(status_code=400, detail="技能名称不能为空")
@@ -306,6 +338,9 @@ def update_skill(skill_id: int, body: SkillUpdate, request: Request):
     if body.content is not None:
         updates["skill_content"] = body.content
     if body.scripts is not None:
+        # 含 HTTP 工具 / 任意代码格式化器的技能仅管理员可维护（防止 RCE）
+        if _requires_admin_privilege(body.scripts):
+            require_admin(request)
         updates["skill_scripts"] = body.scripts
     if body.enabled is not None:
         updates["enabled"] = body.enabled

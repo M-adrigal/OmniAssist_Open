@@ -1,4 +1,6 @@
 import os
+import re
+import hmac
 import sqlite3
 import hashlib
 import secrets
@@ -286,13 +288,34 @@ def list_all_permissions() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+# 慢哈希参数：PBKDF2-HMAC-SHA256，20 万次迭代（标准库实现，无第三方依赖）
+_PBKDF2_ITERATIONS = 200_000
+
+
 def _hash_password(password: str) -> str:
-    salt = secrets.token_hex(16)
-    h = hashlib.sha256((salt + password).encode()).hexdigest()
-    return f"{salt}:{h}"
+    """使用 PBKDF2-HMAC-SHA256 慢哈希存储口令，抵御 GPU/字典爆破。
+
+    存储格式：pbkdf2$<iterations>$<salt_hex>$<dk_hex>
+    """
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ITERATIONS)
+    return f"pbkdf2${_PBKDF2_ITERATIONS}${salt.hex()}${dk.hex()}"
 
 
 def verify_password(password: str, password_hash: str) -> bool:
+    """校验口令。兼容旧版 sha256(salt+pwd) 格式（salt:hash）以便平滑迁移。"""
+    if not password_hash:
+        return False
+    if password_hash.startswith("pbkdf2$"):
+        try:
+            _, it_s, salt_hex, hash_hex = password_hash.split("$", 3)
+            dk = hashlib.pbkdf2_hmac(
+                "sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), int(it_s)
+            )
+            return hmac.compare_digest(dk.hex(), hash_hex)
+        except Exception:
+            return False
+    # 旧版格式：salt:hash（sha256）
     try:
         salt, h = password_hash.split(":", 1)
         return hashlib.sha256((salt + password).encode()).hexdigest() == h
@@ -300,14 +323,58 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
+_PASSWORD_POLICY_HINT = (
+    "密码需至少 8 位，且必须同时包含：大写字母、小写字母、数字、特殊符号（如 !@#$%^&*）"
+)
+
+
+def validate_password_strength(password: str) -> tuple[bool, str]:
+    """校验密码强度。
+
+    规则：长度 >= 8；含小写字母、大写字母、数字、特殊符号（非字母数字）。
+    返回 (是否通过, 失败原因/空)。
+    """
+    if not isinstance(password, str) or len(password) < 8:
+        return False, "密码长度至少 8 位"
+    if not re.search(r"[a-z]", password):
+        return False, "密码必须包含小写字母"
+    if not re.search(r"[A-Z]", password):
+        return False, "密码必须包含大写字母"
+    if not re.search(r"\d", password):
+        return False, "密码必须包含数字"
+    if not re.search(r"[^A-Za-z0-9]", password):
+        return False, "密码必须包含特殊符号（非字母数字）"
+    return True, ""
+
+
+def get_user_must_change(user_id: int) -> bool:
+    """查询用户是否处于"必须修改初始密码"状态（被强制改密拦截依赖此函数）。"""
+    conn = _get_connection()
+    row = conn.execute(
+        "SELECT must_change_password FROM users WHERE id = ?", (user_id,)
+    ).fetchone()
+    return bool(row["must_change_password"]) if row else False
+
+
 def authenticate(username: str, password: str) -> Optional[dict]:
-    """验证用户，成功返回用户信息字典，失败返回 None"""
+    """验证用户，成功返回用户信息字典，失败返回 None。"""
     conn = _get_connection()
     row = conn.execute(
         "SELECT id, username, password_hash, user_type, description, must_change_password FROM users WHERE username = ?",
         (username,)
     ).fetchone()
     if row and verify_password(password, row["password_hash"]):
+        # 旧版快哈希在首次成功登录后就地升级为 PBKDF2 慢哈希
+        if not row["password_hash"].startswith("pbkdf2$"):
+            try:
+                new_hash = _hash_password(password)
+                conn.execute(
+                    "UPDATE users SET password_hash = ? WHERE id = ?",
+                    (new_hash, row["id"]),
+                )
+                conn.commit()
+            except Exception:
+                pass
         return {
             "id": row["id"],
             "username": row["username"],
@@ -360,6 +427,9 @@ def list_users() -> list[dict]:
 
 
 def create_user(username: str, password: str, user_type: str = "user", description: str = "") -> dict:
+    ok, reason = validate_password_strength(password)
+    if not ok:
+        raise ValueError(f"密码强度不足：{reason}。要求：{_PASSWORD_POLICY_HINT}")
     conn = _get_connection()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     password_hash = _hash_password(password)
@@ -384,6 +454,9 @@ def update_user(user_id: int, **kwargs) -> Optional[dict]:
     for k, v in kwargs.items():
         if k in allowed and v is not None:
             if k == "password":
+                ok, reason = validate_password_strength(v)
+                if not ok:
+                    raise ValueError(f"密码强度不足：{reason}。要求：{_PASSWORD_POLICY_HINT}")
                 updates["password_hash"] = _hash_password(v)
             else:
                 updates[k] = v
@@ -428,6 +501,9 @@ def _delete_user_files(user_id: int):
 
 
 def change_password(user_id: int, old_password: str, new_password: str) -> bool:
+    ok, reason = validate_password_strength(new_password)
+    if not ok:
+        raise ValueError(f"新密码强度不足：{reason}。要求：{_PASSWORD_POLICY_HINT}")
     conn = _get_connection()
     row = conn.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,)).fetchone()
     if not row:

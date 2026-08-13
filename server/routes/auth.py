@@ -5,11 +5,21 @@ import os
 import secrets
 import time
 from base64 import urlsafe_b64encode, urlsafe_b64decode
+from collections import defaultdict
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from server.models import LoginRequest, LoginResponse, ChangePasswordRequest, CurrentUserResponse
-from server.database import authenticate, change_password, get_user_by_id, check_permission, get_role_permissions, DB_PATH
+from server.database import (
+    authenticate,
+    change_password,
+    get_user_by_id,
+    check_permission,
+    get_role_permissions,
+    get_user_must_change,
+    validate_password_strength,
+    DB_PATH,
+)
 from agent.logger import get_logger
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -19,6 +29,41 @@ TOKEN_SECRET = secrets.token_hex(32)
 TOKEN_TTL = 1800
 
 _active_tokens: dict[str, float] = {}
+
+# ---- 登录暴力破解防护（单进程内存态；多 worker 时改为共享存储如 Redis）----
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_WINDOW = 15 * 60
+_LOGIN_BLOCK = 15 * 60
+_login_failures: dict[str, dict] = defaultdict(lambda: {"count": 0, "first": 0.0, "blocked_until": 0.0})
+
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _login_allowed(key: str) -> tuple[bool, int]:
+    """返回 (是否允许, 剩余封禁秒数)。"""
+    now = time.time()
+    rec = _login_failures.get(key)
+    if rec and rec["blocked_until"] > now:
+        return False, int(rec["blocked_until"] - now)
+    return True, 0
+
+
+def _record_login_failure(key: str):
+    now = time.time()
+    rec = _login_failures[key]
+    rec["count"] += 1
+    if rec["count"] >= _LOGIN_MAX_ATTEMPTS:
+        rec["blocked_until"] = now + _LOGIN_BLOCK
+        logger.warning(f"登录失败次数过多，已临时封锁: {key}")
+
+
+def _reset_login_failures(key: str):
+    _login_failures.pop(key, None)
 
 
 def _generate_token(user_id: int, username: str, user_type: str) -> str:
@@ -94,14 +139,25 @@ def require_login(request: Request):
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(req: LoginRequest):
+def login(req: LoginRequest, request: Request):
+    ip = _client_ip(request)
+    key = f"{ip}:{req.username}"
+    allowed, wait = _login_allowed(key)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"登录失败次数过多，请 {wait} 秒后再试",
+        )
+
     user = authenticate(req.username, req.password)
     if not user:
-        logger.warning(f"用户登录失败: {req.username} (密码错误)")
+        _record_login_failure(key)
+        logger.warning(f"用户登录失败: {req.username} (密码错误) from {ip}")
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
+    _reset_login_failures(key)
     token = _generate_token(user["id"], user["username"], user["user_type"])
-    logger.info(f"用户登录成功: {req.username} (user_id={user['id']}, type={user['user_type']})")
+    logger.info(f"用户登录成功: {req.username} (user_id={user['id']}, type={user['user_type']}) from {ip}")
     return LoginResponse(
         token=token,
         message="登录成功",
@@ -120,8 +176,9 @@ def logout():
 def update_password(req: ChangePasswordRequest, request: Request):
     user = require_login(request)
 
-    if len(req.new_password) < 6:
-        raise HTTPException(status_code=400, detail="新密码长度不能少于6位")
+    ok, reason = validate_password_strength(req.new_password)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"新密码强度不足：{reason}。要求：密码至少 8 位，且必须包含大写字母、小写字母、数字、特殊符号")
 
     if req.new_password != req.confirm_password:
         raise HTTPException(status_code=400, detail="两次输入的新密码不一致")

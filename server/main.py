@@ -690,6 +690,14 @@ app.add_middleware(
 
 AUTH_WHITELIST = {"/api/auth/login", "/api/health", "/login.html", "/favicon.ico"}
 
+# 处于"必须修改初始密码"状态时仍允许访问的端点（改密、登出、查自身、健康检查）
+_MUST_CHANGE_ALLOW = {
+    "/api/auth/password",
+    "/api/auth/logout",
+    "/api/auth/me",
+    "/api/health",
+}
+
 
 @app.middleware("http")
 async def no_cache_static(request: Request, call_next):
@@ -712,11 +720,23 @@ async def auth_middleware(request: Request, call_next):
 
     token = request.cookies.get("auth_token") or request.headers.get("Authorization", "").replace("Bearer ", "")
 
-    from server.routes.auth import validate_token
+    from server.routes.auth import validate_token, decode_token
+    from server.database import get_user_must_change
     if not token or not validate_token(token):
         if path.startswith("/api/"):
             return JSONResponse(status_code=401, content={"detail": "未登录"})
         return RedirectResponse(url="/login.html")
+
+    # 强制修改初始密码：除改密/登出/查自身外一律拦截
+    if path not in _MUST_CHANGE_ALLOW:
+        payload = decode_token(token)
+        if payload and get_user_must_change(int(payload.get("uid", 0))):
+            if path.startswith("/api/"):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "请先修改初始密码后再使用", "must_change_password": True},
+                )
+            return RedirectResponse(url="/login.html")
 
     return await call_next(request)
 
