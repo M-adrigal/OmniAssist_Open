@@ -2663,7 +2663,7 @@ function switchConfigTab(tab) {
 function updateThinkingModeUI() {
   const btn = $('#btn-thought');
   if (!btn) return;
-  const labels = { off: '思考：关', low: '思考：低', high: '思考：高' };
+  const labels = { off: '深度思考：关', low: '深度思考：低', high: '深度思考：高' };
   const mode = state.thinkingMode in labels ? state.thinkingMode : 'low';
   btn.classList.toggle('active', mode === 'high');
   const span = btn.querySelector('span');

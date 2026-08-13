@@ -236,6 +236,41 @@ def init_services():
         )
     logger.info(f"从技能中注册了 {len(skill_scripts)} 个工具脚本")
 
+    # 注册联网搜索工具（Tavily，主进程执行，不走沙箱网络拦截）
+    # 替代被沙箱网络拦截的 web_fetch 技能，供 agent 在对话中按需检索最新/实时信息。
+    def _web_search_tool(query: str, scenario: str = "auto", _user_id: int = None) -> str:
+        from server.database import get_search_config
+        cfg = get_search_config()
+        api_key = cfg.get("tavily_api_key", "")
+        if not api_key:
+            return "联网搜索未配置 Tavily API Key，无法搜索。请管理员在设置中配置 Tavily API Key。"
+        if not scenario or scenario == "auto":
+            from server.routes.chat import _classify_query
+            scenario = _classify_query(query)
+        from server.routes.chat import _do_web_search
+        result = _do_web_search(query, api_key, scenario)
+        return result or "未找到相关搜索结果。"
+    _tool_registry.register_tool(
+        name="web_search",
+        description=(
+            "联网搜索工具：通过 Tavily 搜索引擎检索最新/实时/外部信息。"
+            "当用户需要新闻、实时数据（天气/股价/汇率）、最新版本发布、特定事实查证、"
+            "教程步骤、对比分析，或任何需要联网获取的资料时使用。"
+            "这是搜索工具而非网页抓取工具；若只需读取某个已知具体网址的页面内容，才用 web_fetch。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "搜索查询词，尽量具体明确"},
+                "scenario": {"type": "string", "description": "搜索场景：auto(自动判断)/realtime/latest/howto/comparison/local/factual/general，默认 auto"},
+            },
+            "required": ["query"],
+        },
+        func=_web_search_tool,
+        risk_level="safe",
+    )
+    logger.info("已注册联网搜索工具 web_search（Tavily，主进程执行，不走沙箱）")
+
     # 初始化多 Agent 池
     _agent_pool = AgentPool(_llm_client, _sandbox_pool, _skill_registry)
     profiles_dir = os.path.join(base_dir, "agent", "profiles")
