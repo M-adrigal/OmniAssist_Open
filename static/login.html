@@ -292,6 +292,61 @@
       box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.12);
     }
 
+    /* 图形验证码 */
+    .captcha-row {
+      display: flex;
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .captcha-row input {
+      flex: 1;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+
+    .captcha-img {
+      height: 42px;
+      min-width: 120px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg-secondary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      overflow: hidden;
+      user-select: none;
+      transition: border-color var(--transition);
+    }
+
+    .captcha-img:hover { border-color: var(--accent); }
+
+    .captcha-img img {
+      height: 100%;
+      display: block;
+    }
+
+    .captcha-img .captcha-text {
+      font-family: "Courier New", monospace;
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: 4px;
+      color: #1976d2;
+      padding: 0 10px;
+    }
+
+    .captcha-refresh {
+      font-size: 11px;
+      color: var(--accent);
+      margin-top: 4px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .dark .captcha-img .captcha-text { color: #6ab0ff; }
+
     .btn-login {
       width: 100%;
       padding: 11px 0;
@@ -420,6 +475,16 @@
         <label>密码</label>
         <input type="password" id="password" placeholder="请输入密码" autocomplete="current-password">
       </div>
+      <div class="form-group">
+        <label>图形验证码</label>
+        <div class="captcha-row">
+          <input type="text" id="captcha-code" placeholder="请输入右侧字符" autocomplete="off" maxlength="4">
+          <div class="captcha-img" id="captcha-img" title="点击刷新验证码">
+            <span class="captcha-text">...</span>
+          </div>
+        </div>
+        <div class="captcha-refresh" id="captcha-refresh">看不清？点击图片刷新</div>
+      </div>
       <button class="btn-login" id="btn-login" onclick="handleLogin()">登 录</button>
       <div class="error-msg" id="error-msg"></div>
     </div>
@@ -478,8 +543,33 @@
 
     const usernameInput = document.getElementById('username');
     const passwordInput = document.getElementById('password');
+    const captchaInput = document.getElementById('captcha-code');
+    const captchaImg = document.getElementById('captcha-img');
     const errorMsg = document.getElementById('error-msg');
     const btnLogin = document.getElementById('btn-login');
+
+    let currentCaptchaId = '';
+
+    async function loadCaptcha() {
+      try {
+        const res = await fetch('/api/auth/captcha');
+        if (!res.ok) throw new Error('load failed');
+        const data = await res.json();
+        currentCaptchaId = data.captcha_id || '';
+        if (data.image && data.image.startsWith('data:image')) {
+          captchaImg.innerHTML = `<img src="${data.image}" alt="验证码">`;
+        } else {
+          // 降级：无图模式下直接展示 code（Pillow 缺失时）
+          captchaImg.innerHTML = `<span class="captcha-text">${data.image || '????'}</span>`;
+        }
+      } catch (e) {
+        captchaImg.innerHTML = `<span class="captcha-text">ERR</span>`;
+      }
+    }
+
+    captchaImg.addEventListener('click', loadCaptcha);
+    document.getElementById('captcha-refresh').addEventListener('click', loadCaptcha);
+    loadCaptcha();
 
     let isComposing = false;
     usernameInput.addEventListener('compositionstart', () => { isComposing = true; });
@@ -490,6 +580,9 @@
     passwordInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !isComposing) handleLogin();
     });
+    captchaInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !isComposing) handleLogin();
+    });
     usernameInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !isComposing) passwordInput.focus();
     });
@@ -497,9 +590,14 @@
     async function handleLogin() {
       const username = usernameInput.value.trim();
       const password = passwordInput.value;
+      const captchaCode = captchaInput.value.trim();
 
       if (!username || !password) {
         errorMsg.textContent = '请输入用户名和密码';
+        return;
+      }
+      if (!captchaCode) {
+        errorMsg.textContent = '请输入图形验证码';
         return;
       }
 
@@ -511,7 +609,12 @@
         const res = await fetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password })
+          body: JSON.stringify({
+            username,
+            password,
+            captcha_id: currentCaptchaId,
+            captcha_code: captchaCode
+          })
         });
 
         if (res.ok) {
@@ -525,6 +628,9 @@
         } else {
           const data = await res.json();
           errorMsg.textContent = data.detail || '登录失败';
+          // 登录失败（含验证码错误）刷新验证码，避免复用
+          captchaInput.value = '';
+          loadCaptcha();
         }
       } catch (e) {
         errorMsg.textContent = '网络错误，请重试';

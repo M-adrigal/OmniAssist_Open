@@ -30,6 +30,114 @@ TOKEN_TTL = 1800
 
 _active_tokens: dict[str, float] = {}
 
+# ---- 图形验证码（市面通用字符型图形验证码；单进程内存态，多 worker 时改用 Redis）----
+# 验证码一次性使用、5 分钟过期，避免被复用或离线爆破。
+_CAPTCHA_TTL = 5 * 60
+_CAPTCHA_LEN = 4
+# 去除易混淆字符（0/O/1/l/I）的字符集
+_CAPTCHA_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+_captcha_store: dict[str, dict] = {}
+
+
+def _purge_expired_captchas() -> None:
+    now = time.time()
+    expired = [k for k, v in _captcha_store.items() if v["expires"] <= now]
+    for k in expired:
+        _captcha_store.pop(k, None)
+
+
+def _gen_captcha_image(code: str) -> str:
+    """用 Pillow 生成带噪点和干扰线的验证码图片，返回 data:image/png;base64 字符串。
+
+    设计参考市面通用图形验证码：浅色背景 + 随机彩色字符（轻微旋转/位移）+ 干扰线 + 噪点，
+    在「可被人类轻松识别」与「增加 OCR 难度」之间取平衡。Pillow 缺失时退化为纯文字 code 返回。
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    except Exception:
+        # Pillow 未安装：退化为无图模式（仍校验 code），避免登录完全不可用
+        logger.warning("Pillow 未安装，图形验证码降级为纯文本模式")
+        return code
+
+    import io
+    import random
+
+    width, height = 120, 42
+    img = Image.new("RGB", (width, height), (245, 247, 250))
+    draw = ImageDraw.Draw(img)
+
+    # 干扰线
+    for _ in range(4):
+        x1 = random.randint(0, width)
+        y1 = random.randint(0, height)
+        x2 = random.randint(0, width)
+        y2 = random.randint(0, height)
+        draw.line(
+            [(x1, y1), (x2, y2)],
+            fill=(random.randint(150, 200), random.randint(150, 200), random.randint(150, 200)),
+            width=random.randint(1, 2),
+        )
+
+    # 字符
+    try:
+        font = ImageFont.truetype("/System/Library/Fonts/STHeiti Light.ttc", 26)
+    except Exception:
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 26)
+        except Exception:
+            font = ImageFont.load_default()
+
+    char_w = width // len(code)
+    for i, ch in enumerate(code):
+        color = (random.randint(40, 120), random.randint(40, 120), random.randint(120, 200))
+        # 每个字符单独画在一个小图层上做轻微旋转，增加 OCR 难度
+        layer = Image.new("RGBA", (char_w + 10, height), (0, 0, 0, 0))
+        ld = ImageDraw.Draw(layer)
+        ld.text((5, 8), ch, font=font, fill=color)
+        angle = random.uniform(-18, 18)
+        layer = layer.rotate(angle, resample=Image.BICUBIC, center=(layer.width // 2, layer.height // 2))
+        img.paste(layer, (i * char_w - 4, 0), layer)
+
+    # 噪点
+    for _ in range(60):
+        x = random.randint(0, width - 1)
+        y = random.randint(0, height - 1)
+        draw.point((x, y), fill=(random.randint(180, 220), random.randint(180, 220), random.randint(180, 220)))
+
+    img = img.filter(ImageFilter.SMOOTH)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    b64 = urlsafe_b64encode(buf.getvalue()).decode().rstrip("=")
+    return f"data:image/png;base64,{b64}"
+
+
+@router.get("/captcha")
+def get_captcha():
+    """获取图形验证码：返回一次性 captcha_id 与 base64 图片，登录时需回传对应 code。"""
+    _purge_expired_captchas()
+    import random
+    code = "".join(random.choice(_CAPTCHA_ALPHABET) for _ in range(_CAPTCHA_LEN))
+    captcha_id = secrets.token_hex(16)
+    _captcha_store[captcha_id] = {"code": code.lower(), "expires": time.time() + _CAPTCHA_TTL}
+    image = _gen_captcha_image(code)
+    return {"captcha_id": captcha_id, "image": image, "ttl": _CAPTCHA_TTL}
+
+
+def _verify_captcha(captcha_id: str, captcha_code: str) -> tuple[bool, str]:
+    """校验图形验证码（一次性、大小写不敏感）。返回 (是否通过, 失败原因)。"""
+    _purge_expired_captchas()
+    if not captcha_id or not captcha_code:
+        return False, "请填写图形验证码"
+    rec = _captcha_store.pop(captcha_id, None)
+    if rec is None:
+        return False, "验证码已失效，请刷新"
+    if rec["expires"] <= time.time():
+        return False, "验证码已过期，请刷新"
+    if rec["code"] != captcha_code.strip().lower():
+        return False, "图形验证码错误"
+    return True, ""
+
+
 # ---- 登录暴力破解防护（单进程内存态；多 worker 时改为共享存储如 Redis）----
 _LOGIN_MAX_ATTEMPTS = 5
 _LOGIN_WINDOW = 15 * 60
@@ -142,6 +250,14 @@ def require_login(request: Request):
 def login(req: LoginRequest, request: Request):
     ip = _client_ip(request)
     key = f"{ip}:{req.username}"
+
+    # 图形验证码校验（市面通用：登录前先过图形验证，拦截自动化爆破）
+    ok, reason = _verify_captcha(req.captcha_id, req.captcha_code)
+    if not ok:
+        # 验证码错误也计入失败次数，避免绕过限流反复尝试
+        _record_login_failure(key)
+        raise HTTPException(status_code=400, detail=reason)
+
     allowed, wait = _login_allowed(key)
     if not allowed:
         raise HTTPException(

@@ -75,6 +75,8 @@ class CommandItem(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+    captcha_id: Optional[str] = None
+    captcha_code: Optional[str] = None
 
 
 class LoginResponse(BaseModel):

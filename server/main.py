@@ -726,7 +726,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-AUTH_WHITELIST = {"/api/auth/login", "/api/health", "/login.html", "/favicon.ico"}
+AUTH_WHITELIST = {"/api/auth/login", "/api/auth/captcha", "/api/health", "/login.html", "/favicon.ico"}
 
 # 处于"必须修改初始密码"状态时仍允许访问的端点（改密、登出、查自身、健康检查）
 _MUST_CHANGE_ALLOW = {
