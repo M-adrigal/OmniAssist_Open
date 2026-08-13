@@ -2818,14 +2818,16 @@ function updateAdminUI() {
 }
 
 // ===== 修改密码 =====
-// 与后端 validate_password_strength 保持一致的强度规则（首次登录强制改密 / 平台改密均复用同一规则）：
-// 至少 8 位，且必须同时包含大写字母、小写字母、数字、特殊符号。
+// 与后端 validate_password_strength 保持一致的强度规则（首次登录强制改密 / 平台改密均复用同一函数）：
+// 至少 8 位，且需包含大写字母、小写字母、数字、特殊符号中至少两类。
 function validatePasswordStrength(pw) {
   if (!pw || pw.length < 8) return { ok: false, msg: '密码至少 8 位' };
-  if (!/[a-z]/.test(pw)) return { ok: false, msg: '需包含小写字母' };
-  if (!/[A-Z]/.test(pw)) return { ok: false, msg: '需包含大写字母' };
-  if (!/\d/.test(pw)) return { ok: false, msg: '需包含数字' };
-  if (!/[^A-Za-z0-9]/.test(pw)) return { ok: false, msg: '需包含特殊符号（如 !@#$%^&*）' };
+  let categories = 0;
+  if (/[a-z]/.test(pw)) categories++;
+  if (/[A-Z]/.test(pw)) categories++;
+  if (/\d/.test(pw)) categories++;
+  if (/[^A-Za-z0-9]/.test(pw)) categories++;
+  if (categories < 2) return { ok: false, msg: '需包含大写字母、小写字母、数字、特殊符号中至少两类' };
   return { ok: true, msg: '' };
 }
 
@@ -2844,7 +2846,7 @@ async function savePassword() {
   if (!oldPassword) { showToast('请输入原密码', 'error'); return; }
   if (!newPassword) { showToast('请输入新密码', 'error'); return; }
   const strength = validatePasswordStrength(newPassword);
-  if (!strength.ok) { showToast('新密码强度不足：' + strength.msg + '（至少 8 位，且含大/小写字母、数字、特殊符号）', 'error'); return; }
+  if (!strength.ok) { showToast('新密码强度不足：' + strength.msg + '（至少 8 位，且含大/小写字母、数字、特殊符号中至少两类）', 'error'); return; }
   if (newPassword !== confirmPassword) { showToast('两次输入的新密码不一致', 'error'); return; }
 
   try {

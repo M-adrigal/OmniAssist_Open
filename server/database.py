@@ -334,26 +334,30 @@ def verify_password(password: str, password_hash: str) -> bool:
 
 
 _PASSWORD_POLICY_HINT = (
-    "密码需至少 8 位，且必须同时包含：大写字母、小写字母、数字、特殊符号（如 !@#$%^&*）"
+    "密码需至少 8 位，且需包含：大写字母、小写字母、数字、特殊符号（如 !@#$%^&*）中至少两类"
 )
 
 
 def validate_password_strength(password: str) -> tuple[bool, str]:
     """校验密码强度。
 
-    规则：长度 >= 8；含小写字母、大写字母、数字、特殊符号（非字母数字）。
+    规则：长度 >= 8；字符集需覆盖以下 4 类中的至少 2 类：
+    小写字母、大写字母、数字、特殊符号（非字母数字）。
     返回 (是否通过, 失败原因/空)。
     """
     if not isinstance(password, str) or len(password) < 8:
         return False, "密码长度至少 8 位"
-    if not re.search(r"[a-z]", password):
-        return False, "密码必须包含小写字母"
-    if not re.search(r"[A-Z]", password):
-        return False, "密码必须包含大写字母"
-    if not re.search(r"\d", password):
-        return False, "密码必须包含数字"
-    if not re.search(r"[^A-Za-z0-9]", password):
-        return False, "密码必须包含特殊符号（非字母数字）"
+    categories = 0
+    if re.search(r"[a-z]", password):
+        categories += 1
+    if re.search(r"[A-Z]", password):
+        categories += 1
+    if re.search(r"\d", password):
+        categories += 1
+    if re.search(r"[^A-Za-z0-9]", password):
+        categories += 1
+    if categories < 2:
+        return False, "密码需包含大写字母、小写字母、数字、特殊符号中至少两类"
     return True, ""
 
 

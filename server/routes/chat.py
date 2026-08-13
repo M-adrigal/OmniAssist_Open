@@ -936,9 +936,8 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
     agent, _, registry, _, skill_registry = get_dependencies()
     store = get_session_store()
 
-    # 截断消息用于日志
-    msg_preview = message[:80] + "..." if len(message) > 80 else message
-    logger.info(f"收到消息: \"{msg_preview}\" (len={len(message)})")
+    # 仅记录元数据，不记录用户输入内容（避免敏感信息落入终端/日志文件）
+    logger.info(f"收到消息 (user={user_id}, session={session_id or '-'}, len={len(message)})")
 
 
     # 统一出口标志：确保 done 事件和 clear_context 在任何代码路径都执行

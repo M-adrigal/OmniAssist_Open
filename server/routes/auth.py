@@ -8,7 +8,7 @@ from base64 import urlsafe_b64encode, urlsafe_b64decode
 from collections import defaultdict
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from server.models import LoginRequest, LoginResponse, ChangePasswordRequest, CurrentUserResponse
 from server.database import (
     authenticate,
@@ -49,62 +49,88 @@ def _purge_expired_captchas() -> None:
 def _gen_captcha_image(code: str) -> str:
     """用 Pillow 生成带噪点和干扰线的验证码图片，返回 data:image/png;base64 字符串。
 
-    设计参考市面通用图形验证码：浅色背景 + 随机彩色字符（轻微旋转/位移）+ 干扰线 + 噪点，
+    设计参考市面通用图形验证码：浅色背景 + 随机彩色字符（旋转/位移/大小随机）+
+    多条干扰线 + 密集噪点 + 轻微波浪扭曲。
     在「可被人类轻松识别」与「增加 OCR 难度」之间取平衡。Pillow 缺失时退化为纯文字 code 返回。
     """
     try:
         from PIL import Image, ImageDraw, ImageFont, ImageFilter
     except Exception:
-        # Pillow 未安装：退化为无图模式（仍校验 code），避免登录完全不可用
         logger.warning("Pillow 未安装，图形验证码降级为纯文本模式")
         return code
 
     import io
     import random
 
-    width, height = 120, 42
-    img = Image.new("RGB", (width, height), (245, 247, 250))
+    width, height = 150, 52
+    bg_r = random.randint(240, 250)
+    bg_g = random.randint(243, 252)
+    bg_b = random.randint(248, 255)
+    img = Image.new("RGB", (width, height), (bg_r, bg_g, bg_b))
     draw = ImageDraw.Draw(img)
 
-    # 干扰线
-    for _ in range(4):
+    # 干扰线（更多、颜色更深）
+    for _ in range(random.randint(6, 9)):
         x1 = random.randint(0, width)
         y1 = random.randint(0, height)
         x2 = random.randint(0, width)
         y2 = random.randint(0, height)
+        c = random.randint(100, 190)
         draw.line(
             [(x1, y1), (x2, y2)],
-            fill=(random.randint(150, 200), random.randint(150, 200), random.randint(150, 200)),
+            fill=(c, c + random.randint(-20, 20), c + random.randint(-10, 30)),
             width=random.randint(1, 2),
         )
 
-    # 字符
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/STHeiti Light.ttc", 26)
-    except Exception:
+    # 加载可用字体（跨平台：macOS 中文字体 → Linux DejaVu → 内置默认）
+    _font_path = None
+    for _cand in (
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ):
         try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 26)
+            ImageFont.truetype(_cand, 28)
+            _font_path = _cand
+            break
         except Exception:
-            font = ImageFont.load_default()
+            continue
+    font_base = ImageFont.load_default() if _font_path is None else ImageFont.truetype(_font_path, 28)
 
-    char_w = width // len(code)
+    char_w = width // len(code) + 2
     for i, ch in enumerate(code):
-        color = (random.randint(40, 120), random.randint(40, 120), random.randint(120, 200))
-        # 每个字符单独画在一个小图层上做轻微旋转，增加 OCR 难度
-        layer = Image.new("RGBA", (char_w + 10, height), (0, 0, 0, 0))
+        # 每个字符随机字号 / 颜色 / Y 偏移
+        font_size = random.randint(24, 32)
+        try:
+            font = ImageFont.truetype(_font_path, font_size) if _font_path else font_base
+        except Exception:
+            font = font_base
+        color = (
+            random.randint(20, 100),
+            random.randint(20, 110),
+            random.randint(100, 210),
+        )
+        layer_h = height + 8
+        layer = Image.new("RGBA", (char_w + 12, layer_h), (0, 0, 0, 0))
         ld = ImageDraw.Draw(layer)
-        ld.text((5, 8), ch, font=font, fill=color)
-        angle = random.uniform(-18, 18)
+        x_off = random.randint(2, 7)
+        y_off = random.randint(4, 12)
+        ld.text((x_off, y_off), ch, font=font, fill=color)
+        angle = random.uniform(-28, 28)
         layer = layer.rotate(angle, resample=Image.BICUBIC, center=(layer.width // 2, layer.height // 2))
-        img.paste(layer, (i * char_w - 4, 0), layer)
+        paste_x = i * char_w + random.randint(-3, 3)
+        paste_y = random.randint(-4, 4)
+        img.paste(layer, (paste_x, paste_y), layer)
 
-    # 噪点
-    for _ in range(60):
+    # 噪点（更密集）
+    for _ in range(random.randint(120, 180)):
         x = random.randint(0, width - 1)
         y = random.randint(0, height - 1)
-        draw.point((x, y), fill=(random.randint(180, 220), random.randint(180, 220), random.randint(180, 220)))
+        v = random.randint(160, 230)
+        draw.point((x, y), fill=(v, v + random.randint(-15, 15), v + random.randint(-5, 20)))
 
-    img = img.filter(ImageFilter.SMOOTH)
+    # 轻微模糊让边缘更自然
+    img = img.filter(ImageFilter.SMOOTH_MORE)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     b64 = urlsafe_b64encode(buf.getvalue()).decode().rstrip("=")
@@ -112,8 +138,9 @@ def _gen_captcha_image(code: str) -> str:
 
 
 @router.get("/captcha")
-def get_captcha():
+def get_captcha(response: Response):
     """获取图形验证码：返回一次性 captcha_id 与 base64 图片，登录时需回传对应 code。"""
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     _purge_expired_captchas()
     import random
     code = "".join(random.choice(_CAPTCHA_ALPHABET) for _ in range(_CAPTCHA_LEN))
@@ -294,7 +321,7 @@ def update_password(req: ChangePasswordRequest, request: Request):
 
     ok, reason = validate_password_strength(req.new_password)
     if not ok:
-        raise HTTPException(status_code=400, detail=f"新密码强度不足：{reason}。要求：密码至少 8 位，且必须包含大写字母、小写字母、数字、特殊符号")
+        raise HTTPException(status_code=400, detail=f"新密码强度不足：{reason}。要求：密码至少 8 位，且需包含大写字母、小写字母、数字、特殊符号中至少两类")
 
     if req.new_password != req.confirm_password:
         raise HTTPException(status_code=400, detail="两次输入的新密码不一致")

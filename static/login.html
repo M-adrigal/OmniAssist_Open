@@ -552,7 +552,7 @@
 
     async function loadCaptcha() {
       try {
-        const res = await fetch('/api/auth/captcha');
+        const res = await fetch('/api/auth/captcha', { cache: 'no-store' });
         if (!res.ok) throw new Error('load failed');
         const data = await res.json();
         currentCaptchaId = data.captcha_id || '';
