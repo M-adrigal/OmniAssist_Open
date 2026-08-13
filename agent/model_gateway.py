@@ -187,6 +187,29 @@ DEFAULT_CAPABILITY = {
     "supports_temperature": True,
 }
 
+# 思考模式三态：关（不思考）/ 低（轻思考、不展示）/ 高（强思考、展示）
+THINKING_MODES = ("off", "low", "high")
+
+
+def thinking_mode_to_flags(mode: str):
+    """将 thinking_mode 翻译为底层参数标记。
+
+    Args:
+        mode: "off" / "low" / "high"（其它值按 "low" 处理）
+
+    Returns:
+        tuple: (thinking_enabled, reasoning_effort)
+            thinking_enabled: 是否开启思考（决定 build_params 选 thinking_on/off）
+            reasoning_effort: 推理强度覆盖（"low"/"high"/None），仅 supported 模型生效
+    """
+    m = (mode or "low").strip().lower()
+    if m == "off":
+        return (False, None)
+    if m == "high":
+        return (True, "high")
+    # low（默认）
+    return (True, "low")
+
 
 class ModelGateway:
     """模型网关：检测模型能力，翻译通用参数为模型特定参数"""
@@ -201,14 +224,14 @@ class ModelGateway:
                 return cap
         return DEFAULT_CAPABILITY
 
-    def build_params(self, show_thought: bool, temperature: float = 0,
+    def build_params(self, thinking_enabled: bool, temperature: float = 0,
                      reasoning_effort: str = None) -> dict:
         """根据思考开关和温度，构建模型特定的 API 参数
 
         Args:
-            show_thought: 是否开启思考模式
+            thinking_enabled: 是否开启思考模式（由 thinking_mode 推导，而非展示开关）
             temperature: 温度参数（0-2）
-            reasoning_effort: 推理强度覆盖（"minimal"/"low"/"medium"/"high"）。
+            reasoning_effort: 推理强度覆盖（"low"/"high"）。
                 仅当模型支持（supports_reasoning_effort）且开启思考时生效，
                 用于在不改模型默认行为的前提下按需调低/调高 token 消耗。
 
@@ -230,7 +253,7 @@ class ModelGateway:
 
         if self.cap.get("supports_temperature", True):
             skip_temp = (
-                show_thought
+                thinking_enabled
                 and self.cap.get("temperature_unsupported_when_thinking", False)
             )
             if not skip_temp:
@@ -238,10 +261,10 @@ class ModelGateway:
 
         thinking_type = self.cap["thinking_param"]
         if thinking_type == "native":
-            source = self.cap["thinking_on"] if show_thought else self.cap["thinking_off"]
+            source = self.cap["thinking_on"] if thinking_enabled else self.cap["thinking_off"]
             params.update(source)
         elif thinking_type == "extra_body":
-            source = self.cap["thinking_on"] if show_thought else self.cap["thinking_off"]
+            source = self.cap["thinking_on"] if thinking_enabled else self.cap["thinking_off"]
             if "extra_body" in source:
                 params["extra_body"] = source["extra_body"]
             if "reasoning_effort" in source:
@@ -255,7 +278,7 @@ class ModelGateway:
         # reasoning_effort 对多数模型无意义甚至报错）
         if (
             reasoning_effort
-            and show_thought
+            and thinking_enabled
             and self.cap.get("supports_reasoning_effort", False)
         ):
             params["reasoning_effort"] = reasoning_effort

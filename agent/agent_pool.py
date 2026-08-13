@@ -139,7 +139,7 @@ class AgentPool:
             agent = SimpleAgent(
                 llm_client=self.llm,
                 tool_registry=tool_registry,
-                show_thought=False,       # 子 Agent 不显示思考过程
+                thinking_mode="low",       # 子 Agent 轻量思考、不展示
                 skill_context=skill_context,
                 silent=True                # 子 Agent 静默模式，不打印终端输出
             )

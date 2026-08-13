@@ -81,8 +81,7 @@ def init_db() -> str:
             base_url TEXT DEFAULT '',
             model_name TEXT DEFAULT '',
             context_limit TEXT DEFAULT '',
-            show_thought INTEGER DEFAULT 0,
-            reasoning_effort TEXT DEFAULT '',
+            thinking_mode TEXT DEFAULT 'low',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -101,6 +100,11 @@ def init_db() -> str:
 
     try:
         conn.execute("ALTER TABLE model_configs ADD COLUMN reasoning_effort TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        conn.execute("ALTER TABLE model_configs ADD COLUMN thinking_mode TEXT DEFAULT 'low'")
     except sqlite3.OperationalError:
         pass
 
@@ -693,12 +697,16 @@ def get_model_config(user_id: int = None) -> Optional[dict]:
     d = dict(row)
     d["api_key"] = _decrypt_db(d.get("api_key_encrypted", ""))
     d["api_key_masked"] = _mask_key(d["api_key"])
-    d["show_thought"] = bool(d.get("show_thought", 0))
+    # 思考模式：优先读 thinking_mode 列；旧库无该列时由 show_thought 兼容推导
+    raw_mode = d.get("thinking_mode")
+    if raw_mode:
+        d["thinking_mode"] = raw_mode
+    else:
+        d["thinking_mode"] = "high" if d.get("show_thought") else "low"
     try:
         d["max_iterations"] = int(d.get("max_iterations") or 10)
     except (TypeError, ValueError):
         d["max_iterations"] = 10
-    d["reasoning_effort"] = (d.get("reasoning_effort") or "").strip()
     return d
 
 
@@ -715,9 +723,8 @@ def resolve_model_config(user_id: int) -> dict:
         "context_limit": "",
         "api_key_masked": "(未设置)",
         "config_type": "global",
-        "show_thought": False,
+        "thinking_mode": "low",
         "max_iterations": 10,
-        "reasoning_effort": "",
     }
     global_cfg = get_model_config(None) or {}
     personal = get_model_config(user_id) or {}
@@ -727,10 +734,10 @@ def resolve_model_config(user_id: int) -> dict:
     merged["config_type"] = "global"
 
     if personal:
-        for key in ("model_name", "base_url", "context_limit", "show_thought",
-                    "max_iterations", "reasoning_effort"):
+        for key in ("model_name", "base_url", "context_limit", "thinking_mode",
+                    "max_iterations"):
             val = personal.get(key)
-            if key in ("show_thought", "max_iterations"):
+            if key == "max_iterations":
                 if val is not None:
                     merged[key] = val
             elif val not in (None, ""):
@@ -743,10 +750,9 @@ def resolve_model_config(user_id: int) -> dict:
             merged["api_key_masked"] = global_cfg.get("api_key_masked")
         merged["config_type"] = "personal"
 
-    # 推理强度默认值：未显式配置时给 medium，降低 deepseek 等模型的
-    # reasoning_effort=high 带来的高 token 消耗（可在配置中调到 high 或 minimal）
-    if not merged.get("reasoning_effort"):
-        merged["reasoning_effort"] = "medium"
+    # 思考模式默认值：未显式配置时给 low（轻量思考、不展示），降低 token 消耗
+    if merged.get("thinking_mode") not in ("off", "low", "high"):
+        merged["thinking_mode"] = "low"
     return merged
 
 
@@ -763,18 +769,16 @@ def save_model_config(user_id: int = None, **kwargs) -> dict:
         updates["model_name"] = kwargs["model_name"] or ""
     if "context_limit" in kwargs:
         updates["context_limit"] = kwargs["context_limit"] or ""
-    if "show_thought" in kwargs:
-        updates["show_thought"] = 1 if kwargs["show_thought"] else 0
+    if "thinking_mode" in kwargs:
+        val = (kwargs["thinking_mode"] or "low").strip().lower()
+        if val not in ("off", "low", "high"):
+            raise ValueError("思考模式必须是 off/low/high 之一")
+        updates["thinking_mode"] = val
     if "max_iterations" in kwargs:
         try:
             updates["max_iterations"] = max(1, int(kwargs["max_iterations"]))
         except (TypeError, ValueError):
             updates["max_iterations"] = 10
-    if "reasoning_effort" in kwargs:
-        val = (kwargs["reasoning_effort"] or "").strip()
-        if val and val not in ("minimal", "low", "medium", "high"):
-            raise ValueError("推理强度必须是 minimal/low/medium/high 之一")
-        updates["reasoning_effort"] = val
 
     if user_id is not None:
         existing = conn.execute("SELECT id FROM model_configs WHERE user_id = ?", (user_id,)).fetchone()

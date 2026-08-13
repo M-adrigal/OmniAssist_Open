@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from server.models import ChatRequest
 from agent.intent_keywords import select_tools_by_intent
-from agent.model_gateway import ModelGateway
+from agent.model_gateway import ModelGateway, thinking_mode_to_flags
 from agent.logger import get_logger, set_context, clear_context
 from agent.parallel_executor import ParallelToolExecutor
 
@@ -850,14 +850,14 @@ async def _handle_command(message: str, session_id: str, user_id: int):
         parts = msg.split(maxsplit=2)
         arg = parts[2].strip().lower() if len(parts) > 2 else ""
         if arg in ("on", "off"):
-            enabled = (arg == "on")
-            agent.set_show_thought(enabled)
+            mode = "high" if arg == "on" else "low"
+            agent.set_thinking_mode(mode)
             try:
                 from server.database import save_model_config
-                save_model_config(user_id, show_thought=enabled)
+                save_model_config(user_id, thinking_mode=mode)
             except Exception:
                 pass
-            status = "开启" if enabled else "关闭"
+            status = "开启" if arg == "on" else "关闭"
             yield f"data: {json.dumps({'type': 'token', 'content': f'思考过程显示已{status}。'})}\n\n"
         else:
             yield f"data: {json.dumps({'type': 'token', 'content': '用法：`/agent thought on` 或 `/agent thought off`'})}\n\n"
@@ -1037,7 +1037,16 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
         model_name = cfg.get("model_name", "").strip()
         gateway = ModelGateway(model_name)
-        gateway_cfg = gateway.build_params(show_thought, temperature=0)
+
+        # 思考模式：关(off)/低(low)/高(high)。低=轻量思考且不展示（省 token）；
+        # 高=强思考并展示。display_thought 额外叠加本次请求的展示开关（body.show_thought）。
+        _mc_mode = resolve_model_config(user_id).get("thinking_mode", "low")
+        if _mc_mode not in ("off", "low", "high"):
+            _mc_mode = "low"
+        _thinking_enabled, _effort = thinking_mode_to_flags(_mc_mode)
+        _display_thought = (_mc_mode == "high") or bool(show_thought)
+
+        gateway_cfg = gateway.build_params(_thinking_enabled, temperature=0, reasoning_effort=_effort)
         reasoning_field = gateway_cfg["reasoning_field"]
         needs_prompt_fallback = gateway_cfg["needs_prompt_fallback"]
         api_params = gateway_cfg["api_params"]
@@ -1141,7 +1150,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             "5. 对于简单问题，用1-3句话回答即可，不要展开成段落"
         )
 
-        if show_thought:
+        if _thinking_enabled:
             if needs_prompt_fallback:
                 system_prompt += (
                     "\n\n思考过程格式（重要）：\n"
@@ -1270,7 +1279,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                             reasoning_text = chunk["reasoning_content"]
                             full_reasoning += reasoning_text
                             _assistant_content_produced = True
-                            if show_thought:
+                            if _display_thought:
                                 yield f"data: {json.dumps({'type': 'thought', 'content': reasoning_text})}\n\n"
 
                         if chunk.get("content"):
@@ -1280,7 +1289,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
                             if reasoning_field is not None:
                                 yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
-                            elif show_thought:
+                            elif _display_thought:
                                 _stream_buf += content
                                 while True:
                                     if _in_thinking:
@@ -1369,12 +1378,12 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                         yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
 
                     if reasoning_field is not None:
-                        if full_reasoning and show_thought:
+                        if full_reasoning and _display_thought:
                             all_thoughts.append(full_reasoning)
                         answer = full_content
                     else:
                         thinking, answer = _split_thinking(full_content)
-                        if thinking and show_thought:
+                        if thinking and _display_thought:
                             all_thoughts.append(thinking)
 
                     # 结束前推送本轮新增的产出文件，让前端在对话内可见可下载

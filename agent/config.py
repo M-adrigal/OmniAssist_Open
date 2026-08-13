@@ -142,18 +142,17 @@ class AgentConfig:
             'model_name': self.get('model_name', '(未设置)'),
             'base_url': self.get('base_url', '(未设置)'),
             'api_key': self.get_masked_api_key(),
-            'show_thought': self.get('show_thought', False),
+            'thinking_mode': self.get('thinking_mode', 'low') or 'low',
             'context_limit': self.get('context_limit', ''),
-            'reasoning_effort': self.get('reasoning_effort', 'medium') or 'medium',
         }
 
     def toggle_thought(self) -> bool:
-        """切换思考过程显示开关
+        """切换思考过程显示（在 低/高 之间切换，便于命令行快捷操作）
 
         Returns:
-            bool: 切换后的状态
+            bool: 切换后是否处于展示思考状态（high）
         """
-        current = self.get('show_thought', False)
-        new_state = not current
-        self.set('show_thought', new_state)
-        return new_state
+        current = self.get('thinking_mode', 'low') or 'low'
+        new_mode = 'high' if current != 'high' else 'low'
+        self.set('thinking_mode', new_mode)
+        return new_mode == 'high'

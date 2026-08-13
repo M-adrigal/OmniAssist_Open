@@ -48,7 +48,7 @@ let state = {
   currentUser: null,
   permissions: {},
   webSearch: 'off',
-  showThought: false,
+  thinkingMode: 'low',  // 思考模式：off(关) / low(低) / high(高)
   attachedFiles: [],
   taskStatuses: {},  // { sessionId: { status, user_message, started_at, completed_at } }
   acknowledgedTasks: new Set(),  // 已查看过的完成任务 session_id
@@ -1162,7 +1162,7 @@ function createAssistantContainer() {
     stream.searchToggleEl.textContent = isHidden ? '▸' : '▾';
   });
 
-  if (state.showThought) {
+  if (state.thinkingMode === 'high') {
     stream.thinkEl.classList.remove('hidden');
     stream.thinkStartTime = Date.now();
   }
@@ -1539,7 +1539,7 @@ function renderSearchArea(stream) {
 }
 
 function updateThinkArea(stream) {
-  if (!state.showThought) return;
+  if (state.thinkingMode !== 'high') return;
 
   if (stream.thinkEl.classList.contains('hidden')) {
     stream.thinkEl.classList.remove('hidden');
@@ -1865,7 +1865,7 @@ async function sendMessage() {
         session_id: state.currentSessionId,
         message: message,
         web_search: state.webSearch,
-        show_thought: state.showThought,
+        show_thought: state.thinkingMode === 'high',
       }),
       signal: abortController.signal,
     });
@@ -2660,17 +2660,15 @@ function switchConfigTab(tab) {
   $('#config-tab-search').classList.toggle('hidden', tab !== 'search');
 }
 
-function updateThoughtButton() {
+function updateThinkingModeUI() {
   const btn = $('#btn-thought');
   if (!btn) return;
-  if (state.showThought) {
-    btn.classList.add('active');
-    btn.querySelector('span').textContent = '思考过程·开';
-  } else {
-    btn.classList.remove('active');
-    btn.querySelector('span').textContent = '思考过程';
-  }
-  localStorage.setItem('showThought', state.showThought ? '1' : '0');
+  const labels = { off: '思考：关', low: '思考：低', high: '思考：高' };
+  const mode = state.thinkingMode in labels ? state.thinkingMode : 'low';
+  btn.classList.toggle('active', mode === 'high');
+  const span = btn.querySelector('span');
+  if (span) span.textContent = labels[mode];
+  localStorage.setItem('thinkingMode', mode);
 }
 
 async function loadConfig() {
@@ -2690,12 +2688,12 @@ async function loadConfig() {
     const maxIterEl = $('#cfg-max-iterations');
     if (maxIterEl) maxIterEl.value = config.max_iterations != null ? config.max_iterations : '';
 
-    if (localStorage.getItem('showThought') === null) {
-      state.showThought = config.show_thought || false;
+    if (localStorage.getItem('thinkingMode') === null) {
+      state.thinkingMode = config.thinking_mode || 'low';
     } else {
-      state.showThought = localStorage.getItem('showThought') === '1';
+      state.thinkingMode = localStorage.getItem('thinkingMode') || 'low';
     }
-    updateThoughtButton();
+    updateThinkingModeUI();
 
     if (hasPermission('model_config_global', 'read')) {
       $('#config-tabs').classList.remove('hidden');
@@ -3245,10 +3243,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   $('#theme-toggle').addEventListener('click', toggleTheme);
 
-  if (localStorage.getItem('showThought') === '1') {
-    state.showThought = true;
+  if (localStorage.getItem('thinkingMode')) {
+    state.thinkingMode = localStorage.getItem('thinkingMode') || 'low';
   }
-  updateThoughtButton();
+  updateThinkingModeUI();
 
   loadSessions();
 
@@ -3570,14 +3568,18 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   $('#btn-thought').addEventListener('click', async () => {
-    state.showThought = !state.showThought;
-    updateThoughtButton();
+    const order = ['off', 'low', 'high'];
+    const idx = order.indexOf(state.thinkingMode);
+    const next = order[(idx + 1) % order.length];
+    const prev = state.thinkingMode;
+    state.thinkingMode = next;
+    updateThinkingModeUI();
     try {
-      await API.put('/api/config', { show_thought: state.showThought });
+      await API.put('/api/config', { thinking_mode: next });
     } catch (e) {
       showToast('保存思考设置失败: ' + e.message, 'error');
-      state.showThought = !state.showThought;
-      updateThoughtButton();
+      state.thinkingMode = prev;
+      updateThinkingModeUI();
     }
   });
 

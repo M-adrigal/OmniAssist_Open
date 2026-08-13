@@ -203,7 +203,7 @@ document_output/
 | `error` | 错误信息 | 发生错误时 |
 | `done` | 流结束标记 | 回答完成 |
 
-**思考模式开关**：用户可通过输入框下方按钮切换，状态持久化到 `localStorage`，同时同步到服务端 `model_configs.show_thought`。
+**思考模式开关**：用户可通过输入框下方按钮在 `关 / 低 / 高` 三态间循环切换，状态持久化到 `localStorage`，同时同步到服务端 `model_configs.thinking_mode`（off/low/high）。
 
 **思考过程格式**：使用自然流畅的独白形式，通过 `<thinking>...</thinking>` 标签包裹。后端 `_split_thinking()` 解析标签，提取思考内容存入 `thought` 字段，纯净回答存入 `content` 字段。前端实时流式展示思考内容（过滤标签），思考结束后自动折叠。
 
@@ -437,7 +437,7 @@ pip install pytest httpx
 - **密码相关**: 如需重置密码，通过 Web 界面或调用 `database.py` 的 `update_user_password()` 函数
 - **消息格式**: 扩展消息字段（`search`/`thought`/`tools`）均为可选，新增时需保持向后兼容，`renderHistoryMessage()` 通过 `hasMeta` 判断是否使用三段式布局
 - **SSE 事件**: 新增 SSE 事件类型时需同步更新前端 `app.js` 的事件处理 switch-case 和 `style.css` 样式
-- **前端状态**: 思考模式开关状态通过 `localStorage` 持久化，同时同步到服务端 `model_configs.show_thought`，两端保持一致
+- **前端状态**: 思考模式开关状态（off/low/high）通过 `localStorage` 持久化，同时同步到服务端 `model_configs.thinking_mode`，两端保持一致
 - **思考过程**: 使用 `<thinking>...</thinking>` 标签包裹，自然独白风格。后端 `_split_thinking()` 解析后分别存储 `thought` 和 `content`，前端实时流式展示并过滤标签
 - **登录页**: 支持毛玻璃效果（`backdrop-filter`）、浮动动画光斑（`.bg-orb`）、时段渐变背景（4 个时段 × 亮/暗双模式）。主题切换为三态循环（自动 → 暗色 → 亮色），自动模式跟随系统偏好
 - **消息布局顺序**: 思考过程 → 联网搜索 → 工具调用 → 回答。联网搜索结果延迟到思考结束后显示

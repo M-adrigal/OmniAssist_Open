@@ -473,8 +473,9 @@ def _handle_agent_thought(config: AgentConfig, agent: SimpleAgent, arg: str):
         return
 
     enabled = (arg == "on")
-    config.set('show_thought', enabled)
-    agent.set_show_thought(enabled)
+    mode = "high" if enabled else "low"
+    config.set('thinking_mode', mode)
+    agent.set_thinking_mode(mode)
     status = "开启" if enabled else "关闭"
     print(f"思考过程显示已{status}。")
 
@@ -555,8 +556,7 @@ def main():
     skill_context = skill_registry.build_context()
 
     agent = SimpleAgent(llm_client, tool_registry, context_limit=context_limit,
-                        show_thought=config.get('show_thought', False),
-                        reasoning_effort=config.get('reasoning_effort', 'medium') or 'medium',
+                        thinking_mode=config.get('thinking_mode', 'low') or 'low',
                         skill_context=skill_context)
 
     print("\n轻量级 AI Agent 底座已启动（输入 /help 查看可用命令）")

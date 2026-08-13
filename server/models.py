@@ -22,9 +22,8 @@ class ModelConfigUpdate(BaseModel):
     base_url: Optional[str] = None
     model_name: Optional[str] = None
     context_limit: Optional[str] = None
-    show_thought: Optional[bool] = None
+    thinking_mode: Optional[str] = None  # off/low/high，控制思考强度与是否展示
     max_iterations: Optional[int] = None
-    reasoning_effort: Optional[str] = None  # minimal/low/medium/high，调节推理强度以控制 token 消耗
 
 
 class ModelConfigResponse(BaseModel):
@@ -33,9 +32,8 @@ class ModelConfigResponse(BaseModel):
     api_key_masked: str
     context_limit: str
     config_type: str = "none"
-    show_thought: bool = False
+    thinking_mode: str = "low"
     max_iterations: int = 10
-    reasoning_effort: str = "medium"
 
 
 class SearchConfigResponse(BaseModel):

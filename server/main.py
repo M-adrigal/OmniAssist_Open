@@ -188,7 +188,7 @@ def init_services():
                 base_url=_config.get("base_url", ""),
                 model_name=_config.get("model_name", ""),
                 context_limit=_config.get("context_limit", ""),
-                show_thought=_config.get("show_thought", False),
+                thinking_mode=_config.get("thinking_mode", "low") or "low",
             )
             tavily_encrypted = _config._data.get("tavily_api_key_encrypted", "")
             if tavily_encrypted:
@@ -507,22 +507,18 @@ def init_services():
     )
     logger.info("已注册诊断与管理工具（9个，admin限定）")
 
-    show_thought = False
+    thinking_mode = "low"
     context_limit = ""
-    reasoning_effort = ""
 
     if global_cfg:
-        show_thought = global_cfg.get("show_thought", False)
+        thinking_mode = global_cfg.get("thinking_mode", "low")
         context_limit = global_cfg.get("context_limit", "")
-        reasoning_effort = global_cfg.get("reasoning_effort", "")
     else:
-        show_thought = _config.get("show_thought", False)
+        thinking_mode = _config.get("thinking_mode", "low")
         context_limit = _config.get("context_limit", "")
-        reasoning_effort = _config.get("reasoning_effort", "")
 
-    # 推理强度默认值：未配置时给 medium，降低高推理强度带来的 token 消耗
-    if not reasoning_effort:
-        reasoning_effort = "medium"
+    if thinking_mode not in ("off", "low", "high"):
+        thinking_mode = "low"
 
     # 构建技能上下文
     skill_context = _skill_registry.build_context()
@@ -530,9 +526,8 @@ def init_services():
     _agent = SimpleAgent(
         _llm_client, _tool_registry,
         context_limit=context_limit,
-        show_thought=show_thought,
+        thinking_mode=thinking_mode,
         skill_context=skill_context,
-        reasoning_effort=reasoning_effort,
     )
 
 
@@ -567,16 +562,10 @@ def update_agent_context_limit(context_limit: str):
         _agent.update_context_limit(context_limit)
 
 
-def update_agent_show_thought(show_thought: bool):
+def update_agent_thinking_mode(thinking_mode: str):
     global _agent
     if _agent:
-        _agent.set_show_thought(show_thought)
-
-
-def update_agent_reasoning_effort(reasoning_effort: str):
-    global _agent
-    if _agent:
-        _agent.set_reasoning_effort(reasoning_effort or "")
+        _agent.set_thinking_mode(thinking_mode or "low")
 
 
 def refresh_global_llm():
@@ -599,10 +588,10 @@ def refresh_global_llm():
     _llm_client.model = cfg.get("model_name", "")
 
     context_limit = cfg.get("context_limit", "")
-    show_thought = cfg.get("show_thought", False)
+    thinking_mode = cfg.get("thinking_mode", "low")
     if _agent:
         _agent.update_context_limit(context_limit)
-        _agent.set_show_thought(show_thought)
+        _agent.set_thinking_mode(thinking_mode or "low")
 
 
 def get_session_store() -> dict:
