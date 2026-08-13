@@ -726,73 +726,6 @@ def _do_web_search(query: str, api_key: str, scenario: str = "general") -> str:
         return f"搜索出错: {str(e)}"
 
 
-def _is_obvious_no_search(message: str) -> bool:
-    """自动联网搜索的『明显不需要搜索』启发式：命中即跳过，零额外开销。
-
-    覆盖问候、闲聊、自我介绍、情绪安抚、讲笑话、纯算术、纯标点/表情等
-    明显无需联网的场景，避免为每个此类消息都发起一次 LLM 判别调用。
-    """
-    m = (message or "").strip()
-    if not m:
-        return True
-    # 极短消息（你好 / 嗨 / 在吗 / 嗯 ...）
-    if len(m) <= 2:
-        return True
-    low = m.lower()
-    # 去掉所有标点/空白后再做问候匹配，兼容「你好！」「在吗？」等带标点的写法
-    norm = re.sub(r"[\s\W_]+", "", low)
-    _greet = (
-        "你好", "您好", "嗨", "哈喽", "在吗", "在不在", "有人吗",
-        "谢谢", "感谢", "多谢", "再见", "拜拜", "晚安", "早安", "午安",
-        "hello", "hi", "hey", "thanks", "thank you", "bye", "goodbye",
-        "你是谁", "你叫什么", "你是什么", "你能做什么", "你能干啥", "你会什么",
-        "讲个笑话", "说个笑话", "陪我聊聊", "在的", "嗯", "哦", "好的", "好", "ok", "okay",
-    )
-    if norm in _greet:
-        return True
-    # 纯数字 / 运算符（简单算术）
-    if re.fullmatch(r"[\d\s\+\-\*/\(\)\.\^=×÷%，。、]+", m):
-        return True
-    # 纯标点 / 表情 / 空白
-    if re.fullmatch(r"[\s\W_]+", m):
-        return True
-    return False
-
-
-def _llm_decide_search(message: str, llm) -> bool:
-    """自动联网搜索的 LLM 判别：判断是否需要联网搜索最新/实时/外部信息。
-
-    仅用于启发式无法确定的模糊消息。失败（含推理模型等异常）时保守返回 True，
-    即默认按『需要搜索』处理，避免漏搜导致回答失准。
-    """
-    if llm is None or getattr(llm, "client", None) is None:
-        return True
-    _prompt = [
-        {"role": "system", "content": (
-            "你是联网搜索需求判别器。判断用户的这条消息是否需要『联网搜索最新/实时/外部信息』"
-            "才能准确回答。只回答 YES 或 NO。\n"
-            "不需要搜索：闲聊问候、自我介绍、情绪安抚、讲笑话、写诗、纯观点/创作、"
-            "简单计算、你自身能力说明、仅凭常识即可回答的通用问题。\n"
-            "需要搜索：新闻/快讯、实时数据(天气/股价/汇率/赛事/交通)、最新版本或发布信息、"
-            "特定事实查证、地点相关、需最新资料的操作步骤/教程等。"
-        )},
-        {"role": "user", "content": message},
-    ]
-    try:
-        resp = llm.client.chat.completions.create(
-            model=llm.model,
-            messages=_prompt,
-            temperature=0,
-            max_tokens=4,
-            stream=False,
-        )
-        text = (resp.choices[0].message.content or "").strip().upper()
-        return text.startswith("Y")
-    except Exception as e:
-        logger.warning(f"联网搜索需求判别失败，保守按需要搜索处理: {e}")
-        return True
-
-
 async def _handle_command(message: str, session_id: str, user_id: int):
     agent, llm, registry, config, skill_registry = get_dependencies()
     store = get_session_store()
@@ -1068,37 +1001,10 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
         else:
             messages = []
 
-        search_context = ""
-        search_scenario = "general"
+        # 市面对齐（纯 Agentic）：不做「前置一次性检索 + 注入 system 提示」。
+        # 是否联网、搜什么、是否基于结果追问，完全交给模型通过 web_search 工具自主决定。
+        # web_search=off 时由下方 system prompt 禁用该工具。
         search_info = None
-        if web_search != "off":
-            from server.database import get_search_config, get_user_by_id
-            search_cfg = get_search_config()
-            tavily_key = search_cfg.get("tavily_api_key", "")
-
-            # 是否真正需要搜索：auto 模式按需判断（on 模式已移除，off 之外一律视为 auto）
-            need_search = True
-            if not tavily_key:
-                # 未配置搜索 key 时优雅降级，直接走普通对话
-                need_search = False
-            elif _is_obvious_no_search(message):
-                need_search = False
-            else:
-                need_search = await _run_sync(_llm_decide_search, message, llm)
-
-            if need_search and tavily_key:
-                search_scenario = _classify_query(message)
-                scenario_label = SCENARIO_CONFIG[search_scenario]["label"]
-                yield f"data: {json.dumps({'type': 'status', 'content': f'正在联网搜索（{scenario_label}）...'})}\n\n"
-                search_context = await _run_sync(_do_web_search, message, tavily_key, search_scenario)
-                if search_context:
-                    search_info = {
-                        "query": message,
-                        "scenario": scenario_label,
-                        "results": search_context,
-                    }
-                    yield f"data: {json.dumps({'type': 'web_search', 'query': message, 'scenario': scenario_label, 'results': search_context})}\n\n"
-                    yield f"data: {json.dumps({'type': 'status', 'content': '搜索完成，正在生成回答...'})}\n\n"
 
         system_prompt = (
             "你是一个智能助手，能够根据用户需求选择合适的工具。\n\n"
@@ -1109,7 +1015,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             "4. 如果用户说'放到word里'、'保存为文档'、'生成word'等，应使用 save_to_word 工具\n"
             "5. 如果用户问时间日期，使用 get_current_datetime 工具\n"
             "6. 如果用户需要计算，使用 simple_calculator 工具\n"
-            "7. 如果用户需要搜索最新/实时/外部信息（新闻、天气、股价、最新版本、事实查证、教程、对比分析等），使用 web_search 工具\n"
+            "7. 如果用户需要搜索最新/实时/外部信息（新闻、天气、股价、最新版本、事实查证、教程、对比分析等），使用 web_search 工具；搜索结果会附带『来源: url』，请在回答中直接引用这些来源链接（如 [标题](url) 形式），让用户可溯源核实\n"
             "8. 只有在需要读取某个已知具体网址的页面内容时，才使用 web_fetch 工具（该工具运行在受限沙箱中，可能无法访问外网，优先使用 web_search）\n"
             "9. 如果用户需要农历转换，使用 convert_gregorian_to_lunar 工具\n"
             "10. 调用工具前先确认参数是否齐全，参数不齐时向用户询问\n\n"
@@ -1164,16 +1070,6 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
         else:
             system_prompt += (
                 "\n\n重要：请直接给出最终回答，不要输出思考过程、分析过程或任何前置说明。"
-            )
-
-        if search_context:
-            scenario_instruction = SCENARIO_CONFIG[search_scenario]["instruction"]
-            system_prompt += (
-                f"\n\n=== 联网搜索结果（场景：{SCENARIO_CONFIG[search_scenario]['label']}） ===\n\n"
-                f"{search_context}\n\n"
-                f"=== 搜索信息结束 ===\n\n"
-                f"【场景指令 - 自动模式】\n{scenario_instruction}\n"
-                f"请参考以上场景指令，灵活判断如何最佳地回答用户问题。"
             )
 
         if session_id and user_id:
