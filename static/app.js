@@ -2663,9 +2663,11 @@ function switchConfigTab(tab) {
 function updateThinkingModeUI() {
   const btn = $('#btn-thought');
   if (!btn) return;
-  const labels = { off: '深度思考：关', low: '深度思考：低', high: '深度思考：高' };
+  // off 仅显示「深度思考」（无状态后缀）；low 加绿色（与「联网搜索·自动」一致）；high 加蓝色高亮
+  const labels = { off: '深度思考', low: '深度思考：低', high: '深度思考：高' };
   const mode = state.thinkingMode in labels ? state.thinkingMode : 'low';
   btn.classList.toggle('active', mode === 'high');
+  btn.classList.toggle('auto', mode === 'low');
   const span = btn.querySelector('span');
   if (span) span.textContent = labels[mode];
   localStorage.setItem('thinkingMode', mode);
@@ -3547,12 +3549,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 500);
   }
 
-  // 联网搜索三态切换: off -> auto -> on -> off
-  const WEB_SEARCH_MODES = ['off', 'auto', 'on'];
+  // 联网搜索两态切换: off -> auto -> off
+  const WEB_SEARCH_MODES = ['off', 'auto'];
   const WEB_SEARCH_LABELS = {
     off: '联网搜索',
     auto: '联网搜索·自动',
-    on: '联网搜索·开启',
   };
   $('#btn-web-search').addEventListener('click', () => {
     const btn = $('#btn-web-search');
@@ -3562,7 +3563,6 @@ document.addEventListener('DOMContentLoaded', () => {
     btn.dataset.mode = state.webSearch;
     btn.querySelector('span').textContent = WEB_SEARCH_LABELS[state.webSearch];
     btn.classList.remove('active', 'auto');
-    if (state.webSearch === 'on') btn.classList.add('active');
     if (state.webSearch === 'auto') btn.classList.add('auto');
     btn.title = WEB_SEARCH_LABELS[state.webSearch];
   });

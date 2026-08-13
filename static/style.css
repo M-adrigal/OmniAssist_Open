@@ -80,7 +80,8 @@
   color: #EF4444;
 }
 
-.dark .btn-web-search.auto {
+.dark .btn-web-search.auto,
+.dark .btn-thought.auto {
   background: rgba(16, 185, 129, 0.15);
   color: #34d399;
 }
@@ -705,12 +706,14 @@ body {
   stroke: var(--danger);
 }
 
-.btn-web-search.auto {
+.btn-web-search.auto,
+.btn-thought.auto {
   background: rgba(16, 185, 129, 0.10);
   color: #059669;
 }
 
-.btn-web-search.auto svg {
+.btn-web-search.auto svg,
+.btn-thought.auto svg {
   stroke: #059669;
 }
 

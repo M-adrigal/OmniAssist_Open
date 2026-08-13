@@ -1071,32 +1071,20 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
         search_context = ""
         search_scenario = "general"
         search_info = None
-        if web_search in ("auto", "on"):
+        if web_search != "off":
             from server.database import get_search_config, get_user_by_id
             search_cfg = get_search_config()
             tavily_key = search_cfg.get("tavily_api_key", "")
 
-            # 是否真正需要搜索：仅 auto 模式按需判断；on 模式强制搜索
+            # 是否真正需要搜索：auto 模式按需判断（on 模式已移除，off 之外一律视为 auto）
             need_search = True
             if not tavily_key:
-                if web_search == "on":
-                    user = get_user_by_id(user_id)
-                    is_admin = user and user.get("user_type") == "admin"
-                    if is_admin:
-                        yield f"data: {json.dumps({'type': 'error', 'content': '联网搜索功能尚未配置，请到设置中配置 Tavily API Key'})}\n\n"
-                    else:
-                        yield f"data: {json.dumps({'type': 'error', 'content': '联网搜索功能尚未配置，请联系管理员进行联网搜索配置'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                    _done_sent = True
-                    return
-                else:
-                    # 自动模式：未配置搜索 key 时优雅降级，直接走普通对话
-                    need_search = False
-            elif web_search == "auto":
-                if _is_obvious_no_search(message):
-                    need_search = False
-                else:
-                    need_search = await _run_sync(_llm_decide_search, message, llm)
+                # 未配置搜索 key 时优雅降级，直接走普通对话
+                need_search = False
+            elif _is_obvious_no_search(message):
+                need_search = False
+            else:
+                need_search = await _run_sync(_llm_decide_search, message, llm)
 
             if need_search and tavily_key:
                 search_scenario = _classify_query(message)
@@ -1180,22 +1168,13 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
         if search_context:
             scenario_instruction = SCENARIO_CONFIG[search_scenario]["instruction"]
-            if web_search == "on":
-                system_prompt += (
-                    f"\n\n=== 联网搜索结果（场景：{SCENARIO_CONFIG[search_scenario]['label']}） ===\n\n"
-                    f"{search_context}\n\n"
-                    f"=== 搜索信息结束 ===\n\n"
-                    f"【场景指令 - 强制模式】\n{scenario_instruction}\n"
-                    f"请务必严格遵循以上场景指令回答用户问题。"
-                )
-            else:
-                system_prompt += (
-                    f"\n\n=== 联网搜索结果（场景：{SCENARIO_CONFIG[search_scenario]['label']}） ===\n\n"
-                    f"{search_context}\n\n"
-                    f"=== 搜索信息结束 ===\n\n"
-                    f"【场景指令 - 自动模式】\n{scenario_instruction}\n"
-                    f"请参考以上场景指令，灵活判断如何最佳地回答用户问题。"
-                )
+            system_prompt += (
+                f"\n\n=== 联网搜索结果（场景：{SCENARIO_CONFIG[search_scenario]['label']}） ===\n\n"
+                f"{search_context}\n\n"
+                f"=== 搜索信息结束 ===\n\n"
+                f"【场景指令 - 自动模式】\n{scenario_instruction}\n"
+                f"请参考以上场景指令，灵活判断如何最佳地回答用户问题。"
+            )
 
         if session_id and user_id:
             upload_dir = os.path.join(
