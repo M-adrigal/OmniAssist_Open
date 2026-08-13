@@ -53,9 +53,8 @@ class ToolSandbox:
         self._ensure_venv()
         self._load_installed_deps()
 
-        # 可选：彻底禁止网络外联（默认关闭，以免破坏 web-fetch / gold-price 等系统技能）
-        if os.environ.get("SANDBOX_DISABLE_NETWORK"):
-            self._BLOCKED_MODULES = set(self._BLOCKED_MODULES) | self._NETWORK_BLOCK
+        # 注意：沙箱子进程的网络出口由 _build_wrapper 内的 getaddrinfo 补丁统一管控
+        # （依据 SANDBOX_NETWORK_ALLOWLIST，默认全阻断；web-fetch / gold-price 等主进程技能不受影响）。
 
     def get_shared_site_packages(self) -> str:
         """返回共享基础环境的 site-packages 路径（用户沙箱专用），无则返回空串"""
@@ -515,7 +514,8 @@ class ToolSandbox:
         "tr", "uniq", "nl", "od", "base64", "xxd", "file", "stat", "printf",
         "true", "false", "test", "expr", "tee", "diff", "comm",
     }
-    # 可选网络外联熔断（默认不开启，避免破坏 web-fetch / gold-price 等系统技能）
+    # 网络出口已由 _build_wrapper 内的 getaddrinfo 补丁统一管控
+    # （SANDBOX_NETWORK_ALLOWLIST，默认全阻断）。下列集合保留作参考，不再自动并入禁用清单。
     _NETWORK_BLOCK = {
         "socket", "ssl", "urllib", "http", "ftplib", "smtplib",
         "telnetlib", "poplib", "imaplib", "webbrowser",
@@ -612,10 +612,28 @@ class ToolSandbox:
                     write_allowed.append(_rp)
         allowed_cmds = json.dumps(sorted(self._ALLOWED_COMMANDS))
 
+        # 受限读取目录前缀：沙箱子进程禁止读取系统/敏感目录
+        # （防 /etc、用户家目录、数据库目录、密钥目录、其他用户的产出目录被越权读取后外泄）。
+        # 项目自身的 agent/server/static 等源码仍可读（属应用自身代码，非敏感）。
+        read_deny = sorted({
+            os.path.realpath(p) for p in (
+                "/etc", "/home", "/Users", "/root", "/var", "/proc", "/sys",
+                "/boot", "/usr", "/bin", "/sbin", "/lib", "/opt",
+                data_dir, workbuddy_dir, user_workbuddy,
+            )
+        })
+        # 沙箱审计日志（集中记录命令执行与越权访问尝试）
+        logs_dir = os.path.join(project_root, "logs")
+        audit_log = os.path.join(logs_dir, "sandbox_audit.log")
+        # 网络出口白名单（逗号分隔主机后缀）；为空则沙箱内全部外联被拒绝
+        net_allow = os.environ.get("SANDBOX_NETWORK_ALLOWLIST", "")
+
         wrapper = (
             f"import {safe_imports}\n"
             "import subprocess as _sb_subprocess\n"
             "import os as _os\n"
+            "import socket as _sb_socket\n"
+            "_SB_ORIG_OPEN = open\n"
             f"_params = json.loads({json.dumps(params_json)})\n"
         )
         for key in params:
@@ -657,9 +675,46 @@ class ToolSandbox:
             f"_WRITE_ALLOWED_DIRS = {json.dumps(write_allowed)}\n"
             f"_READ_SECRET_DIRS = {json.dumps(read_secret_dirs)}\n"
             f"_SECRET_NAMES = {json.dumps(sorted(self._SECRET_NAMES))}\n"
+            f"_READ_DENY_PREFIXES = {json.dumps(read_deny)}\n"
+            f"_DOC_ROOT = {json.dumps(doc_root)}\n"
+            f"_USER_DOC = {json.dumps(user_doc)}\n"
+            f"_SB_AUDIT_LOG = {json.dumps(audit_log)}\n"
+            f"_SB_UID = {json.dumps(str(user_id or 0))}\n"
+            f"_SB_NET_ALLOW = {json.dumps(net_allow)}\n"
+            "def _sb_audit(event, detail):\n"
+            "    try:\n"
+            "        import time as _t\n"
+            "        _d = _os.path.dirname(_SB_AUDIT_LOG)\n"
+            "        if _d and not _os.path.isdir(_d):\n"
+            "            try: _os.makedirs(_d, exist_ok=True)\n"
+            "            except Exception: pass\n"
+            "        _ts = _t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime())\n"
+            "        with _SB_ORIG_OPEN(_SB_AUDIT_LOG, 'a', encoding='utf-8') as _af:\n"
+            "            _af.write(f'[_ts] [{event}] user={_SB_UID} | {detail}\\n')\n"
+            "    except Exception:\n"
+            "        pass\n"
+            "# ---- 网络出口白名单（默认全阻断，仅放行 SANDBOX_NETWORK_ALLOWLIST 中的主机）----\n"
+            "_sb_orig_getaddrinfo = _sb_socket.getaddrinfo\n"
+            "def _sb_getaddrinfo(host, *args, **kwargs):\n"
+            "    _h = (host or '').strip().lower()\n"
+            "    if _h.startswith('['):\n"
+            "        _h = _h.strip('[]')\n"
+            "    _host = _h.split(':')[0]\n"
+            "    _allow = [x.strip().lower() for x in _SB_NET_ALLOW.split(',') if x.strip()]\n"
+            "    for _a in _allow:\n"
+            "        if _host == _a or _host.endswith('.' + _a):\n"
+            "            return _sb_orig_getaddrinfo(host, *args, **kwargs)\n"
+            "    _sb_audit('net_denied', f'host={host}')\n"
+            "    raise PermissionError(f'[沙箱] 禁止访问外部网络主机: {host}')\n"
+            "_sb_socket.getaddrinfo = _sb_getaddrinfo\n"
             "def _in_dirs(rp, dirs):\n"
             "    for _d in dirs:\n"
             "        if rp == _d or rp.startswith(_d + _os.sep):\n"
+            "            return True\n"
+            "    return False\n"
+            "def _under_prefix(rp, prefixes):\n"
+            "    for _p in prefixes:\n"
+            "        if rp == _p or rp.startswith(_p + _os.sep):\n"
             "            return True\n"
             "    return False\n"
             "def _is_secret(rp):\n"
@@ -671,6 +726,7 @@ class ToolSandbox:
             "    real = _os.path.realpath(path)\n"
             "    if _in_dirs(real, _WRITE_ALLOWED_DIRS):\n"
             "        return _orig_unlink(path)\n"
+            "    _sb_audit('file_delete_denied', f'path={path}')\n"
             "    raise PermissionError(f'[沙箱] 禁止删除此路径的文件: {path}')\n"
             "_os.unlink = _safe_unlink\n"
             "_os.remove = _safe_unlink\n"
@@ -688,23 +744,29 @@ class ToolSandbox:
             # 移动 / 重命名 / 链接控制
             "def _safe_rename(src, dst):\n"
             "    if _is_secret(_os.path.realpath(src)):\n"
+            "        _sb_audit('file_rename_denied', f'src={src}')\n"
             "        raise PermissionError('[沙箱] 禁止移动密钥文件')\n"
             "    if not _in_dirs(_os.path.realpath(dst), _WRITE_ALLOWED_DIRS):\n"
+            "        _sb_audit('file_rename_denied', f'dst={dst}')\n"
             "        raise PermissionError(f'[沙箱] 禁止移动到禁区: {dst}')\n"
             "    return _orig_rename(src, dst)\n"
             "_os.rename = _safe_rename\n"
             "_os.replace = _safe_rename\n"
             "def _safe_symlink(target, link):\n"
             "    if _is_secret(_os.path.realpath(target)):\n"
+            "        _sb_audit('file_symlink_denied', f'target={target}')\n"
             "        raise PermissionError('[沙箱] 禁止链接到密钥文件')\n"
             "    if not _in_dirs(_os.path.realpath(link), _WRITE_ALLOWED_DIRS):\n"
+            "        _sb_audit('file_symlink_denied', f'link={link}')\n"
             "        raise PermissionError(f'[沙箱] 禁止在禁区创建链接: {link}')\n"
             "    return _orig_symlink(target, link)\n"
             "_os.symlink = _safe_symlink\n"
             "def _safe_link(src, link):\n"
             "    if _is_secret(_os.path.realpath(src)):\n"
+            "        _sb_audit('file_link_denied', f'src={src}')\n"
             "        raise PermissionError('[沙箱] 禁止硬链接密钥文件')\n"
             "    if not _in_dirs(_os.path.realpath(link), _WRITE_ALLOWED_DIRS):\n"
+            "        _sb_audit('file_link_denied', f'link={link}')\n"
             "        raise PermissionError(f'[沙箱] 禁止在禁区创建链接: {link}')\n"
             "    return _orig_link(src, link)\n"
             "_os.link = _safe_link\n"
@@ -716,9 +778,11 @@ class ToolSandbox:
             "    _mode = mode if isinstance(mode, str) else 'r'\n"
             "    _read = ('r' in _mode) or ('+' in _mode)\n"
             "    _write = ('w' in _mode) or ('a' in _mode) or ('x' in _mode) or ('+' in _mode)\n"
-            "    if _read and _is_secret(_rp):\n"
-            "        raise PermissionError(f'[沙箱] 禁止读取密钥文件: {path}')\n"
+            "    if _read and (_is_secret(_rp) or _under_prefix(_rp, _READ_DENY_PREFIXES) or (_rp.startswith(_DOC_ROOT + _os.sep) and not _rp.startswith(_USER_DOC + _os.sep))):\n"
+            "        _sb_audit('file_read_denied', f'path={path}')\n"
+            "        raise PermissionError(f'[沙箱] 禁止读取受限文件: {path}')\n"
             "    if _write and not _in_dirs(_rp, _WRITE_ALLOWED_DIRS):\n"
+            "        _sb_audit('file_write_denied', f'path={path}')\n"
             "        raise PermissionError(f'[沙箱] 禁止写入禁区: {path}')\n"
             "    return _orig_open(path, mode, *args, **kwargs)\n"
             "builtins.open = _safe_open\n"
@@ -732,12 +796,32 @@ class ToolSandbox:
             "    if not _parts:\n"
             "        raise ValueError('空命令')\n"
             "    if _parts[0] not in _ALLOWED_CMDS:\n"
+            "        _sb_audit('cmd_denied', f'cmd={cmd}')\n"
             "        raise PermissionError(f'[沙箱] 命令不在白名单: {_parts[0]}')\n"
+            "    # 路径参数白名单：禁止绝对路径、家目录展开、父目录遍历、密钥文件与受限目录\n"
+            "    for _arg in _parts[1:]:\n"
+            "        _a = _arg.strip()\n"
+            "        if not _a:\n"
+            "            continue\n"
+            "        if _a.startswith('/') or _a.startswith('~'):\n"
+            "            _sb_audit('cmd_path_denied', f'cmd={cmd} arg={_arg}')\n"
+            "            raise PermissionError(f'[沙箱] run_command 禁止访问绝对路径: {_arg}')\n"
+            "        if _a == '..' or _a.startswith('../') or '/../' in _a:\n"
+            "            _sb_audit('cmd_path_denied', f'cmd={cmd} arg={_arg}')\n"
+            "            raise PermissionError(f'[沙箱] run_command 禁止父目录遍历: {_arg}')\n"
+            "        if _os.path.basename(_a) in _SECRET_NAMES:\n"
+            "            _sb_audit('cmd_secret_denied', f'cmd={cmd} arg={_arg}')\n"
+            "            raise PermissionError(f'[沙箱] run_command 禁止访问密钥文件: {_arg}')\n"
+            "        _rp = _os.path.realpath(_os.path.join(str(cwd or _DEFAULT_CWD), _a))\n"
+            "        if _under_prefix(_rp, _READ_DENY_PREFIXES):\n"
+            "            _sb_audit('cmd_path_denied', f'cmd={cmd} arg={_arg}')\n"
+            "            raise PermissionError(f'[沙箱] run_command 禁止访问受限路径: {_arg}')\n"
             "    if cwd is None:\n"
             "        cwd = _DEFAULT_CWD\n"
             "    _rcwd = _os.path.realpath(str(cwd))\n"
             "    if not _in_dirs(_rcwd, _WRITE_ALLOWED_DIRS):\n"
             "        raise PermissionError(f'[沙箱] 命令工作目录不在白名单: {cwd}')\n"
+            "    _sb_audit('cmd_exec', f'cmd={cmd}')\n"
             "    try:\n"
             "        _r = _sb_subprocess.run(_parts, cwd=_rcwd, capture_output=True, text=True, timeout=timeout)\n"
             "    except Exception as _e:\n"

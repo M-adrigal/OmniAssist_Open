@@ -4,6 +4,8 @@ import base64
 import hashlib
 import secrets
 
+from agent.crypto_utils import secure_encrypt, secure_decrypt
+
 
 def _get_salt_file(config_dir: str) -> str:
     return os.path.join(config_dir, ".agent_salt")
@@ -32,17 +34,16 @@ def _derive_key(config_dir: str = None) -> bytes:
 
 
 def _encrypt(plaintext: str, config_dir: str = None) -> str:
-    key = _derive_key(config_dir)
-    plain_bytes = plaintext.encode('utf-8')
-    encrypted = bytes(p ^ key[i % len(key)] for i, p in enumerate(plain_bytes))
-    return base64.b64encode(encrypted).decode('ascii')
+    """加密明文（AEAD：HMAC-CTR + 认证标签，见 agent.crypto_utils）。"""
+    return secure_encrypt(plaintext, _derive_key(config_dir))
 
 
 def _decrypt(ciphertext: str, config_dir: str = None) -> str:
-    key = _derive_key(config_dir)
-    encrypted = base64.b64decode(ciphertext)
-    decrypted = bytes(e ^ key[i % len(key)] for i, e in enumerate(encrypted))
-    return decrypted.decode('utf-8')
+    """解密明文；自动兼容旧 XOR 格式，失败时回退机器标识兜底。"""
+    try:
+        return secure_decrypt(ciphertext, _derive_key(config_dir))
+    except Exception:
+        raise
 
 
 class AgentConfig:

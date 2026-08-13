@@ -95,6 +95,7 @@ python server/main.py
 - **Base URL**：API 端点地址，如 `https://api.openai.com/v1`
 - **Model Name**：模型名称，如 `gpt-4`、`deepseek-v3-2-251201`
 - **Context Limit**：上下文 token 上限，如 `32k`、`64k`、`128k`（留空则不限制）
+- **最大迭代次数**：单轮对话允许的工具调用/思考循环上限，默认 10（留空用默认）。任务复杂、工具链较长时可适当调大
 
 管理员可配置"全局模型配置"，供所有用户共享使用；普通用户可配置"个人模型配置"，优先级高于全局配置。
 
@@ -119,6 +120,13 @@ User=agent
 Group=agent
 WorkingDirectory=/home/agent/Lightweight_agent_service
 Environment="PATH=/home/agent/Lightweight_agent_service/venv/bin"
+# 沙箱网络出口白名单（可选，强烈建议保持默认即全阻断）。
+# 逗号分隔的主机后缀列表；匹配「主机名等于该项」或「主机名以 .该项 结尾」才放行，
+# 其余一律拒绝并记录到 sandbox_audit.log。
+# 留空（即不设置此行）= 沙箱子进程完全禁止访问外部网络，最安全。
+# 若确有需要让沙箱内技能脚本访问特定外网（如金价、天气类技能若改为沙箱运行），
+# 再按需放开，例如：
+# Environment="SANDBOX_NETWORK_ALLOWLIST=api.gold-api.com,query1.finance.yahoo.com"
 ExecStart=/home/agent/Lightweight_agent_service/venv/bin/python server/main.py
 Restart=always
 RestartSec=10
@@ -214,6 +222,9 @@ tail -f /home/agent/Lightweight_agent_service/logs/error.log
 - **轮转策略**：按天轮转 + 单文件 10MB 上限
 - **保留时间**：30 天自动清理
 - **错误分离**：ERROR 级别日志同时写入独立的 `error.log`
+- **审计日志**：审批与权限模式切换事件写入独立的 `audit.log`
+- **历史归档**：轮转/清理前的旧日志归入 `logs/archive/`
+- **uvicorn 日志已统一接入**：服务启动、访问等 uvicorn 内部日志现统一写入 `logs/app.log`，**不会在根目录产生散落的 `serverN.log`**（若仍出现散落日志，说明日志接管未生效，需检查服务是否正常启动）
 
 ```bash
 # 服务日志（systemd 方式）
@@ -360,3 +371,55 @@ LimitNPROC=65535
 - **单进程内存态**：审批状态机（`approval_store`）与会话权限状态机（`trust_store`）均为**单进程内存态**，仅存在于当前运行进程。
 - **多 worker 需共享存储**：若在 systemd 中使用 `gunicorn -w N`（N>1）启用多 worker，跨进程不共享审批/信任状态，会导致审批卡片无法被同一会话的其它 worker 唤醒。生产环境如确需多 worker，请将这两个存储替换为 Redis 等跨进程共享方案（接口保持一致即可），否则建议**保持单进程**（`python server/main.py` 或 `gunicorn -w 1`）。
 - **operator 在场要求**：`request`（请求批准）模式下，敏感操作会暂停等待人工在聊天框点击「允许 / 拒绝 / 跳过」。若无人值守（如定时任务、无人监控的后台调用），操作将一直挂起——此类场景应切换为 `full` 模式或确保有操作员实时在线。
+
+## 16. 安全加固说明（部署必读）
+
+本版本对多处历史安全风险做了**彻底修复**（非间接缓解），部署上线前请确认以下加固已生效。
+
+### 16.1 凭据与敏感数据加密（强加密替代弱 XOR）
+
+- 模型 API Key、数据库内加密字段现已使用**标准库实现的 AEAD 语义强加密**（`agent/crypto_utils.py`，HMAC-SHA256 密钥流 + HMAC 认证标签），密钥来源：
+  - 配置文件：`config_dir` 下的 salt 派生 32 字节密钥；
+  - 数据库：`.db_secret` 文件（自动生成、权限 0o600）。
+- 旧版 XOR 弱加密格式（`v1:` 前缀）仍可读但不再写入，新数据全部为 `v2:` 前缀的强加密。
+- **无需额外第三方依赖**：加密完全基于 Python 标准库，服务器无需 `pip install cryptography`。
+
+### 16.2 沙箱网络出口默认全阻断
+
+- 沙箱子进程（`tool_sandbox/{user_id}/venv/`）的网络解析（`socket.getaddrinfo`）默认**全部拒绝**，任何外部主机访问都会抛 `PermissionError` 并记入 `logs/sandbox_audit.log`。
+- 仅当显式设置 `SANDBOX_NETWORK_ALLOWLIST`（见第 7 节 service 文件注释）时才放行匹配的主机后缀。
+- 主进程技能（web-fetch、gold-price、weather 等通过 `ToolRegistry` 直调，不经沙箱）**不受此限制**，仍按部署环境正常联网。
+
+### 16.3 沙箱文件读取边界
+
+沙箱脚本读取文件时受以下边界约束（越界写入 `sandbox_audit.log` 并拒绝）：
+
+- **系统/敏感目录拒绝**：`/etc`、`/home`、`/Users`、`/root`、`/var`、`/proc`、`/sys`、`/boot`、`/usr`、`/bin`、`/sbin`、`/lib`、`/opt` 及服务自身 `data/`/`workbuddy/`/用户 `workbuddy/` 目录。
+- **密钥文件拒绝**：文件名命中密钥清单（如 `id_rsa`、`*.pem`、`_db_secret` 等）一律拒绝。
+- **跨用户文档隔离**：仅允许访问「当前用户」的 `document_output/{uid}/` 目录，禁止读取其他用户的产出。
+- **写入白名单**：文件创建/写入仅限白名单目录（如 `document_output/{uid}/`、`/tmp`、`user_skill` 等），其余目录不可写。
+
+### 16.4 run_command 参数路径限制
+
+受控命令执行（`agent/skills/run-command`）新增参数约束：
+
+- 禁止绝对路径（`/` 开头）与 `~` 家目录展开；
+- 禁止父目录遍历（`..` / `../`）；
+- 禁止访问密钥文件名；
+- 命令本身仍受 `_ALLOWED_COMMANDS` 白名单约束（**已移除 `python3`/`python`/`node` 等解释器，杜绝以 `python -c` 绕过沙箱钩子**）。
+- 任何拒绝/放行均写入 `sandbox_audit.log`，便于审计。
+
+### 16.5 沙箱审计日志
+
+- 路径：`logs/sandbox_audit.log`。
+- 记录事件：`net_denied`（网络被拒）、`file_read_denied`（读敏感/越界文件）、`cmd_denied`/`cmd_path_denied`/`cmd_secret_denied`（命令执行被拒）、`cmd_exec`（放行执行）、`file_delete_denied`/`rename_denied`/`symlink_denied`/`link_denied`（危险文件操作被拒）等。
+- 与第 11 节的 `audit.log`（审批/权限事件）相互独立，排查安全事件时可结合查看。
+
+### 16.6 会话内容脱敏与截断
+
+- 持久化会话消息（`server/routes/chat.py`）在落库前经过 `_sanitize_messages` 脱敏与截断：
+  - 自动识别并遮盖密钥样例（`sk-`/`ghp_`/`glpat_`/`AKIA` 等）、JWT、以及 `key:`/`password:` 等赋值式中的敏感值；
+  - 对 thought / 工具入参 / 工具结果 / 答案 / 搜索词按上限截断（thought 2000、工具结果 3000、答案 20000、搜索词 1500 字符），防止数据库膨胀与敏感内容长期留存。
+- 返回给前端的消息为原始完整内容，脱敏**仅作用于持久化存储**。
+
+> 上述加固均为代码层默认行为，无需额外配置即可生效。若需主动放开沙箱网络，请仅按 16.2 的最小必要原则设置 `SANDBOX_NETWORK_ALLOWLIST`。

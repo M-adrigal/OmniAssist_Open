@@ -55,6 +55,88 @@ def _mask_tool_args(name: str, args: dict) -> dict:
     return masked
 
 
+# ===== 会话消息脱敏与截断（持久化前）=====
+# 防止明文密钥写入会话表（sessions.messages 以明文 JSON 存储），并控制 messages 体积
+# （thought / 工具结果 / 搜索结果可能极长，既泄露敏感信息又撑大数据库）。
+_MAX_THOUGHT = 2000
+_MAX_TOOL_RESULT = 3000
+_MAX_ANSWER = 20000
+_MAX_SEARCH = 1500
+
+_SECRET_PATTERNS = [
+    re.compile(r'(?i)(api[_-]?key|secret|token|access[_-]?key|private[_-]?key|authorization|bearer|password|passwd)\s*[:=]\s*["\']?([^\s"\',}{]{6,})'),
+    re.compile(r'(?i)\b(sk-[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|glpat-[0-9a-zA-Z_-]{16,}|AKIA[0-9A-Z]{16})\b'),
+    re.compile(r'(?i)\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b'),
+]
+
+
+def _redact_secrets(text):
+    """将常见密钥形态替换为 ***REDACTED***（幂等，多次调用安全）。"""
+    if not isinstance(text, str):
+        return text
+    for pat in _SECRET_PATTERNS:
+        text = pat.sub("***REDACTED***", text)
+    return text
+
+
+def _sanitize_tool_call(t):
+    if not isinstance(t, dict):
+        return t
+    nt = dict(t)
+    name = nt.get("name", "")
+    if "arguments" in nt:
+        nt["arguments"] = _mask_tool_args(name, nt["arguments"]) if isinstance(nt.get("arguments"), dict) else nt["arguments"]
+    if "result" in nt:
+        nt["result"] = _redact_secrets(str(nt["result"]))[:_MAX_TOOL_RESULT]
+    return nt
+
+
+def _sanitize_search(s):
+    if not isinstance(s, dict):
+        return s
+    ns = dict(s)
+    if ns.get("results"):
+        ns["results"] = _redact_secrets(str(ns["results"]))[:_MAX_SEARCH]
+    if ns.get("query"):
+        ns["query"] = _redact_secrets(str(ns["query"]))[:_MAX_SEARCH]
+    return ns
+
+
+def _sanitize_messages(messages):
+    """返回脱敏 + 截断后的消息副本，不修改入参（内存中的原始消息保持完整用于渲染）。"""
+    out = []
+    for m in messages or []:
+        if not isinstance(m, dict):
+            out.append(m)
+            continue
+        nm = dict(m)
+        role = m.get("role")
+        if role == "assistant":
+            if m.get("thought"):
+                nm["thought"] = _redact_secrets(str(m["thought"]))[:_MAX_THOUGHT]
+            if m.get("reasoning_content"):
+                nm["reasoning_content"] = _redact_secrets(str(m["reasoning_content"]))[:_MAX_THOUGHT]
+            if m.get("content"):
+                nm["content"] = _redact_secrets(str(m["content"]))[:_MAX_ANSWER]
+            if m.get("tools"):
+                nm["tools"] = [_sanitize_tool_call(t) for t in m["tools"]]
+        elif role == "tool":
+            if m.get("content"):
+                nm["content"] = _redact_secrets(str(m["content"]))[:_MAX_TOOL_RESULT]
+        elif role == "user":
+            if m.get("content"):
+                nm["content"] = _redact_secrets(str(m["content"]))[:_MAX_ANSWER]
+        if m.get("search"):
+            nm["search"] = _sanitize_search(m["search"])
+        out.append(nm)
+    return out
+
+
+def _persist_messages(session_id, messages, title=None, user_id=None):
+    """脱敏 + 截断后持久化会话消息（内存中的原始消息不受影响）。"""
+    _save_session_messages(session_id, _sanitize_messages(messages), title, user_id)
+
+
 # ===== SessionTask: 后台任务管理（解耦客户端连接） =====
 
 class SessionTask:
@@ -317,7 +399,7 @@ def _save_user_message_immediate(session_id: str, message: str, user_id: int):
             logger.debug(f"[IMMEDIATE_SAVE] 用户消息已存在，跳过 (session={session_id})")
             return
         existing_msgs.append({"role": "user", "content": message})
-        _save_session_messages(session_id, existing_msgs, user_id=user_id)
+        _persist_messages(session_id, existing_msgs, user_id=user_id)
         logger.info(f"[IMMEDIATE_SAVE] 用户消息已立即持久化 (session={session_id}, len={len(existing_msgs)})")
     except Exception as e:
         logger.warning(f"[IMMEDIATE_SAVE] 用户消息立即持久化失败 (session={session_id}): {e}")
@@ -348,7 +430,7 @@ def _save_assistant_message_immediate(
         if all_tool_calls:
             assistant_msg["tools"] = all_tool_calls
         existing_msgs.append(assistant_msg)
-        _save_session_messages(session_id, existing_msgs, user_id=user_id)
+        _persist_messages(session_id, existing_msgs, user_id=user_id)
         logger.info(f"[IMMEDIATE_SAVE_AST] 助手消息已立即持久化 (session={session_id}, len={len(existing_msgs)})")
         return True
     except Exception as e:
@@ -399,13 +481,13 @@ def _post_process_done(
             for i, m in enumerate(store[session_id]["messages"]):
                 if m.get("role") == "assistant":
                     logger.debug(f"保存消息 msg[{i}] has_thought={bool(m.get('thought'))} has_tools={bool(m.get('tools'))} thought_len={len(m.get('thought',''))} content_len={len(m.get('content',''))}")
-            _save_session_messages(session_id, store[session_id]["messages"], title, user_id)
+            _persist_messages(session_id, store[session_id]["messages"], title, user_id)
         else:
             # 助手消息已同步保存，仅做标题生成（首两条消息时）
             if len(store[session_id]["messages"]) <= 2:
                 title = _generate_title(message, answer or full_content, llm)
                 store[session_id]["title"] = title
-                _save_session_messages(session_id, store[session_id]["messages"], title, user_id)
+                _persist_messages(session_id, store[session_id]["messages"], title, user_id)
 
         if all_tool_calls:
             from agent.task_reviewer import log_task_execution
@@ -968,7 +1050,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             if messages:
                 compressed = await _run_sync(_compress_if_needed, messages, llm, cfg)
                 if len(compressed) < len(messages):
-                    _save_session_messages(session_id, compressed, user_id=user_id)
+                    _persist_messages(session_id, compressed, user_id=user_id)
                     messages = compressed
             if session_id in store:
                 store[session_id]["messages"] = messages
@@ -1544,7 +1626,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                 store[session_id]["messages"].append({"role": "user", "content": message})
                 if _assistant_content_produced:
                     store[session_id]["messages"].append({"role": "assistant", "content": "(任务执行中断)"})
-                _save_session_messages(session_id, store[session_id]["messages"], None, user_id)
+                _persist_messages(session_id, store[session_id]["messages"], None, user_id)
                 logger.warning(f"消息通过 fallback 保存 (session={session_id}, has_content={_assistant_content_produced})")
             except Exception as e:
                 logger.error(f"Fallback 保存消息失败 (session={session_id}): {e}")

@@ -559,6 +559,8 @@ def search_sessions(user_id: int, query: str) -> list[dict]:
 
 import base64 as _base64
 
+from agent.crypto_utils import secure_encrypt, secure_decrypt
+
 _SECRET_KEY_FILE = os.path.join(DB_DIR, ".db_secret")
 
 
@@ -577,21 +579,17 @@ def _get_or_create_secret() -> bytes:
 
 
 def _encrypt_db(plaintext: str) -> str:
+    """加密明文（AEAD，见 agent.crypto_utils）；空明文返回空串。"""
     if not plaintext:
         return ""
-    key = _get_or_create_secret()
-    plain_bytes = plaintext.encode("utf-8")
-    encrypted = bytes(p ^ key[i % len(key)] for i, p in enumerate(plain_bytes))
-    return _base64.b64encode(encrypted).decode("ascii")
+    return secure_encrypt(plaintext, _get_or_create_secret())
 
 
 def _decrypt_db(ciphertext: str) -> str:
+    """解密明文；自动兼容旧 XOR 格式，损坏/密钥错误抛异常由调用方兜底。"""
     if not ciphertext:
         return ""
-    key = _get_or_create_secret()
-    encrypted = _base64.b64decode(ciphertext)
-    decrypted = bytes(e ^ key[i % len(key)] for i, e in enumerate(encrypted))
-    return decrypted.decode("utf-8")
+    return secure_decrypt(ciphertext, _get_or_create_secret())
 
 
 def _mask_key(key: str) -> str:
