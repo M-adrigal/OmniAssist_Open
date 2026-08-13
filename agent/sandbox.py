@@ -504,9 +504,13 @@ class ToolSandbox:
         "id_ed25519", "id_ed25519.pub", ".pypirc", ".npmrc",
         ".git-credentials", ".netrc",
     }
-    # 仅这些命令名可经 run_command 运行（命令白名单，防 rm -rf / 等）
+    # 命令白名单：仅这些命令名可经 run_command 运行（防 rm -rf / 等破坏性命令）。
+    # 刻意不含 python3/python/node —— 它们是完整解释器，放行后
+    # `python3 -c "任意代码"` 会起一个不受沙箱 import/file 钩子约束的新进程，
+    # 等于沙箱逃逸超级通道（可读任意文件、直连数据库、出网）。
+    # 执行 AI 生成的 Python 代码请走 ToolSandbox.execute() 路径（带钩子约束）。
     _ALLOWED_COMMANDS = {
-        "python3", "python", "node", "ls", "cat", "echo", "date", "pwd",
+        "ls", "cat", "echo", "date", "pwd",
         "wc", "sort", "head", "tail", "grep", "awk", "sed", "jq", "cut",
         "tr", "uniq", "nl", "od", "base64", "xxd", "file", "stat", "printf",
         "true", "false", "test", "expr", "tee", "diff", "comm",

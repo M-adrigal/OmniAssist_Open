@@ -65,10 +65,12 @@ _READ_ALLOWED_EXT = {
     ".html", ".css", ".js", ".csv", ".log", ".sh", ".md",
 }
 
-# DB 只读允许的表（白名单，防止随便读敏感表）
+# DB 只读允许的表（白名单，防止随便读敏感表）。
+# 注意：表名需与数据库实际表名完全一致——真实表名为 search_config（单数），
+# 旧代码误写为 search_configs（复数），会导致查询该表被拦截。
 _DB_READ_TABLES = {
     "user_skills", "sessions", "users", "permissions",
-    "model_configs", "search_configs",
+    "model_configs", "search_config",
 }
 
 OUTPUT_CAP = 8000          # 单个工具返回的最大字符数

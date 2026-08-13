@@ -12,8 +12,9 @@ def execute(command: str, timeout: int = 30) -> str:
 
     Args:
         command: 要执行的 shell 命令字符串，例如 "ls -la /tmp"。
-                 仅允许白名单内的命令（python3/python/node/ls/cat/echo/date/
-                 grep/awk/sed/jq 等），危险命令（rm/sudo/dd 等）会被沙箱拒绝。
+                 仅允许白名单内的命令（ls/cat/echo/date/grep/awk/sed/jq 等），
+                 危险命令（rm/sudo/dd 等）以及解释器（python3/python/node）
+                 会被沙箱拒绝。执行 Python 代码请使用代码执行工具而非本工具。
         timeout: 命令超时时间（秒），默认 30，最大 120。
 
     Returns:
