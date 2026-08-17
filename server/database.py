@@ -5,6 +5,7 @@ import sqlite3
 import hashlib
 import secrets
 import threading
+import uuid
 from datetime import datetime
 from typing import Optional
 from agent.logger import get_logger
@@ -48,6 +49,7 @@ def init_db() -> str:
             user_type TEXT NOT NULL DEFAULT 'user',
             description TEXT DEFAULT '',
             must_change_password INTEGER DEFAULT 0,
+            public_id TEXT UNIQUE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -55,6 +57,18 @@ def init_db() -> str:
 
     try:
         conn.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+
+    # 注意：ADD COLUMN 带 UNIQUE 在部分 SQLite 版本/非空表上会失败（约束要求表为空）。
+    # 因此先加无约束列，再用独立 UNIQUE 索引保证唯一性，确保迁移始终成功、不锁死登录。
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN public_id TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_public_id ON users(public_id)")
     except sqlite3.OperationalError:
         pass
 
@@ -402,8 +416,25 @@ def authenticate(username: str, password: str) -> Optional[dict]:
 def get_user_by_id(user_id: int) -> Optional[dict]:
     conn = _get_connection()
     row = conn.execute(
-        "SELECT id, username, user_type, description, created_at, updated_at FROM users WHERE id = ?",
+        "SELECT id, username, user_type, description, public_id, created_at, updated_at FROM users WHERE id = ?",
         (user_id,)
+    ).fetchone()
+    if row:
+        return dict(row)
+    return None
+
+
+def _gen_public_id() -> str:
+    """生成对外不透明用户标识（opaque id），避免对外暴露自增主键 / 可枚举。"""
+    return "u_" + uuid.uuid4().hex[:20]
+
+
+def get_user_by_public_id(public_id: str) -> Optional[dict]:
+    """按对外不透明 id 查询用户（供 JWT / 对外接口使用，避免暴露自增主键）。"""
+    conn = _get_connection()
+    row = conn.execute(
+        "SELECT id, username, user_type, description, public_id, created_at, updated_at FROM users WHERE public_id = ?",
+        (public_id,)
     ).fetchone()
     if row:
         return dict(row)
@@ -435,7 +466,7 @@ def get_user_role(user_id: int) -> str:
 def list_users() -> list[dict]:
     conn = _get_connection()
     rows = conn.execute(
-        "SELECT id, username, user_type, description, created_at, updated_at FROM users ORDER BY id"
+        "SELECT id, username, user_type, description, public_id, created_at, updated_at FROM users ORDER BY id"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -447,15 +478,16 @@ def create_user(username: str, password: str, user_type: str = "user", descripti
     conn = _get_connection()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     password_hash = _hash_password(password)
+    pid = _gen_public_id()
     try:
         cursor = conn.execute(
-            "INSERT INTO users (username, password_hash, user_type, description, must_change_password, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, 1, ?, ?)",
-            (username, password_hash, user_type, description, now, now)
+            "INSERT INTO users (username, password_hash, user_type, description, must_change_password, public_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
+            (username, password_hash, user_type, description, pid, now, now)
         )
         conn.commit()
         user = get_user_by_id(cursor.lastrowid)
-        _create_user_directories(user["id"])
+        _create_user_directories(user["public_id"])
         return user
     except sqlite3.IntegrityError:
         raise ValueError(f"用户名 '{username}' 已存在")
@@ -490,26 +522,30 @@ def update_user(user_id: int, **kwargs) -> Optional[dict]:
 
 def delete_user(user_id: int, keep_files: bool = False) -> bool:
     conn = _get_connection()
+    row = conn.execute("SELECT public_id FROM users WHERE id = ?", (user_id,)).fetchone()
+    pid = row["public_id"] if row else None
     cursor = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
-    if cursor.rowcount > 0 and not keep_files:
-        _delete_user_files(user_id)
+    if cursor.rowcount > 0 and not keep_files and pid:
+        _delete_user_files(pid)
     return cursor.rowcount > 0
 
 
-def _create_user_directories(user_id: int):
+def _create_user_directories(public_id: str):
+    """按对外不透明 id 创建用户产出目录（document_output/{public_id}/）。"""
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     output_root = os.path.join(project_root, "document_output")
-    user_dir = os.path.join(output_root, str(user_id))
+    user_dir = os.path.join(output_root, public_id)
     sub_dirs = ["word_output", "excel_output", "pdf_output", "ppt_output", "csv_output", "image_output"]
     for sub in sub_dirs:
         os.makedirs(os.path.join(user_dir, sub), exist_ok=True)
 
 
-def _delete_user_files(user_id: int):
+def _delete_user_files(public_id: str):
+    """按对外不透明 id 删除用户产出目录。"""
     import shutil
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    user_dir = os.path.join(project_root, "document_output", str(user_id))
+    user_dir = os.path.join(project_root, "document_output", public_id)
     if os.path.isdir(user_dir):
         shutil.rmtree(user_dir)
 
@@ -586,12 +622,15 @@ def update_session_messages(session_id: str, messages: list, title: str = None, 
         if user_id is None:
             logger.warning(f"会话 {session_id} 不存在且 user_id 为空，兜底使用 admin")
             user_id = 1  # 兜底使用 admin
+        # 防御：session_id 为空/非法时自动生成 uuid，避免产生空主键的脏会话（空 id 会导致
+        # 前端 DELETE /api/sessions/ 命中根路由而返回 405 Method Not Allowed，且会话无法被正常引用）
+        _sid = session_id if session_id else str(uuid.uuid4())
         conn.execute(
             "INSERT INTO sessions (id, user_id, title, messages, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, user_id, title or "新对话", messages_json, now, now)
+            (_sid, user_id, title or "新对话", messages_json, now, now)
         )
         conn.commit()
-        return get_session(session_id)
+        return get_session(_sid)
 
     if title:
         conn.execute(

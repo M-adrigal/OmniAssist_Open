@@ -125,20 +125,55 @@ def parse_files(file_paths: list[str]) -> list[dict]:
     return [parse_file(p) for p in file_paths]
 
 
-def build_context_prompt(parsed_files: list[dict]) -> str:
-    """根据解析结果构建注入对话的上下文文本"""
+def build_context_prompt(parsed_files: list[dict], file_meta: dict = None) -> str:
+    """根据解析结果构建注入对话的上下文文本
+
+    file_meta: 可选，{文件名: mtime(秒)}，用于标注每个文件的上传时间与「最新版本」标记。
+    当用户多次上传同名/不同名文件时，模型应优先依据「最新上传版本」的内容作答，
+    忽略较早的旧版本，避免沿用过期文档。
+    """
     if not parsed_files:
         return ""
 
-    parts = ["=== 用户上传文件内容 ===\n"]
+    meta = file_meta or {}
+    # 按上传时间倒序，最新版本排在前面
+    ordered = sorted(parsed_files, key=lambda pf: meta.get(pf.get("filename", ""), 0), reverse=True)
+    # 同名文件只保留最新版本（mtime 最大者），其余标记为旧版本不再展示
+    seen = set()
+    deduped = []
+    for pf in ordered:
+        fn = pf.get("filename", "")
+        if fn in seen:
+            continue
+        seen.add(fn)
+        deduped.append(pf)
 
-    for pf in parsed_files:
+    import datetime
+    parts = ["=== 用户上传文件内容 ===\n"]
+    n = len(deduped)
+    for i, pf in enumerate(deduped):
+        fn = pf.get("filename", "")
+        mtime = meta.get(fn)
+        ts = ""
+        if mtime:
+            ts = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+        if n > 1:
+            tag = "（最新上传版本）" if i == 0 else f"（较早版本 #{n - i}）"
+        else:
+            tag = ""
+        header = f"--- 文件：{fn}"
+        if ts:
+            header += f"  上传于 {ts}"
+        header += tag + " ---"
+        parts.append(header)
         parts.append(pf["content"])
         parts.append("")
 
     parts.append("=== 文件内容结束 ===\n")
     parts.append("请基于以上文件内容回答用户的问题。")
     parts.append("如果用户的问题与文件无关，可以先忽略文件内容，正常回答。")
+    if n > 1:
+        parts.append("注意：同一文件存在多个版本时，以标注「最新上传版本」的内容为准，忽略较早的旧版本。")
 
     return "\n".join(parts)
 

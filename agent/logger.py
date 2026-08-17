@@ -94,7 +94,6 @@ def _init_logging(log_dir: str, level: int = logging.DEBUG):
             return
 
         _log_dir = log_dir
-        os.makedirs(log_dir, exist_ok=True)
 
         root_logger = logging.getLogger()
         root_logger.setLevel(level)
@@ -111,33 +110,38 @@ def _init_logging(log_dir: str, level: int = logging.DEBUG):
         console.setFormatter(formatter)
         root_logger.addHandler(console)
 
-        # --- 全量文件日志 (DEBUG+)：按天轮转，保留 30 天 ---
-        app_path = os.path.join(log_dir, "app.log")
-        app_handler = logging.handlers.TimedRotatingFileHandler(
-            app_path,
-            when="midnight",
-            interval=1,
-            backupCount=30,
-            encoding="utf-8",
-        )
-        app_handler.suffix = "%Y-%m-%d"
-        app_handler.setLevel(level)
-        app_handler.setFormatter(formatter)
-        root_logger.addHandler(app_handler)
-
-        # --- 错误日志 (ERROR+)：按天轮转，保留 30 天 ---
-        err_path = os.path.join(log_dir, "error.log")
-        err_handler = logging.handlers.TimedRotatingFileHandler(
-            err_path,
-            when="midnight",
-            interval=1,
-            backupCount=30,
-            encoding="utf-8",
-        )
-        err_handler.suffix = "%Y-%m-%d"
-        err_handler.setLevel(logging.ERROR)
-        err_handler.setFormatter(formatter)
-        root_logger.addHandler(err_handler)
+        # --- 文件日志（按天轮转）：尽力而为。受限环境（如沙箱禁止写 logs 目录）
+        #     下静默降级为仅控制台，绝不因日志初始化失败而拖垮调用方。---
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+            # 全量文件日志 (DEBUG+)：保留 30 天
+            app_path = os.path.join(log_dir, "app.log")
+            app_handler = logging.handlers.TimedRotatingFileHandler(
+                app_path,
+                when="midnight",
+                interval=1,
+                backupCount=30,
+                encoding="utf-8",
+            )
+            app_handler.suffix = "%Y-%m-%d"
+            app_handler.setLevel(level)
+            app_handler.setFormatter(formatter)
+            root_logger.addHandler(app_handler)
+            # 错误日志 (ERROR+)：保留 30 天
+            err_path = os.path.join(log_dir, "error.log")
+            err_handler = logging.handlers.TimedRotatingFileHandler(
+                err_path,
+                when="midnight",
+                interval=1,
+                backupCount=30,
+                encoding="utf-8",
+            )
+            err_handler.suffix = "%Y-%m-%d"
+            err_handler.setLevel(logging.ERROR)
+            err_handler.setFormatter(formatter)
+            root_logger.addHandler(err_handler)
+        except Exception:
+            pass
 
         _initialized = True
 

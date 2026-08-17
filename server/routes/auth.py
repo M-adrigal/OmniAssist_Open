@@ -4,7 +4,7 @@ import json
 import os
 import secrets
 import time
-from base64 import urlsafe_b64encode, urlsafe_b64decode
+from base64 import b64encode as std_b64encode, urlsafe_b64encode, urlsafe_b64decode
 from collections import defaultdict
 from typing import Optional
 
@@ -14,6 +14,7 @@ from server.database import (
     authenticate,
     change_password,
     get_user_by_id,
+    get_user_by_public_id,
     check_permission,
     get_role_permissions,
     get_user_must_change,
@@ -133,7 +134,7 @@ def _gen_captcha_image(code: str) -> str:
     img = img.filter(ImageFilter.SMOOTH_MORE)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
-    b64 = urlsafe_b64encode(buf.getvalue()).decode().rstrip("=")
+    b64 = std_b64encode(buf.getvalue()).decode()
     return f"data:image/png;base64,{b64}"
 
 
@@ -202,8 +203,17 @@ def _reset_login_failures(key: str):
 
 
 def _generate_token(user_id: int, username: str, user_type: str) -> str:
+    # 对外仅暴露不透明 public_id，不暴露自增主键
+    pid = None
+    try:
+        _u = get_user_by_id(user_id)
+        pid = _u.get("public_id") if _u else None
+    except Exception:
+        pid = None
+    if not pid:
+        pid = str(user_id)  # 兜底（迁移后所有用户均有 public_id）
     payload = {
-        "uid": user_id,
+        "uid": pid,
         "un": username,
         "ut": user_type,
         "iat": int(time.time()),
@@ -246,10 +256,16 @@ def get_current_user(request: Request) -> Optional[dict]:
     payload = decode_token(token)
     if not payload:
         return None
+    pid = payload.get("uid")
+    # 从 public_id 解析出内部整数 id；失败安全：解析不到视为未登录
+    db_user = get_user_by_public_id(pid) if pid else None
+    if not db_user:
+        return None
     return {
-        "id": payload["uid"],
-        "username": payload["un"],
-        "user_type": payload["ut"],
+        "id": pid,                      # 对外不透明 id（字符串），前端不直接感知自增主键
+        "db_id": db_user["id"],         # 内部整数 id，仅用于 DB 关联与权限判定
+        "username": db_user["username"],
+        "user_type": db_user["user_type"],
     }
 
 
@@ -327,7 +343,7 @@ def update_password(req: ChangePasswordRequest, request: Request):
         raise HTTPException(status_code=400, detail="两次输入的新密码不一致")
 
     try:
-        change_password(user["id"], req.old_password, req.new_password)
+        change_password(user["db_id"], req.old_password, req.new_password)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -341,18 +357,18 @@ def update_password(req: ChangePasswordRequest, request: Request):
         except Exception:
             pass
 
-    logger.info(f"用户修改密码: {user['username']} (user_id={user['id']})")
+    logger.info(f"用户修改密码: {user['username']} (user_id={user['db_id']})")
     return {"message": "密码修改成功"}
 
 
 @router.get("/me", response_model=CurrentUserResponse)
 def get_me(request: Request):
     user = require_login(request)
-    db_user = get_user_by_id(user["id"])
+    db_user = get_user_by_id(user["db_id"])
     if not db_user:
         raise HTTPException(status_code=404, detail="用户不存在")
     return CurrentUserResponse(
-        id=db_user["id"],
+        public_id=db_user["public_id"],
         username=db_user["username"],
         user_type=db_user["user_type"],
         description=db_user.get("description", ""),

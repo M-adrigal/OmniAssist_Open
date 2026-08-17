@@ -1,5 +1,23 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional, List, Dict, Any
+import datetime as _dt
+
+
+def _coerce_timestamp(v):
+    """把数据库返回的 TIMESTAMP 统一成可读字符串。
+
+    SQLite 的 TIMESTAMP 列在不同写入路径下可能是 float/int 时间戳
+    （如 time.time()）或字符串（如 CURRENT_TIMESTAMP / strftime），
+    这里做容错转换，避免 Pydantic 校验失败导致整个响应 500。
+    """
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        try:
+            return _dt.datetime.fromtimestamp(v).strftime("%Y-%m-%d %H:%M:%S")
+        except (ValueError, OSError, OverflowError):
+            return str(v)
+    return str(v)
 
 
 class ChatRequest(BaseModel):
@@ -107,16 +125,21 @@ class UserUpdateRequest(BaseModel):
 
 
 class UserResponse(BaseModel):
-    id: int
+    public_id: str
     username: str
     user_type: str
     description: str
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
+    @field_validator("created_at", "updated_at", mode="before")
+    @classmethod
+    def _fmt_timestamp(cls, v):
+        return _coerce_timestamp(v)
+
 
 class CurrentUserResponse(BaseModel):
-    id: int
+    public_id: str
     username: str
     user_type: str
     description: str

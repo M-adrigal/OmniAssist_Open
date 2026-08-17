@@ -5,7 +5,7 @@
 （复用 agent.config 的加解密，密钥来自 data/.agent_config 的 salt）。
 
 与全局 ToolSecrets（data/.tool_secrets）的本质区别：
-- 每个用户有独立命名空间，多用户场景下 A 用户设置的 qweather_api_key 不会
+- 每个用户有独立命名空间，多用户场景下 A 用户设置的密钥不会
   泄露给 B 用户；
 - HTTP 执行器在请求时按「当前调用者的 user_id」解析 {secret:xxx} 占位符，
   因此同一套技能模板，不同用户可用各自申请的 Key/Host。
@@ -42,7 +42,7 @@ def set_user_secret(user_id: int, key_name: str, value: str) -> bool:
 
     Args:
         user_id: 用户 ID
-        key_name: 密钥名称，如 'qweather_api_key'
+        key_name: 密钥名称，如 'third_party_api_key'
         value: 密钥明文
     Returns:
         bool: 是否成功

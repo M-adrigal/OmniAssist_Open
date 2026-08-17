@@ -42,7 +42,7 @@ class ToolSecrets:
         """设置密钥（加密存储）
 
         Args:
-            key: 密钥名称，如 'qweather_api_key'、'gold_price_api_key'
+            key: 密钥名称，如 'third_party_api_key'
             value: 密钥明文
         """
         encrypted = _encrypt(value, self.config_dir)

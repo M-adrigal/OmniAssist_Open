@@ -59,7 +59,7 @@ async def approve(session_id: str, body: ApproveBody, request: Request):
     task = get_running_task(session_id)
     if not task:
         raise HTTPException(status_code=404, detail="没有正在运行的任务")
-    if task.user_id != user["id"]:
+    if task.user_id != user["db_id"]:
         raise HTTPException(status_code=403, detail="无权操作该会话")
 
     decisions = {d.item_id: d.decision for d in body.decisions}
@@ -73,15 +73,15 @@ async def approve(session_id: str, body: ApproveBody, request: Request):
         # 即使只提交了部分项，也不会报错，等待其余项补齐。
         for d in body.decisions:
             approval_store.resolve_item(
-                body.group_id, d.item_id, d.decision, session_id, user["id"]
+                body.group_id, d.item_id, d.decision, session_id, user["db_id"]
             )
     except KeyError:
         raise HTTPException(status_code=409, detail="该确认请求已过期或不存在")
     except PermissionError:
         raise HTTPException(status_code=403, detail="无权操作该确认请求")
 
-    _audit(session_id, body.group_id, user["id"], decisions)
-    log.info(f"审批已提交 session={session_id} group={body.group_id} user={user['id']} decisions={decisions}")
+    _audit(session_id, body.group_id, user["db_id"], decisions)
+    log.info(f"审批已提交 session={session_id} group={body.group_id} user={user['db_id']} decisions={decisions}")
     return {"success": True}
 
 
@@ -95,7 +95,7 @@ def _check_session_owner(session_id: str, user: dict) -> dict:
     s = get_session(session_id)
     if not s:
         raise HTTPException(status_code=404, detail="会话不存在")
-    if s.get("user_id") != user["id"] and user.get("user_type") != "admin":
+    if s.get("user_id") != user["db_id"] and user.get("user_type") != "admin":
         raise HTTPException(status_code=403, detail="无权操作该会话")
     return s
 
@@ -107,7 +107,7 @@ def get_trust(session_id: str, request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
     _check_session_owner(session_id, user)
-    return trust_store.get(session_id, user["id"])
+    return trust_store.get(session_id, user["db_id"])
 
 
 @router.post("/{session_id}/trust")
@@ -120,10 +120,10 @@ def set_trust(session_id: str, body: TrustBody, request: Request):
     # 校验模式取值（若显式给出）
     if body.mode is not None and body.mode not in ("request", "full"):
         raise HTTPException(status_code=400, detail="mode 仅支持 request / full")
-    ok = trust_store.set(session_id, user["id"], enabled=body.enabled, mode=body.mode)
+    ok = trust_store.set(session_id, user["db_id"], enabled=body.enabled, mode=body.mode)
     if not ok:
         raise HTTPException(status_code=409, detail="信任状态更新冲突，请刷新后重试")
-    state = trust_store.get(session_id, user["id"])
-    audit_log("TRUST", session=session_id, user=user["id"], mode=state["mode"])
-    log.info(f"会话权限模式变更 session={session_id} user={user['id']} mode={state['mode']}")
+    state = trust_store.get(session_id, user["db_id"])
+    audit_log("TRUST", session=session_id, user=user["db_id"], mode=state["mode"])
+    log.info(f"会话权限模式变更 session={session_id} user={user['db_id']} mode={state['mode']}")
     return {"success": True, "enabled": state["enabled"], "mode": state["mode"]}

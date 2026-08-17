@@ -21,30 +21,38 @@ def get_project_root():
 OUTPUT_ROOT = "document_output"
 
 
-def _get_user_display_name(user_id: int) -> str:
-    from server.database import get_user_by_id
-    user = get_user_by_id(user_id)
+def _get_user_display_name(public_id: str) -> str:
+    from server.database import get_user_by_public_id
+    user = get_user_by_public_id(public_id)
     if user:
-        return f"{user['username']} (ID:{user_id})"
-    return f"用户{user_id}"
+        return user["username"]
+    return public_id
 
 
 def _check_file_access(full_path: str, project_root: str, user: dict) -> bool:
     """校验用户对文件的访问权限：仅允许访问自己 document_output/{uid}/ 下的文件。
 
-    管理员不再拥有跨用户访问权限，与普通用户一致按 uid 隔离。
+    管理员拥有全局监管权限，可读/下装/操作 document_output 下任意用户目录的文件
+    （仍受 project_root 与 document_output 边界约束，无法越出项目目录）。
     """
     full_path = os.path.realpath(full_path)
     if not full_path.startswith(os.path.realpath(project_root)):
         return False
 
-    rel = os.path.relpath(full_path, os.path.join(project_root, OUTPUT_ROOT))
+    out_root = os.path.realpath(os.path.join(project_root, OUTPUT_ROOT))
+    rel = os.path.relpath(full_path, out_root)
     parts = rel.split(os.sep)
+    # 必须位于某个用户子目录内（至少 user/sub/... 两段），禁止命中 document_output 根
     if len(parts) < 2:
         return False
+
+    # 管理员：document_output 内任意用户文件均可访问（全局监管）
+    if user.get("user_type") == "admin":
+        return True
+
     try:
-        file_user_id = int(parts[0])
-    except ValueError:
+        file_user_id = parts[0]
+    except Exception:
         return False
     return file_user_id == user["id"]
 
@@ -95,6 +103,8 @@ def _recursive_list_library(user_id, project_root):
                 "ext": ext,
                 "source": source,
                 "category": category,
+                "owner": str(user_id),
+                "owner_name": _get_user_display_name(str(user_id)),
                 "mtime": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
             }
             if os.path.splitext(fn)[1].lower() in _LIBRARY_TEXT_EXTS:
@@ -133,13 +143,10 @@ def list_files(request: Request):
         if not os.path.isdir(entry_path) or entry.startswith("."):
             continue
 
-        try:
-            dir_user_id = int(entry)
-        except ValueError:
-            continue
+        dir_user_id = entry
 
-        # 仅返回当前用户自己的文件目录（管理员亦不例外）
-        if dir_user_id != user["id"]:
+        # 普通用户仅看自己；管理员可查看所有用户的文件目录（全局监管）
+        if user.get("user_type") != "admin" and dir_user_id != user["id"]:
             continue
 
         user_label = _get_user_display_name(dir_user_id)
@@ -189,9 +196,10 @@ def list_files(request: Request):
 
 @router.get("/library")
 def list_library(request: Request, search: str = Query("")):
-    """列出当前用户的统一文件库（合并生成文件与上传文件），支持模糊搜索。
+    """列出用户的统一文件库（合并生成文件与上传文件），支持模糊搜索。
 
-    仅返回当前登录用户自己的文件，管理员亦只能查看自身文件，实现用户隔离。
+    普通用户仅返回自己的文件；管理员返回所有用户的文件（全局监管），
+    每个文件额外携带 owner / owner_name 字段用于区分归属。
 
     模糊匹配规则：查询词按空格拆分为多个关键词，文件名、内容摘要、文档类型、
     扩展名、来源（上传/生成）中全部命中即视为匹配（不区分大小写、支持中英文子串）。
@@ -199,7 +207,18 @@ def list_library(request: Request, search: str = Query("")):
     user = get_current_user(request)
     project_root = get_project_root()
 
-    files = _recursive_list_library(user["id"], project_root)
+    if user.get("user_type") == "admin":
+        # 管理员：扫描 document_output 下全部用户目录
+        files = []
+        root = os.path.join(project_root, OUTPUT_ROOT)
+        if os.path.isdir(root):
+            for d in sorted(os.listdir(root)):
+                dp = os.path.join(root, d)
+                if not os.path.isdir(dp) or d.startswith("."):
+                    continue
+                files.extend(_recursive_list_library(d, project_root))
+    else:
+        files = _recursive_list_library(user["id"], project_root)
     if search and search.strip():
         tokens = [t for t in search.strip().lower().split() if t]
         if tokens:

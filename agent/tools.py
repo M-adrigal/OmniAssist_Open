@@ -1,5 +1,6 @@
 import json
 import os
+import inspect
 
 
 class ToolRegistry:
@@ -52,13 +53,14 @@ class ToolRegistry:
             })
         return specs
 
-    def execute(self, name, arguments: dict, user_id: int = None) -> str:
+    def execute(self, name, arguments: dict, user_id: int = None, public_id: str = None) -> str:
         """根据工具名和参数执行对应的函数
 
         Args:
             name (str): 工具名称
             arguments (dict): 参数字典
-            user_id (int): 可选，当前用户ID，用于文件输出隔离
+            user_id (int): 可选，当前用户内部整数 ID，用于权限判定 / DB 关联
+            public_id (str): 可选，当前用户对外不透明 ID，用于文件输出隔离
 
         Returns:
             str: 执行结果的字符串形式，出错时返回错误信息
@@ -67,9 +69,31 @@ class ToolRegistry:
             return f"Error: Tool '{name}' not found"
         
         try:
+            # 注入可信上下文参数（_user_id / _public_id）。注意：仅当目标函数声明接受时才注入，
+            # 否则直调函数（如 _web_search_tool、各 lambda）未声明 _public_id 时会抛
+            # `got an unexpected keyword argument '_public_id'`。
+            # agent_pool._make_tool_func 与 create_local_executor 的 executor 均为 **kwargs 形式，
+            # 会接收并自行 pop 这两个参数，再将其转发给沙箱用于文件隔离。
+            func = self.tools[name]["function"]
+            call_args = dict(arguments)
+            injected = {}
             if user_id is not None:
-                arguments['_user_id'] = user_id
-            result = self.tools[name]["function"](**arguments)
+                injected['_user_id'] = user_id
+            if public_id is not None:
+                injected['_public_id'] = public_id
+            if injected:
+                try:
+                    params = inspect.signature(func).parameters
+                    accepts_var_kw = any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+                    )
+                except (ValueError, TypeError):
+                    accepts_var_kw = True
+                    params = {}
+                for k, v in injected.items():
+                    if accepts_var_kw or k in params:
+                        call_args[k] = v
+            result = func(**call_args)
             if isinstance(result, dict):
                 return json.dumps(result, ensure_ascii=False)
             return str(result)

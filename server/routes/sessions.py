@@ -24,7 +24,7 @@ def list_sessions(request: Request):
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
-    return db_list_sessions(user["id"])
+    return db_list_sessions(user["db_id"])
 
 
 @router.get("/search", response_model=list[dict])
@@ -32,13 +32,13 @@ def search_sessions(request: Request, q: str = Query(..., min_length=1)):
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="未登录")
-    return db_search_sessions(user["id"], q.strip())
+    return db_search_sessions(user["db_id"], q.strip())
 
 
 @router.post("", response_model=dict)
 def create_session(body: SessionCreate = None, request: Request = None):
     user = get_current_user(request) if request else None
-    user_id = user["id"] if user else 1
+    user_id = user["db_id"] if user else 1
     sid = str(uuid.uuid4())
     title = (body.title if body and body.title else None) or "新对话"
     # 标题长度限制
@@ -105,6 +105,7 @@ def get_task_status(request: Request):
         raise HTTPException(status_code=401, detail="未登录")
     try:
         from server.routes.chat import get_all_task_statuses
-        return get_all_task_statuses(user["id"])
+        # task.user_id 存的是整数 db_id，必须传 user["db_id"] 而非 public_id
+        return get_all_task_statuses(user["db_id"])
     except Exception:
         return {}

@@ -388,6 +388,22 @@ async function deleteSession(id) {
   _deleteLock = true;
 
   try {
+    // 防御：会话 id 为空/缺失时，无法构造有效删除请求（DELETE /api/sessions/ 会命中根路由返回 405）。
+    // 此时直接本地清理即可（此类脏会话在后端已不存在）。
+    if (!id) {
+      console.warn('[deleteSession] 会话 id 为空，跳过服务端请求，仅本地移除');
+      if (state.currentSessionId === id) {
+        state.currentSessionId = null;
+        _saveCurrentSessionId();
+        clearMessages();
+        updateChatTitle();
+      }
+      try { removeSessionContainer(id); } catch (e) { /* ignore */ }
+      await loadSessions();
+      showToast('会话已删除', 'success');
+      return;
+    }
+
     const confirmed = await showConfirmDialog('删除对话', '确定要删除这个对话吗？此操作不可撤销。', '删除');
     if (!confirmed) return;
 
@@ -553,6 +569,8 @@ async function switchSession(id) {
         // 清除欢迎页
         const welcome = containerEl.querySelector('.welcome-message');
         if (welcome) welcome.remove();
+        // 切换会话时重置会话文件映射，避免残留其他 session 的产出文件路径
+        _sessionFiles = new Map();
         s.messages.forEach(m => renderHistoryMessage(m, containerEl));
         console.log(`[switchSession] #${mySeqId} 已渲染 ${s.messages.length} 条历史消息`);
       }
@@ -723,10 +741,22 @@ function renderHistoryMessage(m, targetContainer) {
         </div>
       ` : ''}
       <div class="answer-area">${renderContent(content)}</div>
+      <div class="output-files hidden"></div>
     </div>
   `;
   container.appendChild(div);
   scrollToBottom();
+
+  // 历史消息中若携带产出文件元数据，还原下载卡片并填充会话文件映射（刷新/重登录后可见）
+  const histFiles = (m && m.files) || null;
+  if (histFiles && histFiles.length > 0) {
+    const outEl = div.querySelector('.output-files');
+    if (outEl) {
+      renderOutputFiles({ outputFilesEl: outEl }, histFiles);
+      (histFiles || []).forEach(f => { if (f && f.name && f.path) _sessionFiles.set(f.name, f.path); });
+    }
+    _linkifyFileNames(div.querySelector('.answer-area'));
+  }
 
   if (search) {
     const searchHeader = div.querySelector('.search-header');
@@ -948,7 +978,26 @@ function renderContent(text) {
   if (!text) return '';
 
   const codeBlocks = [];
+  const refSources = [];
   let html = escapeHtml(text);
+
+  // 提取「【标题】(URL)」形式的参考来源，替换为占位符，末尾统一渲染紧凑来源区
+  html = html.replace(/【([^】]+)】\s*\(((?:https?:)?\/\/[^\s)]+)\)/g, (_, title, url) => {
+    const n = refSources.length + 1;
+    refSources.push({ title: title.trim(), url: url.startsWith('//') ? 'https:' + url : url });
+    return `\x00RF${n}\x00`;
+  });
+
+  // 兜底：提取 [标题](URL) 形式的参考来源（LLM 未遵循【】格式时的降级匹配）
+  // 排除导航/操作类短链接文本
+  const navPrefixes = /^(点击|查看|详情|这里|链接|更多|下载|原文|阅读|返回|首页|登录|注册|提交|发送|复制|分享|收藏|点赞|评论|next|click|here|link|more|download|read|back|home|login|submit|send|copy|share|like|reply)/i;
+  html = html.replace(/\[([^\]]+)\]\(((?:https?:)?\/\/[^\s)]+)\)/g, (_, title, url) => {
+    const t = title.trim();
+    if (t.length <= 8 && navPrefixes.test(t)) return _; // 短导航词，原样保留
+    const n = refSources.length + 1;
+    refSources.push({ title: t, url: url.startsWith('//') ? 'https:' + url : url });
+    return `\x00RF${n}\x00`;
+  });
 
   html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
     const idx = codeBlocks.length;
@@ -1016,6 +1065,7 @@ function renderContent(text) {
 
     const ulMatch = line.match(/^[\-\*]\s+(.+)$/);
     if (ulMatch) {
+      if (ulMatch[1].replace(/\x00RF\d+\x00/g, '').trim() === '') { i++; continue; }
       if (!inList || listType !== 'ul') {
         if (inList) result.push(listType === 'ul' ? '</ul>' : '</ol>');
         result.push('<ul>');
@@ -1029,6 +1079,7 @@ function renderContent(text) {
 
     const olMatch = line.match(/^\d+[\.\)]\s+(.+)$/);
     if (olMatch) {
+      if (olMatch[1].replace(/\x00RF\d+\x00/g, '').trim() === '') { i++; continue; }
       if (!inList || listType !== 'ol') {
         if (inList) result.push(listType === 'ul' ? '</ul>' : '</ol>');
         result.push('<ol>');
@@ -1046,6 +1097,13 @@ function renderContent(text) {
     }
 
     if (line.trim() === '') {
+      i++;
+      continue;
+    }
+
+    // 跳过纯来源占位符行 与 「信息来源：」标题行
+    const onlyRefLine = line.replace(/\x00RF\d+\x00/g, '').trim();
+    if (onlyRefLine === '' || /^(信息来源|资料来源|参考来源|引用来源|来源)[：:]\s*$/.test(line.trim())) {
       i++;
       continue;
     }
@@ -1068,6 +1126,33 @@ function renderContent(text) {
     const escapedCode = escapeHtml(block.code);
     return `<div class="code-block"><div class="code-block-header"><span class="code-block-lang">${block.lang}</span><button class="code-block-copy" onclick="copyCodeBlock(this)">复制</button></div><pre><code class="language-${block.lang}">${escapedCode}</code></pre></div>`;
   });
+
+  // 还原来源上标，并在末尾渲染紧凑来源卡片
+  html = html.replace(/\x00RF(\d+)\x00/g, (_, n) => `<sup class="ref-sup">[${n}]</sup>`);
+
+  if (refSources.length) {
+    const palette = ['#1976d2', '#e53935', '#43a047', '#fb8c00', '#8e24aa', '#00897b', '#3949ab', '#d81b60'];
+    const pills = refSources.map((s, i) => {
+      const initial = (s.title.trim()[0] || '?').toUpperCase();
+      const color = palette[i % palette.length];
+      const safeUrl = s.url.replace(/"/g, '&quot;');
+      const safeTitle = s.title.replace(/"/g, '&quot;');
+      return `<a class="ref-pill" href="${safeUrl}" target="_blank" rel="noopener noreferrer" title="${safeTitle}">`
+        + `<span class="ref-avatar" style="background:${color}">${initial}</span>`
+        + `<span class="ref-title">${s.title}</span>`
+        + `<span class="ref-ext">↗</span>`
+        + `</a>`;
+    }).join('');
+    html += `\n<div class="ref-sources"><span class="ref-tag">来源</span>${pills}</div>`;
+  }
+
+  // 隐藏 document_output/.../文件名 完整路径：无论 LLM 是否在文本中泄露了
+  // 「document_output/u_xxx/word_output/文件名.docx」这类路径，统一只保留文件名，
+  // 避免暴露 public_id 与目录结构。文件名以「.扩展名」结尾（扩展名 1-12 位字母数字）。
+  html = html.replace(
+    /document_output[/\\][^<>\s'"]*?([^/\\<>\s'"]+\.[A-Za-z0-9]{1,12})/gi,
+    '$1'
+  );
 
   return html;
 }
@@ -1257,6 +1342,65 @@ function formatFileSize(bytes) {
   return (bytes / 1024 / 1024).toFixed(1) + ' MB';
 }
 
+// 将正则特殊字符转义，用于构建安全的正则
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// 将聊天文本中出现的「已产出文件名」转为可点击下载链接。
+// 仅处理纯文本节点，跳过 <a>/<code>/<pre>/<table> 等内部文本，避免破坏代码块或已有链接。
+function _linkifyFileNames(root) {
+  if (!root || !(_sessionFiles instanceof Map) || _sessionFiles.size === 0) return;
+  const map = _sessionFiles;
+  // 原始文件名（用于后缀匹配），按长度降序避免子串优先
+  const rawNames = [...map.keys()].sort((a, b) => b.length - a.length);
+  const escapedNames = rawNames.map(escapeRegExp);
+  if (rawNames.length === 0) return;
+  // 匹配：（可选的 document_output/.../ 前缀）+ 已知文件名。
+  // 替换为仅显示文件名的下载链接，隐藏真实目录路径（含 public_id），避免泄露用户目录结构。
+  const alts = escapedNames.map(n => '(?:document_output[/\\\\][^\\s\'"]*?)?(' + n + ')');
+  const re = new RegExp(alts.join('|'), 'g');
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const p = node.parentElement;
+      if (!p) return NodeFilter.FILTER_REJECT;
+      if (p.closest('a, code, pre, table, script, style, .output-files-header')) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+  const textNodes = [];
+  let n;
+  while ((n = walker.nextNode())) textNodes.push(n);
+  for (const tn of textNodes) {
+    const txt = tn.nodeValue;
+    if (!re.test(txt)) continue;
+    re.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let last = 0, m;
+    while ((m = re.exec(txt))) {
+      const full = m[0];
+      // 从 m[0] 后缀判定命中的文件名（escaped 版无法直接做后缀比对）
+      let name = null;
+      for (const cand of rawNames) {
+        if (full.endsWith(cand)) { name = cand; break; }
+      }
+      if (!name) { last = m.index + full.length; continue; }
+      if (m.index > last) frag.appendChild(document.createTextNode(txt.slice(last, m.index)));
+      const path = map.get(name);
+      const a = document.createElement('a');
+      a.href = '/api/files/download?path=' + encodeURIComponent(path);
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.className = 'inline-file-link';
+      a.textContent = name;  // 仅展示文件名，不暴露 document_output/.../public_id 路径
+      frag.appendChild(a);
+      last = m.index + full.length;
+    }
+    if (last < txt.length) frag.appendChild(document.createTextNode(txt.slice(last)));
+    tn.parentNode.replaceChild(frag, tn);
+  }
+}
+
 function renderOutputFiles(stream, files) {
   if (!files || files.length === 0) return;
   const el = stream.outputFilesEl;
@@ -1273,7 +1417,7 @@ function renderOutputFiles(stream, files) {
     return `<div class="output-file-card">
       <span class="of-icon">${outputFileIcon(ext)}</span>
       <div class="of-info">
-        <div class="of-name" title="${escapeHtml(f.path)}">${escapeHtml(f.name)}</div>
+        <a class="of-name of-name-link" href="/api/files/download?path=${encodeURIComponent(f.path)}" target="_blank" rel="noopener" title="点击下载">${escapeHtml(f.name)}</a>
         <div class="of-meta">${escapeHtml(meta)}</div>
       </div>
       <div class="of-actions">
@@ -1650,6 +1794,9 @@ function handleStreamEvent(stream, parsed) {
   }
   if (parsed.type === 'files_created') {
     renderOutputFiles(stream, parsed.files);
+    // 记录本会话已产出文件：文件名 -> 路径，用于把助手消息中的文件名转成下载链接
+    (parsed.files || []).forEach(f => { if (f && f.name && f.path) _sessionFiles.set(f.name, f.path); });
+    _linkifyFileNames(stream.answerEl);
     return null;
   }
   if ((parsed.type === 'content' || parsed.type === 'token') && parsed.content) {
@@ -1839,6 +1986,7 @@ async function sendMessage() {
   }
 
   const stream = createAssistantContainer();
+  _sessionFiles = new Map();  // 新一轮对话，清空会话文件映射
   state.isStreaming = true;
   state.streamingSessionId = state.currentSessionId;
   $('#btn-send').classList.add('streaming');
@@ -2049,6 +2197,7 @@ function clearAttachedFiles() {
 
 // ===== 我的文件库（合并生成文件与上传文件）=====
 let _cloudFiles = [];  // 当前用户文件库全量缓存（用于前端按类型/来源筛选）
+let _sessionFiles = new Map();  // 当前会话已产出文件：文件名 -> 相对路径（用于把聊天文本中的文件名转成下载链接）
 
 // 重建文件库 modal-body 骨架（预览模式会通过 innerHTML 覆盖整个 body，导致工具栏/表格丢失）
 function _rebuildCloudFileSkeleton() {
@@ -2074,10 +2223,10 @@ function _rebuildCloudFileSkeleton() {
       <table class="cloud-table">
         <thead>
           <tr>
-            <th>文件名</th><th>来源</th><th>类型</th><th>大小</th><th>时间</th><th>操作</th>
+            <th>文件名</th><th>所有者</th><th>来源</th><th>类型</th><th>大小</th><th>时间</th><th>操作</th>
           </tr>
         </thead>
-        <tbody id="cloud-table-body"><tr><td colspan="6" class="loading-text">加载中...</td></tr></tbody>
+        <tbody id="cloud-table-body"><tr><td colspan="7" class="loading-text">加载中...</td></tr></tbody>
       </table>
     </div>`;
 }
@@ -2094,14 +2243,14 @@ async function loadCloudFiles() {
   try {
     const params = new URLSearchParams();
     if (search) params.set('search', search);
-    // 仅加载当前用户自己的文件库（后端已按登录用户隔离，管理员也不例外）
+    // 加载文件库：普通用户仅自身文件；管理员返回全部用户文件（后端已按角色区分），表格含「所有者」列
     const data = await API.get(`/api/files/library?${params.toString()}`);
     _cloudFiles = data.files || [];
     _populateCloudTypeFilter();
     _applyCloudFilters();
   } catch (e) {
     const tb = $('#cloud-table-body');
-    if (tb) tb.innerHTML = `<tr><td colspan="6" class="loading-text" style="color:var(--danger)">加载失败: ${escapeHtml(e.message)}</td></tr>`;
+    if (tb) tb.innerHTML = `<tr><td colspan="7" class="loading-text" style="color:var(--danger)">加载失败: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -2133,7 +2282,7 @@ function _applyCloudFilters() {
 function renderCloudFiles(files) {
   const tbody = $('#cloud-table-body');
   if (!files || files.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="loading-text">文件库为空</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="loading-text">文件库为空</td></tr>';
     return;
   }
 
@@ -2149,15 +2298,19 @@ function renderCloudFiles(files) {
     const icon = iconMap[f.ext] || 'F';
     const dpath = escapeHtml(f.path);
     const dname = escapeHtml(f.name);
+    const ownerName = escapeHtml(f.owner_name || '我');
     // 来源徽标：用户上传（蓝）/ 平台生成（绿）
     const isUpload = f.source === 'upload';
     const sourceBadge = `<span class="badge badge-source ${isUpload ? 'badge-source-upload' : 'badge-source-generated'}">${isUpload ? '&#128229; 用户上传' : '&#129302; 平台生成'}</span>`;
     return `
       <tr>
         <td title="${dname}">
-          <span class="picker-file-icon ${iconCls}" style="display:inline-flex;vertical-align:middle;margin-right:6px;">${icon}</span>
-          ${dname}
+          <a class="cloud-file-link" href="/api/files/download?path=${dpath}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;">
+            <span class="picker-file-icon ${iconCls}" style="display:inline-flex;vertical-align:middle;margin-right:6px;">${icon}</span>
+            ${dname}
+          </a>
         </td>
+        <td>${ownerName}</td>
         <td>${sourceBadge}</td>
         <td><span class="badge badge-type">${(f.ext || 'file').toUpperCase()}</span></td>
         <td>${sizeStr}</td>
@@ -2886,16 +3039,16 @@ function renderUserTable(users) {
     const isAdmin = u.user_type === 'admin';
     const deleteBtn = isAdmin
       ? '<button class="btn-sm" disabled style="opacity:0.4;cursor:not-allowed;" title="管理员不可删除">-</button>'
-      : `<button class="btn-sm danger" data-action="delete-user" data-id="${u.id}" data-username="${escapeHtml(u.username)}">删除</button>`;
+      : `<button class="btn-sm danger" data-action="delete-user" data-id="${u.public_id}" data-username="${escapeHtml(u.username)}">删除</button>`;
     return `
       <tr>
-        <td>${u.id}</td>
+        <td>${u.public_id}</td>
         <td>${escapeHtml(u.username)}</td>
         <td><span class="user-type-badge ${u.user_type}">${isAdmin ? '管理员' : '普通用户'}</span></td>
         <td>${escapeHtml(u.description || '-')}</td>
         <td>
           <div class="actions">
-            <button class="btn-sm" data-action="edit-user" data-id="${u.id}" data-username="${escapeHtml(u.username)}" data-type="${u.user_type}" data-desc="${escapeHtml(u.description || '')}">编辑</button>
+            <button class="btn-sm" data-action="edit-user" data-id="${u.public_id}" data-username="${escapeHtml(u.username)}" data-type="${u.user_type}" data-desc="${escapeHtml(u.description || '')}">编辑</button>
             ${deleteBtn}
           </div>
         </td>
@@ -2926,6 +3079,9 @@ function openAddUser() {
   $('#user-form-id').value = '';
   $('#user-form-username').value = '';
   $('#user-form-username').readOnly = false;
+  $('#user-form-username-error').textContent = '';
+  $('#user-form-username').oninput = checkUserUsernameUnique;
+  $('#user-form-username').onblur = checkUserUsernameUnique;
   $('#user-form-password').value = '';
   $('#user-form-password').type = 'password';
   $('#btn-toggle-user-password').textContent = '👁';
@@ -2936,15 +3092,31 @@ function openAddUser() {
 
 function openEditUser(dataset) {
   $('#user-form-title').textContent = '编辑用户';
-  $('#user-form-id').value = dataset.id;
+  $('#user-form-id').value = dataset.public_id;
   $('#user-form-username').value = dataset.username;
   $('#user-form-username').readOnly = true;
+  $('#user-form-username-error').textContent = '';
   $('#user-form-password').value = '';
   $('#user-form-password').type = 'password';
   $('#btn-toggle-user-password').textContent = '👁';
   $('#user-form-type').value = dataset.type;
   $('#user-form-desc').value = dataset.desc;
   openModal('modal-user-form');
+}
+
+// 用户名重复实时校验（基于已加载的 _allUsers 缓存，后端 UNIQUE 约束兜底）
+function checkUserUsernameUnique() {
+  const id = $('#user-form-id').value;
+  const username = $('#user-form-username').value.trim().toLowerCase();
+  const errEl = $('#user-form-username-error');
+  if (!username) { errEl.textContent = ''; return true; }
+  const dup = _allUsers.some(u => u.username.toLowerCase() === username && u.public_id !== id);
+  if (dup) {
+    errEl.textContent = '该用户名已被使用，请更换';
+    return false;
+  }
+  errEl.textContent = '';
+  return true;
 }
 
 async function submitUserForm() {
@@ -2956,8 +3128,13 @@ async function submitUserForm() {
 
   if (!id) {
     if (!username) { showToast('请输入用户名', 'error'); return; }
+    if (!checkUserUsernameUnique()) { showToast('该用户名已被使用，请更换', 'error'); return; }
     if (!password) { showToast('请输入密码', 'error'); return; }
-    if (password.length < 6) { showToast('密码长度不能少于6位', 'error'); return; }
+    const strength = validatePasswordStrength(password);
+    if (!strength.ok) {
+      showToast('密码强度不足：' + strength.msg + '（至少 8 位，且含大/小写字母、数字、特殊符号中至少两类）', 'error');
+      return;
+    }
 
     try {
       await API.post('/api/users', {
@@ -2972,7 +3149,11 @@ async function submitUserForm() {
   } else {
     const body = { user_type: userType, description: desc };
     if (password) {
-      if (password.length < 6) { showToast('密码长度不能少于6位', 'error'); return; }
+      const strength = validatePasswordStrength(password);
+      if (!strength.ok) {
+        showToast('密码强度不足：' + strength.msg + '（至少 8 位，且含大/小写字母、数字、特殊符号中至少两类）', 'error');
+        return;
+      }
       body.password = password;
     }
 
@@ -2990,7 +3171,7 @@ async function submitUserForm() {
 let _deleteUserId = null;
 
 function openDeleteConfirm(dataset) {
-  _deleteUserId = dataset.id;
+  _deleteUserId = dataset.public_id;
   $('#confirm-delete-username').textContent = dataset.username;
   $('#confirm-keep-files').checked = false;
   openModal('modal-confirm-delete');
@@ -3432,6 +3613,47 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   });
+
+  // ===== 拖拽上传：拖文件到页面任意位置即弹出整屏提示，任意位置松手均可上传 =====
+  (function initDropZone() {
+    const overlay = $('#drop-overlay');
+    if (!overlay) return;
+    let dragDepth = 0;  // 进入/离开子元素会触发 dragenter/leave，用计数器避免闪烁
+
+    const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+
+    const show = () => overlay.classList.remove('hidden');
+    const hide = () => { dragDepth = 0; overlay.classList.add('hidden'); };
+
+    // 在 window 级别拦截，确保拖到页面任意位置都能响应
+    window.addEventListener('dragenter', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepth++;
+      show();
+    });
+    window.addEventListener('dragover', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    });
+    window.addEventListener('dragleave', (e) => {
+      if (!hasFiles(e)) return;
+      // 离开浏览器窗口（拖出到外部）时 relatedTarget 为空，直接隐藏
+      if (e.relatedTarget === null) { hide(); return; }
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) hide();
+    });
+    window.addEventListener('drop', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      hide();
+      const files = e.dataTransfer.files;
+      if (files && files.length > 0) {
+        uploadFiles(files);
+      }
+    });
+  })();
 
   const input = $('#chat-input');
   let isComposing = false;

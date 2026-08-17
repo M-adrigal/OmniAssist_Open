@@ -124,9 +124,9 @@ Environment="PATH=/home/agent/Lightweight_agent_service/venv/bin"
 # 逗号分隔的主机后缀列表；匹配「主机名等于该项」或「主机名以 .该项 结尾」才放行，
 # 其余一律拒绝并记录到 sandbox_audit.log。
 # 留空（即不设置此行）= 沙箱子进程完全禁止访问外部网络，最安全。
-# 若确有需要让沙箱内技能脚本访问特定外网（如金价、天气类技能若改为沙箱运行），
+# 若确有需要让沙箱内技能脚本访问特定外网（如某些需访问外部 API 的技能若改为沙箱运行），
 # 再按需放开，例如：
-# Environment="SANDBOX_NETWORK_ALLOWLIST=api.gold-api.com,query1.finance.yahoo.com"
+# Environment="SANDBOX_NETWORK_ALLOWLIST=api.example.com,query1.finance.yahoo.com"
 ExecStart=/home/agent/Lightweight_agent_service/venv/bin/python server/main.py
 Restart=always
 RestartSec=10
@@ -233,13 +233,27 @@ sudo tail -f /var/log/nginx/error.log
 ```
 
 ### 更新代码
+
+> **v2.0.0 升级必读**：本版本引入双 ID 体系，升级前必须先跑迁移脚本回填 `public_id` 并重命名目录，否则存量用户会被全部判为未登录（401 锁死）。迁移脚本幂等，可重复执行。
+
 ```bash
 cd /home/agent/Lightweight_agent_service
 git pull
 source venv/bin/activate
 pip install -r requirements.txt
-sudo systemctl restart agent
+
+# 升级到 v2.0.0 及以上：先停服 → 迁移 → 启动（顺序不可颠倒）
+sudo systemctl stop agent
+python3 scripts/migrate_public_id.py   # 回填 public_id + 重命名 document_output/{整数id}→{public_id} + 补齐产出子目录
+sudo systemctl start agent
+
+# 旧版本平滑更新（无双 ID 变更时）可直接 restart：
+# sudo systemctl restart agent
 ```
+
+> 迁移脚本仅重命名目录、不删除文件；`data/` 与 `document_output/` 受 `.gitignore` 保护，`git pull` 不会触碰用户数据。若脚本结尾提示「仍有 N 个用户缺少 public_id」，**禁止启动服务**，需先排查再继续。
+>
+> （可选）回归校验：在临时副本上验证整数外键修复，不污染真实库 —— `python3 scripts/verify_fk_fix.py`
 
 ### 备份数据
 ```bash
@@ -315,8 +329,19 @@ top -o %MEM
 
 **工作原理**：
 - 每位用户拥有独立的沙箱 venv，位于 `tool_sandbox/{user_id}/venv/`
-- 首次使用时自动创建用户沙箱，通过 AST 解析技能脚本中的 `import` 语句提取依赖并自动安装
+- 用户沙箱通过 `PYTHONPATH` 继承**共享基础 venv** `tool_sandbox/shared/pyX.Y/venv`（按 Python 小版本分桶，例如 `py3.14`）中的通用依赖（python-docx / openpyxl / reportlab / python-pptx / lxml / Pillow 等），避免每个用户重复安装重型库
+- 共享 venv 的依赖清单见仓库根 `requirements.sandbox.txt`，由 `scripts/build_sandbox_venv.py` 按当前 Python 版本分桶构建
+- 技能脚本所需的、共享 venv 中没有的依赖，会在首次执行时通过 AST 解析 `import` 自动安装进该用户自己的 venv
 - 沙箱池（SandboxPool）负责管理用户沙箱的懒加载和线程安全调度
+
+**部署后必做**：构建共享基础 venv（否则首跑会按需懒构建，或由每个用户各自安装）：
+
+```bash
+cd /home/agent/Lightweight_agent_service
+python3 scripts/build_sandbox_venv.py
+# 可选：自定义镜像源（默认已用清华源）
+SANDBOX_PIP_INDEX=https://pypi.org/simple python3 scripts/build_sandbox_venv.py
+```
 
 **常见问题**：
 
@@ -324,17 +349,24 @@ top -o %MEM
 # 1. 确保 python3-venv 已安装（沙箱需要创建虚拟环境）
 sudo apt install -y python3-venv
 
-# 2. 查看用户沙箱列表
+# 2. 查看共享 venv 与用户沙箱列表
+ls -la /home/agent/Lightweight_agent_service/tool_sandbox/shared/
 ls -la /home/agent/Lightweight_agent_service/tool_sandbox/
 
 # 3. 手动检查某用户沙箱是否正常（以用户 ID=1 为例）
 ls -la /home/agent/Lightweight_agent_service/tool_sandbox/1/venv/bin/python
 
-# 4. 如果 pip 安装超时（网络慢），可配置国内镜像
-# 在用户沙箱 venv 中设置 pip 镜像：
+# 4. 跨 Python 版本注意：共享 venv 与用户 venv 的 Python 小版本必须一致。
+#    若用户 venv 是用不同 Python 创建的，沙箱会跳过共享继承、改为在该用户 venv 内单独安装，
+#    不会出现「跨版本注入 C 扩展导致 ImportError」的问题。排查版本：
+cat /home/agent/Lightweight_agent_service/tool_sandbox/shared/py3.14/venv/pyvenv.cfg
+cat /home/agent/Lightweight_agent_service/tool_sandbox/1/venv/pyvenv.cfg
+
+# 5. pip 安装超时（网络慢）：共享 venv 用 SANDBOX_PIP_INDEX 控制镜像源；
+#    也可在用户 venv 中设置：
 /home/agent/Lightweight_agent_service/tool_sandbox/1/venv/bin/pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 5. 清理并重建某用户沙箱（以用户 ID=1 为例）
+# 6. 清理并重建某用户沙箱（以用户 ID=1 为例）
 rm -rf /home/agent/Lightweight_agent_service/tool_sandbox/1
 sudo systemctl restart agent
 ```
@@ -388,7 +420,7 @@ LimitNPROC=65535
 
 - 沙箱子进程（`tool_sandbox/{user_id}/venv/`）的网络解析（`socket.getaddrinfo`）默认**全部拒绝**，任何外部主机访问都会抛 `PermissionError` 并记入 `logs/sandbox_audit.log`。
 - 仅当显式设置 `SANDBOX_NETWORK_ALLOWLIST`（见第 7 节 service 文件注释）时才放行匹配的主机后缀。
-- 主进程技能（web-fetch、gold-price、weather 等通过 `ToolRegistry` 直调，不经沙箱）**不受此限制**，仍按部署环境正常联网。
+- 主进程技能（web-fetch 等通过 `ToolRegistry` 直调，不经沙箱）**不受此限制**，仍按部署环境正常联网。
 
 ### 16.3 沙箱文件读取边界
 

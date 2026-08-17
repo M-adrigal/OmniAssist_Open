@@ -13,6 +13,7 @@ from agent.intent_keywords import select_tools_by_intent
 from agent.model_gateway import ModelGateway, thinking_mode_to_flags
 from agent.logger import get_logger, set_context, clear_context
 from agent.parallel_executor import ParallelToolExecutor
+from agent.loop_guard import new_loop_state, evaluate as _eval_loop_guard
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = get_logger("chat")
@@ -417,7 +418,7 @@ def _save_user_message_immediate(session_id: str, message: str, user_id: int):
 def _save_assistant_message_immediate(
     session_id: str, answer: str, full_content: str,
     search_info: dict = None, all_thoughts: list = None,
-    all_tool_calls: list = None, user_id: int = None,
+    all_tool_calls: list = None, user_id: int = None, files: list = None,
 ):
     """立即将助手回复持久化到 DB（流结束时、发 done 之前同步调用）。
 
@@ -438,9 +439,12 @@ def _save_assistant_message_immediate(
             assistant_msg["thought"] = "\n\n".join(all_thoughts)
         if all_tool_calls:
             assistant_msg["tools"] = all_tool_calls
+        if files:
+            # 本轮产出的文件（name/path/size/ext）随消息持久化，刷新/重登录后可在对话中还原下载卡片
+            assistant_msg["files"] = files
         existing_msgs.append(assistant_msg)
         _persist_messages(session_id, existing_msgs, user_id=user_id)
-        logger.info(f"[IMMEDIATE_SAVE_AST] 助手消息已立即持久化 (session={session_id}, len={len(existing_msgs)})")
+        logger.info(f"[IMMEDIATE_SAVE_AST] 助手消息已立即持久化 (session={session_id}, len={len(existing_msgs)}, files={len(files or [])})")
         return True
     except Exception as e:
         logger.warning(f"[IMMEDIATE_SAVE_AST] 助手消息立即持久化失败 (session={session_id}): {e}")
@@ -460,43 +464,41 @@ def _post_process_done(
     则仅做标题生成和日志，不再重复写消息。
     """
     if session_id:
-        _store_msgs = store[session_id]["messages"]
-        # 防重：检查用户消息是否已被 _save_user_message_immediate 持久化
-        _last_user_idx = None
-        for _ri in range(len(_store_msgs) - 1, -1, -1):
-            if _store_msgs[_ri].get("role") == "user":
-                _last_user_idx = _ri
-                break
-        if _last_user_idx is not None and _store_msgs[_last_user_idx].get("content") == message:
-            # 用户消息已存在（立即保存写入的），不再重复追加
-            pass
-        else:
-            _store_msgs.append({"role": "user", "content": message})
+        # 以 DB 为权威来源，避免内存 store 与 DB 不同步导致回写时覆盖已保存的助手消息（刷新丢内容）。
+        # 即时保存（_save_assistant_message_immediate）只写 DB、不更新内存 store，
+        # 故后台后处理绝不能直接用 store[session_id]["messages"] 整体覆盖写回。
+        _db_msgs = _load_session_messages(session_id)
+        if _db_msgs is None:
+            _db_msgs = []
 
-        if not _assistant_already_saved:
-            # 助手消息尚未同步保存，在此追加并写库
-            assistant_msg = {"role": "assistant", "content": answer or full_content}
+        # 助手消息兜底追加：仅当即时保存未写入 DB 时（避免重复）
+        _assistant_content = answer or full_content
+        _last = _db_msgs[-1] if _db_msgs else None
+        _need_persist = False
+        if not _assistant_already_saved and not (
+            _last and _last.get("role") == "assistant" and _last.get("content") == _assistant_content
+        ):
+            assistant_msg = {"role": "assistant", "content": _assistant_content}
             if search_info:
                 assistant_msg["search"] = search_info
             if all_thoughts:
                 assistant_msg["thought"] = "\n\n".join(all_thoughts)
             if all_tool_calls:
                 assistant_msg["tools"] = all_tool_calls
-            store[session_id]["messages"].append(assistant_msg)
-            title = None
-            if len(store[session_id]["messages"]) <= 2:
-                title = _generate_title(message, answer or full_content, llm)
-                store[session_id]["title"] = title
-            for i, m in enumerate(store[session_id]["messages"]):
+            _db_msgs.append(assistant_msg)
+            _need_persist = True
+
+        # 标题生成（首两条消息时）并落库
+        title = None
+        if len(_db_msgs) <= 2:
+            title = _generate_title(message, answer or full_content, llm)
+            store[session_id]["title"] = title
+            _need_persist = True
+        if _need_persist:
+            for i, m in enumerate(_db_msgs):
                 if m.get("role") == "assistant":
                     logger.debug(f"保存消息 msg[{i}] has_thought={bool(m.get('thought'))} has_tools={bool(m.get('tools'))} thought_len={len(m.get('thought',''))} content_len={len(m.get('content',''))}")
-            _persist_messages(session_id, store[session_id]["messages"], title, user_id)
-        else:
-            # 助手消息已同步保存，仅做标题生成（首两条消息时）
-            if len(store[session_id]["messages"]) <= 2:
-                title = _generate_title(message, answer or full_content, llm)
-                store[session_id]["title"] = title
-                _persist_messages(session_id, store[session_id]["messages"], title, user_id)
+            _persist_messages(session_id, _db_msgs, title, user_id)
 
         if all_tool_calls:
             from agent.task_reviewer import log_task_execution
@@ -543,7 +545,7 @@ SCENARIO_CONFIG = {
         "max_results": 3,
         "append_date": True,
         "instruction": (
-            "用户正在查询实时信息（如天气、股价、新闻等），时效性至关重要。\n"
+            "用户正在查询实时信息（如股价、新闻等），时效性至关重要。\n"
             "1. 请先使用 get_current_datetime 工具获取当前准确日期和时间。\n"
             "2. 严格基于搜索结果回答，并注明每条信息的来源和发布时间。\n"
             "3. 如果搜索结果中的日期与当前日期不一致，请明确指出并告知用户数据可能已过时。\n"
@@ -613,7 +615,7 @@ SCENARIO_CONFIG = {
             "1. 请先使用 get_current_datetime 工具获取当前准确日期。\n"
             "2. 确认搜索结果中的地点与用户查询的地点一致。\n"
             "3. 注意信息的时效性，标注发布时间。\n"
-            "4. 如果涉及天气、交通等实时数据，优先采用最新结果。"
+            "4. 如果涉及交通等实时数据，优先采用最新结果。"
         ),
     },
     "general": {
@@ -636,8 +638,6 @@ def _classify_query(query: str) -> str:
     q = query.lower()
 
     realtime_keywords = [
-        "天气", "气温", "温度", "下雨", "刮风", "雾霾", "空气质量",
-        "股价", "股票", "汇率", "金价", "油价", "比特币", "eth", "btc",
         "新闻", "快讯", "最新消息", "突发", "刚刚",
         "今天", "现在", "当前", "实时", "此刻", "今日",
         "直播", "比分", "赛程",
@@ -676,7 +676,7 @@ def _classify_query(query: str) -> str:
     local_keywords = [
         "附近", "周边", "本地", "当地", "这里",
         "北京", "上海", "广州", "深圳", "杭州", "成都", "武汉", "南京",
-        "天气", "交通", "限行", "地铁", "公交",
+        "交通", "限行", "地铁", "公交",
     ]
     if any(kw in q for kw in local_keywords):
         return "local"
@@ -704,8 +704,14 @@ def _do_web_search(query: str, api_key: str, scenario: str = "general") -> str:
         search_query = f"{query} {today_str}"
 
     try:
-        from tavily import Client
-        client = Client(api_key=api_key)
+        # 新版本 tavily SDK 使用 TavilyClient(api_key=...)；
+        # 老版本仅提供 Client(api_key=...)，此处做兼容兜底。
+        try:
+            from tavily import TavilyClient
+            client = TavilyClient(api_key=api_key)
+        except (ImportError, AttributeError, TypeError):
+            from tavily import Client
+            client = Client(api_key=api_key)
         response = client.search(
             query=search_query,
             search_depth=cfg["search_depth"],
@@ -929,7 +935,10 @@ def _collect_new_output_files(user_id, baseline):
     return files
 
 
-async def _stream_chat(message: str, session_id: str = None, web_search: str = "off", user_id: int = None, show_thought: bool = False):
+async def _stream_chat(message: str, session_id: str = None, web_search: str = "off",
+                    user_id: int = None, public_id: str = None, show_thought: bool = False):
+    # 文件输出隔离使用对外不透明 public_id；缺失时回退到整数 user_id（兼容旧调用）
+    pub_id = public_id if public_id is not None else user_id
     set_context(user_id=user_id, session_id=session_id)
     # 角色级免确认（tools:execute_sensitive），整个对话只判定一次
     _role_exempt = _is_role_exempt(user_id)
@@ -1023,8 +1032,8 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             "4. 如果用户说'放到word里'、'保存为文档'、'生成word'等，应使用 save_to_word 工具\n"
             "5. 如果用户问时间日期，使用 get_current_datetime 工具\n"
             "6. 如果用户需要计算，使用 simple_calculator 工具\n"
-            "7. 如果用户需要搜索最新/实时/外部信息（新闻、天气、股价、最新版本、事实查证、教程、对比分析等），使用 web_search 工具；搜索结果会附带『来源: url』，请在回答中直接引用这些来源链接（如 [标题](url) 形式），让用户可溯源核实\n"
-            "8. 只有在需要读取某个已知具体网址的页面内容时，才使用 web_fetch 工具（该工具运行在受限沙箱中，可能无法访问外网，优先使用 web_search）\n"
+            "7. 如果用户需要搜索最新/实时/外部信息（新闻、股价、最新版本、事实查证、教程、对比分析等），使用 web_search 工具；搜索结果会附带『来源: url』，请在回答末尾用『信息来源：』段落统一列出所有参考来源，每条格式为【标题】(完整URL)，例如：\n信息来源：\n- 【Macworld 新品路线图】(https://www.macworld.com/article/...)\n- 【新浪财经前瞻】(https://finance.sina.com.cn/...)\n"
+            "8. 如果需要读取某个已知具体网址的页面内容，使用 web_fetch 工具（该工具已在沙箱内放行网络，可正常抓取网页；搜索最新/实时信息仍优先用 web_search）\n"
             "9. 如果用户需要农历转换，使用 convert_gregorian_to_lunar 工具\n"
             "10. 调用工具前先确认参数是否齐全，参数不齐时向用户询问\n\n"
             "工具复用原则（重要）：\n"
@@ -1033,9 +1042,9 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             "13. 只有以下情况才需要重新调用工具：\n"
             "    - 之前没有相关数据\n"
             "    - 用户明确要求重新查询（如'重新查一下'、'再查一下'、'刷新'）\n"
-            "    - 数据范围超出已有结果（如已有7天预报但用户问第8天）\n"
+            "    - 数据范围超出已有结果（如已有某范围数据但用户问范围外的内容）\n"
             "    - 数据可能已过期（时间敏感数据，如股市行情、实时路况等）\n"
-            "14. 例如：已有北京7天天气预报结果，用户再问其中某天天气，直接引用已有数据回答即可\n\n"
+            "14. 例如：之前已查到某数据，用户再问其中一部分，直接引用已有数据回答即可\n\n"
             "回答风格原则（重要）：\n"
             "优先使用自然段落进行回答，像人类对话一样流畅自然。只在必要时使用格式：\n"
             "- 简短问答、闲聊、一般性解释：直接用自然段落回答，不要使用任何列表或格式标记\n"
@@ -1050,7 +1059,16 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             "2. 优先给出核心结论或答案，必要时再补充简要说明\n"
             "3. 如果用户没有明确要求详细分析，默认给出简洁版本\n"
             "4. 避免重复表述，每句话都应有信息增量\n"
-            "5. 对于简单问题，用1-3句话回答即可，不要展开成段落"
+            "5. 对于简单问题，用1-3句话回答即可，不要展开成段落\n\n"
+            "文件输出路径原则（重要）：\n"
+            "1. 当用户请求生成文件（Word/Excel/图片/文本等）并询问结果位置时，只需告知「文件已生成：文件名」，"
+            "只写文件名本身（如 苹果2026秋季发布会新品汇总.docx），严禁输出 document_output/.../ 开头的完整磁盘路径，"
+            "也不要输出包含用户标识（如 u_xxx）的目录前缀。\n"
+            "2. 若需提示用户文件已保存，使用类似「文件已生成：苹果2026秋季发布会新品汇总.docx」的表述即可。\n\n"
+            "上传文件版本原则（重要）：\n"
+            "1. 当用户上传了文件（尤其是再次上传同名或新版本文档）并要求基于文件优化/生成新文档时，"
+            "必须以「最新上传版本」的文件内容为准，忽略对话历史中基于旧版本文件得出的结论。\n"
+            "2. 文件上下文注入时每个文件都带有「上传于 时间」与「最新/较早版本」标记，请优先参考标注为最新上传版本的内容。"
         )
 
         if web_search == "off":
@@ -1069,7 +1087,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                     "判断需要哪些知识或工具，一步步推理出结论，最后检查一下有没有遗漏，规划好怎么组织回答。\n\n"
                     "格式示例：\n"
                     "<thinking>\n"
-                    "用户想知道北京未来三天天气，应该是为了出行做准备。要回答这个问题，我需要先查到北京的地理位置ID，然后调用天气预报接口获取未来3天的数据。拿到数据后按日期整理温度、天气状况和风力，最后给一个综合的出行建议。让我确认一下：数据要覆盖未来3天，温度单位是摄氏度，天气描述要清晰易懂。回答就按日期逐日列出，最后加一句出行提醒。\n"
+                    "用户想让我把这段会议纪要整理成一份 Word 文档。我得先理清纪要里的关键决议和待办事项，然后按标题、背景、决议、行动项的结构组织内容，最后调用 save_word 工具生成。让我确认一下：需要保留原文的要点顺序，行动项要标注负责人和截止时间，语气正式但简洁。\n"
                     "</thinking>\n\n"
                     "然后给出你的正式回答。\n"
                     "注意：<thinking> 标签内的内容是你的内部思考，标签外的内容才是给用户的正式回答。\n"
@@ -1083,15 +1101,27 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
         if session_id and user_id:
             upload_dir = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                "document_output", str(user_id), "uploads", session_id
+                "document_output", str(pub_id), "uploads", session_id
             )
             if os.path.isdir(upload_dir):
-                uploaded = [os.path.join(upload_dir, f) for f in sorted(os.listdir(upload_dir))
-                            if os.path.isfile(os.path.join(upload_dir, f)) and not f.startswith(".")]
-                if uploaded:
+                _all_in_dir = [os.path.join(upload_dir, f) for f in os.listdir(upload_dir)
+                               if os.path.isfile(os.path.join(upload_dir, f)) and not f.startswith(".")]
+                if _all_in_dir:
+                    # 按修改时间倒序，同名文件只保留最新版本，避免模型沿用旧文档内容
+                    _all_in_dir.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+                    _seen = set()
+                    uploaded = []
+                    for p in _all_in_dir:
+                        _base = os.path.basename(p)
+                        if _base in _seen:
+                            continue
+                        _seen.add(_base)
+                        uploaded.append(p)
                     from agent.file_parser import parse_files, build_context_prompt
                     parsed = await _run_sync(parse_files, uploaded)
-                    file_context = await _run_sync(build_context_prompt, parsed)
+                    # 文件名 -> 上传时间（mtime），用于 build_context_prompt 标注版本/时间戳
+                    _file_meta = {os.path.basename(p): os.path.getmtime(p) for p in uploaded}
+                    file_context = await _run_sync(build_context_prompt, parsed, _file_meta)
                     system_prompt = file_context + "\n\n" + system_prompt
 
         # 注入技能上下文
@@ -1128,9 +1158,10 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             max_iterations = 10
         all_tool_calls = []
         all_thoughts = []
-        _consecutive_failures = {}  # {tool_name: count} — 连续失败计数器
         # 本轮对话开始前的产出文件基线，用于结束前 diff 出新增文件并推送给前端
-        _output_baseline = _snapshot_output_files(user_id)
+        _output_baseline = _snapshot_output_files(pub_id)
+        # 迭代级防护状态（防止模型陷入“调用-失败/诊断-再调用”死循环）
+        _loop_state = new_loop_state(_output_baseline)
 
         user_ctx = {
             "user_id": user_id,
@@ -1158,6 +1189,9 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                 tool_calls = None
                 _stream_buf = ""
                 _in_thinking = False
+                _iter_tool_names = set()    # 本轮调用的工具名集合（空转检测用）
+                _iter_failed = False         # 本轮是否有工具报错
+                _iter_perm_denied = False    # 本轮是否出现“权限不足”
 
                 try:
                     # 防御：工具返回结果过长可能触发上游 413，发送前对 role=tool 内容做硬性截断
@@ -1279,7 +1313,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                             all_thoughts.append(thinking)
 
                     # 结束前推送本轮新增的产出文件，让前端在对话内可见可下载
-                    _new_files = _collect_new_output_files(user_id, _output_baseline)
+                    _new_files = _collect_new_output_files(pub_id, _output_baseline)
                     if _new_files:
                         yield f"data: {json.dumps({'type': 'files_created', 'files': _new_files}, ensure_ascii=False)}\n\n"
 
@@ -1287,6 +1321,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                     _ast_saved = _save_assistant_message_immediate(
                         session_id, answer, full_content,
                         search_info, all_thoughts, all_tool_calls, user_id,
+                        files=_new_files if _new_files else None,
                     )
 
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
@@ -1416,7 +1451,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                 elif len(_to_exec) == 1:
                     p = _to_exec[0]
                     try:
-                        result = await _run_sync(registry.execute, p["name"], p["args"], user_id=user_id)
+                        result = await _run_sync(registry.execute, p["name"], p["args"], user_id=user_id, public_id=pub_id)
                         if isinstance(result, dict):
                             result_str = json.dumps(result, ensure_ascii=False)
                         else:
@@ -1439,7 +1474,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                     batch_results = [_results_by_id[tc.get("id", "")] for tc in tool_calls]
                 else:
                     _executor = ParallelToolExecutor()
-                    _exec_res = await _run_sync(_executor.execute_batch, [p["tc"] for p in _to_exec], registry, user_id=user_id)
+                    _exec_res = await _run_sync(_executor.execute_batch, [p["tc"] for p in _to_exec], registry, user_id=user_id, public_id=pub_id)
                     _map = {r["tool_call_id"]: r for r in _exec_res}
                     for p in _to_exec:
                         _results_by_id[p["tc"].get("id", "")] = _map.get(p["tc"].get("id", ""), {
@@ -1467,36 +1502,49 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                         "content": r["result"],
                     })
 
-                    # 连续失败检测：同一工具连续失败 2 次则终止
+                    # 记录本轮事实（实际决策在迭代末尾统一做，避免按工具名计数失效）
+                    _iter_tool_names.add(r["name"])
                     if r["error"]:
-                        _consecutive_failures[r["name"]] = _consecutive_failures.get(r["name"], 0) + 1
-                        if _consecutive_failures[r["name"]] >= 2:
-                            _fail_name = r["name"]
-                            yield f"data: {json.dumps({'type': 'status', 'content': f'工具 {_fail_name} 连续失败，停止重试'})}\n\n"
-                            if all_tool_calls:
-                                yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
-                            yield f"data: {json.dumps({'type': 'error', 'content': f'工具 {_fail_name} 连续执行失败，已停止重试。请检查该功能是否正常。'})}\n\n"
-                            _done_sent = True
-                            # 同步保存已有对话内容（含错误回复）
-                            _fail_answer = f"工具 {_fail_name} 连续执行失败，已停止重试。"
-                            _save_assistant_message_immediate(
-                                session_id, _fail_answer, "",
-                                search_info, all_thoughts, all_tool_calls, user_id,
-                            )
-                            # 保存已有的对话内容
-                            _captured = {
-                                "session_id": session_id, "store": store, "message": message,
-                                "answer": _fail_answer, "full_content": "",
-                                "search_info": search_info, "all_thoughts": all_thoughts,
-                                "all_tool_calls": all_tool_calls, "llm": llm,
-                                "user_id": user_id, "iteration": iteration,
-                                "_assistant_already_saved": True,
-                            }
-                            threading.Thread(target=_post_process_done, kwargs=_captured, daemon=True).start()
-                            _messages_saved = True
-                            return
-                    else:
-                        _consecutive_failures[r["name"]] = 0
+                        _iter_failed = True
+                    _rr = r.get("result") or ""
+                    if isinstance(_rr, str) and (
+                        "权限不足" in _rr or "permission denied" in _rr.lower() or "无权限" in _rr
+                    ):
+                        _iter_perm_denied = True
+
+                # === 迭代级防护：防止模型陷入“调用-失败/诊断-再调用”死循环 ===
+                # 三道防护（任意工具连续失败 / 权限不足硬停 / 空转重复检测）统一在此判定
+                _stop_msg, _stop_answer = _eval_loop_guard(
+                    _loop_state, partial(_snapshot_output_files, pub_id),
+                    _iter_failed, _iter_perm_denied, _iter_tool_names,
+                )
+                if _stop_msg is not None:
+                    # 先推送本轮可能已产生的产出文件，保证用户可见
+                    _stop_files = _collect_new_output_files(pub_id, _output_baseline)
+                    if _stop_files:
+                        yield f"data: {json.dumps({'type': 'files_created', 'files': _stop_files}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'status', 'content': '检测到工具调用异常，提前结束'})}\n\n"
+                    if all_tool_calls:
+                        yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
+                    if not _done_sent:
+                        _save_assistant_message_immediate(
+                            session_id, _stop_answer, "",
+                            search_info, all_thoughts, all_tool_calls, user_id,
+                            files=_stop_files if _stop_files else None,
+                        )
+                        _done_sent = True
+                    yield f"data: {json.dumps({'type': 'error', 'content': _stop_msg})}\n\n"
+                    _captured = {
+                        "session_id": session_id, "store": store, "message": message,
+                        "answer": _stop_answer, "full_content": "",
+                        "search_info": search_info, "all_thoughts": all_thoughts,
+                        "all_tool_calls": all_tool_calls, "llm": llm,
+                        "user_id": user_id, "iteration": iteration,
+                        "_assistant_already_saved": True,
+                    }
+                    threading.Thread(target=_post_process_done, kwargs=_captured, daemon=True).start()
+                    _messages_saved = True
+                    return
 
             if all_tool_calls:
                 yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
@@ -1514,7 +1562,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
     finally:
         if not _done_sent:
             # 异常/中断退出时仍推送本轮新增的产出文件，保证用户可见
-            _new_files = _collect_new_output_files(user_id, _output_baseline)
+            _new_files = _collect_new_output_files(pub_id, _output_baseline)
             if _new_files:
                 yield f"data: {json.dumps({'type': 'files_created', 'files': _new_files}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
@@ -1535,13 +1583,21 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
 
 async def _run_chat_background(task: SessionTask, message: str, session_id: str,
-                                web_search: str, user_id: int, show_thought: bool):
+                                web_search: str, user_id: int, show_thought: bool,
+                                public_id: str = None):
     """后台运行聊天任务：消费 _stream_chat 生成器，将事件放入 SessionTask 缓冲区。
     
     与客户端连接解耦 — 即使客户端断开，任务也继续运行直到完成。
     """
     try:
-        async for event in _stream_chat(message, session_id, web_search, user_id, show_thought):
+        async for event in _stream_chat(
+            message=message,
+            session_id=session_id,
+            web_search=web_search,
+            user_id=user_id,
+            show_thought=show_thought,
+            public_id=public_id,
+        ):
             task.add_event(event)
     except asyncio.CancelledError:
         # 用户主动停止任务
@@ -1610,14 +1666,14 @@ async def chat_stream(body: ChatRequest, request: Request):
         raise HTTPException(status_code=409, detail="该会话有正在执行的任务，请等待完成")
 
     # 创建后台任务
-    task = SessionTask(body.session_id, body.message, user["id"])
+    task = SessionTask(body.session_id, body.message, user["db_id"])
     set_running_task(body.session_id, task)
 
     # 【立即持久化用户消息】刷新/断连后不再丢失用户输入
     # 用独立线程写库，不阻塞 SSE 响应
     _sid_for_save = body.session_id
     _msg_for_save = body.message
-    _uid_for_save = user["id"]
+    _uid_for_save = user["db_id"]
     threading.Thread(
         target=_save_user_message_immediate,
         args=(_sid_for_save, _msg_for_save, _uid_for_save),
@@ -1626,7 +1682,7 @@ async def chat_stream(body: ChatRequest, request: Request):
 
     # 启动后台 asyncio.Task（与客户端连接解耦）
     task._bg_task = asyncio.create_task(
-        _run_chat_background(task, body.message, body.session_id, body.web_search, user["id"], body.show_thought)
+        _run_chat_background(task, body.message, body.session_id, body.web_search, user["db_id"], body.show_thought, public_id=user["id"])
     )
 
     # 返回 SSE 响应（订阅任务事件）
@@ -1644,7 +1700,7 @@ async def subscribe_to_stream(session_id: str, request: Request):
     task = get_running_task(session_id)
     if not task:
         raise HTTPException(status_code=404, detail="没有正在运行的任务")
-    if task.user_id != user["id"]:
+    if task.user_id != user["db_id"]:
         raise HTTPException(status_code=403, detail="无权访问")
 
     return StreamingResponse(
@@ -1661,7 +1717,7 @@ async def stop_task(session_id: str, request: Request):
     task = get_running_task(session_id)
     if not task:
         raise HTTPException(status_code=404, detail="没有正在运行的任务")
-    if task.user_id != user["id"]:
+    if task.user_id != user["db_id"]:
         raise HTTPException(status_code=403, detail="无权操作")
     if task.status != "running":
         raise HTTPException(status_code=400, detail="任务已结束")

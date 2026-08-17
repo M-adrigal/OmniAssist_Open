@@ -22,11 +22,16 @@ class ToolSandbox:
 
     为工具提供隔离的执行环境：
     - 独立的虚拟环境（venv），所有依赖安装在其中，与宿主环境完全隔离
+    - 共享基础环境按 Python 小版本分桶（tool_sandbox/shared/pyX.Y/venv），
+      用户沙箱通过 PYTHONPATH 继承同版本依赖，避免跨版本注入 C 扩展导致崩溃
     - 工具代码在子进程中执行，崩溃不影响主服务
     - 超时保护，防止死循环
     - 参数通过 stdin 传入，结果通过 stdout 返回
     - 每用户独立日志文件（sandbox.log）
     """
+
+    # 已尝试懒构建共享 venv 的 Python 版本集合（每个版本仅尝试一次，避免热路径重复构建）
+    _shared_build_attempted = set()
 
     def __init__(self, sandbox_dir: str = None, user_id: int = 0):
         if sandbox_dir is None:
@@ -41,10 +46,19 @@ class ToolSandbox:
         self._exec_log_path = os.path.join(sandbox_dir, "sandbox.log")
 
         # 共享基础环境：用户沙箱（tool_sandbox/user_N）通过 PYTHONPATH 继承
-        # tool_sandbox/venv 的依赖，避免每个用户重复 pip 安装常用库
+        # tool_sandbox/shared/pyX.Y/venv 的依赖（按 Python 小版本分桶，
+        # 避免 3.14 的 C 扩展 .so 注入到 3.9 解释器导致 ImportError）。
+        # 旧布局 tool_sandbox/venv 仍兼容，但仅当 Python 小版本一致时回退。
         _norm = os.path.normpath(sandbox_dir)
+        _base = os.path.dirname(_norm)
+        self._py_tag = f"py{sys.version_info.major}.{sys.version_info.minor}"
         if os.path.basename(_norm).startswith("user_"):
-            self.shared_venv_dir = os.path.join(os.path.dirname(_norm), "venv")
+            self.shared_venv_dir = os.path.join(_base, "shared", self._py_tag, "venv")
+            if not os.path.isdir(self.shared_venv_dir):
+                # 兼容旧布局：仅当 Python 小版本一致才回退，否则各自安装
+                _legacy = os.path.join(_base, "venv")
+                if os.path.isdir(_legacy) and self._venv_version(_legacy) == self._py_tag:
+                    self.shared_venv_dir = _legacy
         else:
             self.shared_venv_dir = self.venv_dir
         self._shared_site_packages = None   # 懒加载缓存
@@ -54,28 +68,90 @@ class ToolSandbox:
         self._load_installed_deps()
 
         # 注意：沙箱子进程的网络出口由 _build_wrapper 内的 getaddrinfo 补丁统一管控
-        # （依据 SANDBOX_NETWORK_ALLOWLIST，默认全阻断；web-fetch / gold-price 等主进程技能不受影响）。
+        # （依据 SANDBOX_NETWORK_ALLOWLIST，默认全阻断；web-fetch 等主进程技能不受影响）。
+
+    @staticmethod
+    def _venv_version(venv_dir: str) -> str:
+        """读取 venv 的 Python 小版本标签（如 'py3.14'）；无法识别返回 ''。"""
+        cfg = os.path.join(venv_dir, "pyvenv.cfg")
+        try:
+            with open(cfg, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.lower().startswith("version"):
+                        ver = line.split("=", 1)[1].strip()
+                        parts = ver.split(".")
+                        if len(parts) >= 2:
+                            return f"py{parts[0]}.{parts[1]}"
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
+    def _clean_pip_env() -> dict:
+        """构造不含代理环境变量的 pip 运行环境，避免主进程 HTTP_PROXY 致 pip 失败。"""
+        env = dict(os.environ)
+        for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+                  "ALL_PROXY", "all_proxy"):
+            env.pop(k, None)
+        return env
+
+    @staticmethod
+    def _parse_requirement(pkg: str):
+        """返回 (归一化包名, 版本约束串|None)。"""
+        try:
+            from packaging.requirements import Requirement
+            r = Requirement(pkg)
+            return r.name.lower(), (str(r.specifier) or None)
+        except Exception:
+            import re as _re
+            m = _re.match(r"^([A-Za-z0-9_.\-]+)\s*(.*)$", pkg.strip())
+            if not m:
+                return pkg.strip().lower(), None
+            return m.group(1).lower(), (m.group(2).strip() or None)
+
+    @staticmethod
+    def _spec_satisfied(spec: str, installed_ver: str) -> bool:
+        """判断已装版本是否满足约束（无法解析时保守视为满足）。"""
+        try:
+            from packaging.specifiers import SpecifierSet
+            from packaging.version import Version
+            return SpecifierSet(spec).contains(Version(installed_ver), prereleases=True)
+        except Exception:
+            return True
 
     def get_shared_site_packages(self) -> str:
-        """返回共享基础环境的 site-packages 路径（用户沙箱专用），无则返回空串"""
+        """返回共享基础环境的 site-packages 路径（用户沙箱专用），无则返回空串。
+
+        含版本守卫：仅当共享 venv 的 Python 小版本与用户 venv 一致时才注入，
+        否则返回空串（交由 per-user 安装），杜绝跨版本 C 扩展崩溃。
+        """
         if self._shared_site_packages is not None:
             return self._shared_site_packages
         path = ""
         if self.shared_venv_dir != self.venv_dir:
-            import glob as _glob
-            hits = _glob.glob(os.path.join(self.shared_venv_dir, "lib", "python*", "site-packages"))
-            if hits:
-                path = hits[0]
+            if self._venv_version(self.shared_venv_dir) == self._py_tag:
+                # 首次按需构建共享 venv（每个 Python 版本仅尝试一次）
+                if (not os.path.isdir(self.shared_venv_dir)
+                        and self._py_tag not in ToolSandbox._shared_build_attempted):
+                    ToolSandbox._shared_build_attempted.add(self._py_tag)
+                    self.ensure_shared_venv()
+                import glob as _glob
+                hits = _glob.glob(os.path.join(self.shared_venv_dir, "lib", "python*", "site-packages"))
+                if hits:
+                    path = hits[0]
         self._shared_site_packages = path
         return path
 
-    def _get_shared_packages(self) -> set:
-        """列出共享基础环境中已安装的包名（小写），用于跳过重复安装"""
+    def _get_shared_packages(self) -> dict:
+        """列出共享基础环境已装包：{归一化包名(小写): 版本号}，用于跳过重复安装。"""
         if self._shared_packages is not None:
             return self._shared_packages
-        packages = set()
+        packages: dict = {}
         shared_python = os.path.join(self.shared_venv_dir, "bin", "python3")
-        if self.shared_venv_dir != self.venv_dir and os.path.exists(shared_python):
+        if (self.shared_venv_dir != self.venv_dir
+                and self._venv_version(self.shared_venv_dir) == self._py_tag
+                and os.path.exists(shared_python)):
             try:
                 result = subprocess.run(
                     [shared_python, "-m", "pip", "list", "--format", "freeze"],
@@ -83,10 +159,13 @@ class ToolSandbox:
                 )
                 if result.returncode == 0:
                     for line in result.stdout.strip().split("\n"):
-                        name = line.strip().split("==")[0].strip().lower()
-                        if name:
-                            packages.add(name)
-                            packages.add(name.replace("-", "_"))
+                        line = line.strip()
+                        if not line or "==" not in line:
+                            continue
+                        name, ver = line.split("==", 1)
+                        name = name.strip().lower()
+                        packages[name] = ver.strip()
+                        packages[name.replace("-", "_")] = ver.strip()
             except Exception:
                 pass
         self._shared_packages = packages
@@ -154,6 +233,44 @@ class ToolSandbox:
         except Exception:
             return set()
 
+    def ensure_shared_venv(self) -> bool:
+        """按需构建共享基础 venv（当前 Python 版本分桶）。
+
+        读取仓库根 requirements.sandbox.txt，创建 tool_sandbox/shared/pyX.Y/venv
+        并安装依赖。失败返回 False（不阻塞主流程，回退到 per-user 安装）。
+        """
+        if self.shared_venv_dir == self.venv_dir:
+            return True
+        if os.path.isdir(self.shared_venv_dir):
+            return True
+        req_file = os.path.abspath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), os.pardir, "requirements.sandbox.txt"))
+        if not os.path.isfile(req_file):
+            return False
+        try:
+            logger.info(f"构建共享沙箱 venv: {self.shared_venv_dir}")
+            subprocess.check_call(
+                [sys.executable, "-m", "venv", self.shared_venv_dir],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120,
+            )
+            shared_py = os.path.join(self.shared_venv_dir, "bin", "python3")
+            cmd = [shared_py, "-m", "pip", "install",
+                   "--no-cache-dir", "-q", "--disable-pip-version-check",
+                   "--timeout", "30", "--retries", "2"]
+            if PIP_INDEX_URL:
+                cmd += ["-i", PIP_INDEX_URL]
+                host = urlparse(PIP_INDEX_URL).hostname
+                if host:
+                    cmd += ["--trusted-host", host]
+            cmd += ["-r", req_file]
+            subprocess.check_call(cmd, env=self._clean_pip_env(), timeout=PIP_INSTALL_TIMEOUT)
+            self._shared_site_packages = None
+            self._shared_packages = None
+            return True
+        except Exception as e:
+            logger.error(f"构建共享沙箱 venv 失败: {e}")
+            return False
+
     def install(self, packages: list):
         if not packages:
             return True
@@ -162,10 +279,14 @@ class ToolSandbox:
             return True
 
         # 1) 共享基础环境已有的包，通过 PYTHONPATH 继承，无需安装
+        #    （版本感知：若声明了版本约束，需已装版本满足才跳过）
         shared_packages = self._get_shared_packages()
         if shared_packages:
             for pkg in list(to_install):
-                if pkg.lower() in shared_packages:
+                _name, _spec = self._parse_requirement(pkg)
+                if _name not in shared_packages:
+                    continue
+                if _spec is None or self._spec_satisfied(_spec, shared_packages[_name]):
                     self._deps_installed.add(pkg)
                     to_install.remove(pkg)
             self._save_installed_deps()
@@ -195,7 +316,8 @@ class ToolSandbox:
             proc = subprocess.run(
                 self._build_pip_command(to_install),
                 capture_output=True, text=True,
-                timeout=PIP_INSTALL_TIMEOUT
+                timeout=PIP_INSTALL_TIMEOUT,
+                env=self._clean_pip_env(),
             )
         except subprocess.TimeoutExpired:
             logger.error(
@@ -243,11 +365,14 @@ class ToolSandbox:
             return
 
         pre_existing = set()
-        # 共享基础环境已有的包，通过 PYTHONPATH 继承
+        # 共享基础环境已有的包，通过 PYTHONPATH 继承（版本感知）
         shared_packages = self._get_shared_packages()
         if shared_packages:
             for pkg in list(to_install):
-                if pkg.lower() in shared_packages:
+                _name, _spec = self._parse_requirement(pkg)
+                if _name not in shared_packages:
+                    continue
+                if _spec is None or self._spec_satisfied(_spec, shared_packages[_name]):
                     self._deps_installed.add(pkg)
                     pre_existing.add(pkg)
                     to_install.remove(pkg)
@@ -273,7 +398,8 @@ class ToolSandbox:
         try:
             subprocess.check_call(
                 self._build_pip_command(to_install),
-                timeout=PIP_INSTALL_TIMEOUT
+                timeout=PIP_INSTALL_TIMEOUT,
+                env=self._clean_pip_env(),
             )
         except subprocess.TimeoutExpired:
             logger.error(f"pip install 超时({PIP_INSTALL_TIMEOUT}s): {to_install}")
@@ -400,14 +526,17 @@ class ToolSandbox:
             return code
         return rewritten
 
-    def execute(self, code: str, params: dict, timeout: int = 30, user_id: int = None, tool_name: str = "") -> str:
+    def execute(self, code: str, params: dict, timeout: int = 30, user_id: int = None,
+                 public_id: str = None, tool_name: str = "", allow_network: bool = False) -> str:
         import time as _time
         _start = _time.time()
         code_preview = code[:100].replace("\n", " ") + ("..." if len(code) > 100 else "")
         logger.info(f"执行工具: {tool_name or '未知'} | user={user_id} | code={code_preview}")
-        if user_id is not None:
-            code = self._rewrite_user_paths(code, user_id, tool_name)
-        wrapper = self._build_wrapper(code, params, user_id=user_id)
+        # 文件隔离目录以对外不透明 public_id 命名；未提供时回退到整数 user_id
+        _file_owner = public_id if public_id is not None else user_id
+        if _file_owner is not None:
+            code = self._rewrite_user_paths(code, _file_owner, tool_name)
+        wrapper = self._build_wrapper(code, params, user_id=_file_owner, allow_network=allow_network)
         base_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(base_dir)
 
@@ -490,9 +619,12 @@ class ToolSandbox:
         "multiprocessing", "asyncio", "select", "selectors",
         "smtplib", "imaplib", "poplib", "ftplib", "telnetlib",
         "shelve", "marshal",
-        # importlib 必须禁用：否则 attacker 可用 importlib.util 重新加载 os 模块，
-        # 恢复被删除的危险函数（os.system / os.popen 等），绕过沙箱。
-        "importlib",
+        # importlib 不能整包禁用：Python 3.14 的 stdlib（logging→inspect→
+        # importlib.machinery）会经 importlib.machinery 间接导入，整包禁用会导致
+        # 任何依赖 logging 的模块（含 agent.logger）全部导入失败。
+        # 只精确禁用真正危险的 importlib.util（reload 攻击入口），并在 wrapper 中
+        # 删除 importlib.reload 属性，既保留 stdlib 可用，又堵住沙箱逃逸通道。
+        "importlib.util",
     }
 
     # 密钥 / 敏感文件名（任何位置命中即禁止读取）
@@ -582,7 +714,7 @@ class ToolSandbox:
             lines.append(''.join(current))
         return lines
 
-    def _build_wrapper(self, code: str, params: dict, user_id: int = None) -> str:
+    def _build_wrapper(self, code: str, params: dict, user_id: int = None, allow_network: bool = False) -> str:
         safe_imports = ", ".join(sorted(self._SAFE_MODULES))
         blocked_list = json.dumps(sorted(self._BLOCKED_MODULES))
         params_json = json.dumps(params, ensure_ascii=False)
@@ -601,7 +733,14 @@ class ToolSandbox:
         user_workbuddy = os.path.realpath(os.path.expanduser("~/.workbuddy"))
 
         write_allowed = sorted({user_doc, tmpdir, user_skill_dir, os.path.realpath("/tmp")})
-        read_secret_dirs = sorted({data_dir, workbuddy_dir, user_workbuddy})
+        home_dir = os.path.realpath(os.path.expanduser("~"))
+        current_user = os.path.basename(home_dir)
+        # 当前用户 home 下的敏感目录仍禁止沙箱读取（防密钥/凭证外泄）
+        read_secret_dirs = sorted({data_dir, workbuddy_dir, user_workbuddy,
+            os.path.join(home_dir, ".ssh"), os.path.join(home_dir, ".aws"),
+            os.path.join(home_dir, ".config"), os.path.join(home_dir, ".gnupg"),
+            os.path.join(home_dir, ".kube"), os.path.join(home_dir, ".netrc"),
+            os.path.join(home_dir, ".env")})
         # 运维可通过环境变量追加写白名单目录
         extra_dirs = os.environ.get("SANDBOX_WRITE_DIRS", "")
         for _d in extra_dirs.split(","):
@@ -615,18 +754,24 @@ class ToolSandbox:
         # 受限读取目录前缀：沙箱子进程禁止读取系统/敏感目录
         # （防 /etc、用户家目录、数据库目录、密钥目录、其他用户的产出目录被越权读取后外泄）。
         # 项目自身的 agent/server/static 等源码仍可读（属应用自身代码，非敏感）。
+        # 注意：不能简单用 /Users、/home 前缀屏蔽整个用户目录，
+        # 否则会连同项目自身的共享 venv（如 python-docx 内置模板
+        # tool_sandbox/shared/.../docx/templates/default.docx）一起禁读，
+        # 导致依赖资源无法加载。改为：仅屏蔽系统目录 + 其他用户 home
+        # （见下方 _is_other_user_home），当前用户 home 下敏感目录由
+        # read_secret_dirs 管控。
         read_deny = sorted({
             os.path.realpath(p) for p in (
-                "/etc", "/home", "/Users", "/root", "/var", "/proc", "/sys",
+                "/etc", "/root", "/var", "/proc", "/sys",
                 "/boot", "/usr", "/bin", "/sbin", "/lib", "/opt",
-                data_dir, workbuddy_dir, user_workbuddy,
             )
         })
         # 沙箱审计日志（集中记录命令执行与越权访问尝试）
         logs_dir = os.path.join(project_root, "logs")
         audit_log = os.path.join(logs_dir, "sandbox_audit.log")
-        # 网络出口白名单（逗号分隔主机后缀）；为空则沙箱内全部外联被拒绝
-        net_allow = os.environ.get("SANDBOX_NETWORK_ALLOWLIST", "")
+        # 网络出口白名单（逗号分隔主机后缀）；为空则沙箱内全部外联被拒绝。
+        # allow_network=True 时设为 "*"，放行该可信工具的所有外联（仍保留文件/导入隔离）。
+        net_allow = "*" if allow_network else os.environ.get("SANDBOX_NETWORK_ALLOWLIST", "")
 
         wrapper = (
             f"import {safe_imports}\n"
@@ -650,7 +795,7 @@ class ToolSandbox:
             "_orig_import = builtins.__import__\n"
             "def _safe_import(name, *args, **kwargs):\n"
             "    root = name.split('.')[0]\n"
-            "    if root in _BLOCKED:\n"
+            "    if root in _BLOCKED or name in _BLOCKED or any(name.startswith(b + '.') for b in _BLOCKED):\n"
             "        raise ImportError(f'模块 {name} 已被沙箱禁用')\n"
             "    _mod = _orig_import(name, *args, **kwargs)\n"
             "    if root == 'os':\n"
@@ -671,6 +816,13 @@ class ToolSandbox:
             "for _func in _DANGEROUS_OS:\n"
             "    if hasattr(_os, _func):\n"
             "        delattr(_os, _func)\n"
+            "try:\n"
+            "    import importlib as _il\n"
+            "    for _b in ('reload', 'util'):\n"
+            "        if hasattr(_il, _b):\n"
+            "            delattr(_il, _b)\n"
+            "except Exception:\n"
+            "    pass\n"
             # ---- 文件 / 目录安全边界 ----
             f"_WRITE_ALLOWED_DIRS = {json.dumps(write_allowed)}\n"
             f"_READ_SECRET_DIRS = {json.dumps(read_secret_dirs)}\n"
@@ -680,6 +832,8 @@ class ToolSandbox:
             f"_USER_DOC = {json.dumps(user_doc)}\n"
             f"_SB_AUDIT_LOG = {json.dumps(audit_log)}\n"
             f"_SB_UID = {json.dumps(str(user_id or 0))}\n"
+            f"_HOME = {json.dumps(home_dir)}\n"
+            f"_CURRENT_USER = {json.dumps(current_user)}\n"
             f"_SB_NET_ALLOW = {json.dumps(net_allow)}\n"
             "def _sb_audit(event, detail):\n"
             "    try:\n"
@@ -702,7 +856,7 @@ class ToolSandbox:
             "    _host = _h.split(':')[0]\n"
             "    _allow = [x.strip().lower() for x in _SB_NET_ALLOW.split(',') if x.strip()]\n"
             "    for _a in _allow:\n"
-            "        if _host == _a or _host.endswith('.' + _a):\n"
+            "        if _a == '*' or _host == _a or _host.endswith('.' + _a):\n"
             "            return _sb_orig_getaddrinfo(host, *args, **kwargs)\n"
             "    _sb_audit('net_denied', f'host={host}')\n"
             "    raise PermissionError(f'[沙箱] 禁止访问外部网络主机: {host}')\n"
@@ -716,6 +870,11 @@ class ToolSandbox:
             "    for _p in prefixes:\n"
             "        if rp == _p or rp.startswith(_p + _os.sep):\n"
             "            return True\n"
+            "    return False\n"
+            "def _is_other_user_home(rp):\n"
+            "    _p = rp.split(_os.sep)\n"
+            "    if len(_p) >= 3 and _p[1] in ('Users', 'home') and _p[2] != _CURRENT_USER:\n"
+            "        return True\n"
             "    return False\n"
             "def _is_secret(rp):\n"
             "    if _os.path.basename(rp) in _SECRET_NAMES:\n"
@@ -778,7 +937,7 @@ class ToolSandbox:
             "    _mode = mode if isinstance(mode, str) else 'r'\n"
             "    _read = ('r' in _mode) or ('+' in _mode)\n"
             "    _write = ('w' in _mode) or ('a' in _mode) or ('x' in _mode) or ('+' in _mode)\n"
-            "    if _read and (_is_secret(_rp) or _under_prefix(_rp, _READ_DENY_PREFIXES) or (_rp.startswith(_DOC_ROOT + _os.sep) and not _rp.startswith(_USER_DOC + _os.sep))):\n"
+            "    if _read and (_is_secret(_rp) or _under_prefix(_rp, _READ_DENY_PREFIXES) or _is_other_user_home(_rp) or (_rp.startswith(_DOC_ROOT + _os.sep) and not _rp.startswith(_USER_DOC + _os.sep))):\n"
             "        _sb_audit('file_read_denied', f'path={path}')\n"
             "        raise PermissionError(f'[沙箱] 禁止读取受限文件: {path}')\n"
             "    if _write and not _in_dirs(_rp, _WRITE_ALLOWED_DIRS):\n"

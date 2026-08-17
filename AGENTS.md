@@ -6,6 +6,8 @@
 
 **默认管理员账号**: `admin` / `admin123`（首次登录强制修改密码）
 
+**当前版本**: v2.0.0。身份体系为**双 ID**：对外不透明 `public_id`（UUID 前缀 `u_`）用于 JWT / 前端 / 文件目录 `document_output/{public_id}/`；内部整数自增 `db_id` 仅用于数据库关联与权限网关（`get_user_role`）、沙箱 venv 隔离。**写任何 DB 整数外键列、整数技能目录、trust owner 的地方必须用 `db_id`；`public_id` 仅用于对外标识与文件路径**。升级部署前必须先跑 `scripts/migrate_public_id.py` 回填并改名（详见 `deploy.md` 第 11 节），否则存量用户全员 401 锁死。
+
 ## 2. 环境与依赖
 
 - **Python**: 3.14.0
@@ -76,9 +78,7 @@ agent/                  # Agent 核心（不依赖 server/）
     document/           # 文档生成技能（含格式化引擎）
     calculator/         # 计算器
     datetime/           # 日期时间
-    weather/            # 天气查询
     web-fetch/          # 网页抓取
-    gold-price/         # 金价查询
     lunar-converter/    # 农历转换
     chinese-counter/    # 中文字数统计
     user/               # 用户自定义技能
@@ -260,23 +260,25 @@ document_output/
 
 ### 5.7 用户沙箱隔离
 
-每位用户拥有独立的沙箱虚拟环境，避免多用户共享依赖池导致的版本冲突。
+每位用户拥有独立的沙箱虚拟环境；通用重型依赖按 Python 小版本分桶放在共享基础 venv（版本分桶，避免跨版本冲突），经 `PYTHONPATH` 继承，用户专属依赖仍装在各自 venv 内。
 
 **目录结构**:
 ```
 tool_sandbox/
-  1/                    # 用户 ID
-    venv/               # 独立的 Python 虚拟环境
-    deps.json           # 已安装依赖列表
-  2/                    # 另一个用户
+  shared/               # 共享基础 venv（按 Python 小版本分桶）
+    py3.14/
+      venv/             # 通用依赖：python-docx / openpyxl / reportlab / python-pptx / lxml / Pillow ...
+  user_1/               # 用户 ID（注意前缀 user_ 用于定位共享 venv）
+    venv/               # 该用户独立的 Python 虚拟环境（仅含共享未覆盖的专属依赖）
+  user_2/
     venv/
-    deps.json
 ```
 
 **工作原理**:
 1. **沙箱池** → `sandbox.py` 的 `SandboxPool` 管理所有用户沙箱，懒加载创建
-2. **依赖安装** → 通过 AST 解析脚本中的 `import` 语句，自动提取并安装依赖
-3. **线程安全** → `SandboxPool.get_sandbox(user_id)` 确保线程安全的沙箱获取与释放
+2. **共享继承** → 用户沙箱执行时把 `shared/pyX.Y/venv` 的 site-packages 经 `PYTHONPATH` 注入；Python 小版本不一致时跳过继承、改为该用户 venv 内单独安装（防止跨版本注入 C 扩展崩溃）
+3. **依赖安装** → 通过 AST 解析脚本中的 `import` 语句 + `# DEPENDENCIES:` 注释，自动提取并安装依赖
+4. **线程安全** → `SandboxPool.get_sandbox(user_id)` 确保线程安全的沙箱获取与释放
 
 **关键函数**:
 - `sandbox.py`: `SandboxPool.get_sandbox(user_id)` / `release_sandbox(user_id)` / `destroy_sandbox(user_id)`

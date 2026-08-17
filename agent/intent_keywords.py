@@ -6,8 +6,8 @@
 
 存储格式（data/intent_keywords/{user_id}.json）：
 {
-  "weather": ["天气", "温度", "下雨"],
   "document": ["Excel", "Word", "生成报告"],
+  "web": ["网页", "链接"],
   ...
 }
 """
@@ -18,9 +18,8 @@ import re
 
 # 系统默认关键词，所有用户共享兜底
 DEFAULT_KEYWORDS = {
-    "weather": [r"天气", r"温度", r"下雨", r"刮风", r"空气质量", r"湿度", r"风力", r"降水"],
     "document": [r"生成.*文档", r"生成.*报告", r"Excel", r"Word", r"PDF", r"PPT", r"表格", r"导出"],
-    "web": [r"网页", r"抓取", r"http", r"链接", r"金价", r"黄金", r"URL", r"网站"],
+    "web": [r"网页", r"抓取", r"http", r"链接", r"URL", r"网站"],
     "lunar": [r"农历", r"阴历", r"生肖", r"天干地支", r"八字"],
     "agent": [r"分析.*数据", r"委派", r"统计.*分析", r"多.*任务"],
 }
@@ -28,9 +27,8 @@ DEFAULT_KEYWORDS = {
 # 工具分类：按功能领域分组
 TOOL_CATEGORIES = {
     "basic": ["calculate", "count_chinese", "get_datetime"],
-    "weather": ["geo_lookup", "current_weather", "forecast"],
     "document": ["save_excel", "save_pdf", "save_word", "save_ppt"],
-    "web": ["fetch_url", "gold_price"],
+    "web": ["fetch_url"],
     "lunar": ["convert_lunar"],
     "agent": ["delegate_analyst", "delegate_document", "delegate_researcher", "delegate_parallel"],
 }

@@ -1048,6 +1048,13 @@ body {
   text-decoration: none;
 }
 
+.form-error {
+  font-size: 12px;
+  color: var(--danger);
+  margin-top: 4px;
+  min-height: 1px;
+}
+
 .form-hint a:hover {
   text-decoration: underline;
 }
@@ -1982,6 +1989,14 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.of-name-link, .cloud-file-link { text-decoration: none; color: inherit; cursor: pointer; }
+.of-name-link:hover { text-decoration: underline; color: var(--accent, #2f6fed); }
+.cloud-file-link:hover { text-decoration: underline; }
+.inline-file-link {
+  color: var(--accent, #2f6fed);
+  text-decoration: underline;
+  cursor: pointer;
 }
 .of-meta { font-size: 11px; color: var(--text-dim, #999); margin-top: 1px; }
 .of-actions { display: flex; gap: 6px; flex-shrink: 0; }
@@ -3291,4 +3306,132 @@ body {
 .dark .approval-bar .approval-actions button:hover:not(:disabled) {
   background: #333;
   border-color: #555;
+}
+
+/* ===== 搜索结果参考来源（紧凑 pill） ===== */
+.ref-sources {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.ref-tag {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-right: 2px;
+}
+.ref-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 220px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-secondary);
+  text-decoration: none;
+  color: var(--text-primary);
+  transition: var(--transition);
+  overflow: hidden;
+}
+.ref-pill:hover {
+  background: var(--bg-hover);
+  border-color: var(--text-muted);
+}
+.ref-avatar {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1;
+}
+.ref-title {
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ref-ext {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.ref-sup {
+  color: #1565c0;
+  font-size: 0.72em;
+  font-weight: 600;
+  margin-left: 1px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.dark .ref-sup {
+  color: #82b1ff;
+}
+
+/* ===== 拖拽上传覆盖层 ===== */
+/* 整屏拖放上传提示层：拖文件到页面任意位置即显示 */
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(3px);
+  pointer-events: none;  /* 不拦截事件，拖放由 window 级监听处理 */
+}
+.drop-overlay.hidden {
+  display: none;
+}
+.drop-overlay-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 48px 72px;
+  border-radius: 20px;
+  border: 3px dashed rgba(59, 130, 246, 0.75);
+  background: rgba(255, 255, 255, 0.92);
+  color: #2563eb;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+}
+.drop-overlay-inner svg {
+  opacity: 0.9;
+}
+.drop-overlay-text {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.drop-overlay-hint {
+  font-size: 13px;
+  font-weight: 400;
+  color: #64748b;
+}
+.dark .drop-overlay {
+  background: rgba(2, 6, 23, 0.6);
+}
+.dark .drop-overlay-inner {
+  border-color: rgba(96, 165, 250, 0.8);
+  background: rgba(15, 23, 42, 0.92);
+  color: #93c5fd;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.dark .drop-overlay-hint {
+  color: #94a3b8;
 }

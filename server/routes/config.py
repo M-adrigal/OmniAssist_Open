@@ -17,7 +17,7 @@ def _mask_key(key: str) -> str:
 def get_config(request: Request):
     from server.database import resolve_model_config
     user = require_login(request)
-    cfg = resolve_model_config(user["id"])
+    cfg = resolve_model_config(user["db_id"])
     return ModelConfigResponse(
         model_name=cfg.get("model_name", ""),
         base_url=cfg.get("base_url", ""),
@@ -48,7 +48,7 @@ def update_config(body: ModelConfigUpdate, request: Request):
     if body.max_iterations is not None:
         kwargs["max_iterations"] = body.max_iterations
 
-    cfg = save_model_config(user["id"], **kwargs)
+    cfg = save_model_config(user["db_id"], **kwargs)
 
     try:
         from __main__ import update_agent_context_limit, update_agent_thinking_mode

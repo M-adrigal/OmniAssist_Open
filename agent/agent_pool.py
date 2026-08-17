@@ -163,10 +163,12 @@ class AgentPool:
             user_id = kwargs.pop('_user_id', None)
             if user_id is None:
                 user_id = 0
+            public_id = kwargs.pop('_public_id', None)
             sandbox = self.sandbox_pool.get(user_id)
             if script.dependencies:
                 sandbox.install(script.dependencies)
-            return sandbox.execute(script.source, kwargs, user_id=user_id, tool_name=script.name)
+            # 文件隔离用对外不透明 public_id；权限/DB 关联继续用整数 user_id
+            return sandbox.execute(script.source, kwargs, user_id=user_id, public_id=public_id, tool_name=script.name)
         return executor
 
     def _build_skill_context(self, skill_names: list) -> str:
@@ -271,7 +273,7 @@ class AgentPool:
         Args:
             system_prompt: 临时 Agent 的系统提示词，定义角色、职责和规则
             task: 要执行的具体任务描述
-            skills: 分配给临时 Agent 的技能列表，如 ["calculator", "weather"]
+            skills: 分配给临时 Agent 的技能列表，如 ["calculator", "document"]
             user_id: 用户 ID，用于文件输出隔离
             max_iterations: 最大迭代次数
             timeout: 超时时间（秒）
@@ -371,7 +373,7 @@ class AgentPool:
                     },
                     "skills": {
                         "type": "string",
-                        "description": "分配给临时Agent的技能列表（JSON数组），如[\"calculator\",\"weather\"]。留空或\"[]\"则不给技能"
+                        "description": "分配给临时Agent的技能列表（JSON数组），如[\"calculator\",\"document\"]。留空或\"[]\"则不给技能"
                     }
                 },
                 "required": ["system_prompt", "task"]

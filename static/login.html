@@ -277,7 +277,9 @@
 
     .form-group input {
       width: 100%;
-      padding: 10px 14px;
+      padding: 0 14px;
+      height: 42px;
+      line-height: 42px;
       font-size: 14px;
       border: 1px solid var(--border);
       border-radius: var(--radius);
@@ -295,14 +297,19 @@
     /* 图形验证码 */
     .captcha-row {
       display: flex;
-      gap: 10px;
-      align-items: stretch;
+      gap: 8px;
+      align-items: center;
     }
 
     .captcha-row input {
       flex: 1;
       text-transform: uppercase;
       letter-spacing: 2px;
+    }
+
+    .captcha-row input::placeholder {
+      letter-spacing: normal;
+      text-transform: none;
     }
 
     .captcha-img {
@@ -572,19 +579,27 @@
     loadCaptcha();
 
     let isComposing = false;
-    usernameInput.addEventListener('compositionstart', () => { isComposing = true; });
-    usernameInput.addEventListener('compositionend', () => { isComposing = false; });
-    passwordInput.addEventListener('compositionstart', () => { isComposing = true; });
-    passwordInput.addEventListener('compositionend', () => { isComposing = false; });
+    const setComposing = (v) => { isComposing = v; };
+    usernameInput.addEventListener('compositionstart', () => setComposing(true));
+    usernameInput.addEventListener('compositionend', () => setComposing(false));
+    passwordInput.addEventListener('compositionstart', () => setComposing(true));
+    passwordInput.addEventListener('compositionend', () => setComposing(false));
+    captchaInput.addEventListener('compositionstart', () => setComposing(true));
+    captchaInput.addEventListener('compositionend', () => setComposing(false));
 
-    passwordInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !isComposing) handleLogin();
-    });
-    captchaInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !isComposing) handleLogin();
-    });
+    // 输入法（IME）组字过程中按 Enter 选词不应触发登录：
+    // 同时用原生 e.isComposing 与手动标志位双重判断，兼容各浏览器
+    const onEnterSubmit = (e) => {
+      if (e.key === 'Enter' && !isComposing && !e.isComposing && e.keyCode !== 229) {
+        handleLogin();
+      }
+    };
+    passwordInput.addEventListener('keydown', onEnterSubmit);
+    captchaInput.addEventListener('keydown', onEnterSubmit);
     usernameInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !isComposing) passwordInput.focus();
+      if (e.key === 'Enter' && !isComposing && !e.isComposing && e.keyCode !== 229) {
+        passwordInput.focus();
+      }
     });
 
     async function handleLogin() {

@@ -96,7 +96,7 @@
     <!-- 敏感操作审批栏（固定在输入框上方） -->
     <div id="approval-bar" class="approval-bar hidden"></div>
 
-    <div class="chat-input-container">
+    <div class="chat-input-container" id="chat-input-container">
       <div id="command-suggestions" class="command-suggestions hidden"></div>
       <div id="file-chips" class="file-chips hidden"></div>
       <div class="chat-input-wrapper">
@@ -295,14 +295,16 @@
       <input type="hidden" id="user-form-id">
       <div class="form-group">
         <label>用户名 <span style="color:var(--danger);">*</span></label>
-        <input type="text" id="user-form-username" placeholder="请输入用户名">
+        <input type="text" id="user-form-username" placeholder="请输入用户名" autocomplete="off">
+        <div class="form-error" id="user-form-username-error"></div>
       </div>
       <div class="form-group">
         <label>密码 <span style="color:var(--danger);">*</span></label>
         <div class="password-input-wrap">
-          <input type="password" id="user-form-password" placeholder="请输入密码（至少6位）">
+          <input type="password" id="user-form-password" placeholder="请输入密码（至少 8 位）">
           <button type="button" class="password-toggle" id="btn-toggle-user-password" title="显示密码">👁</button>
         </div>
+        <div class="form-hint">密码需至少 8 位，且包含大写字母、小写字母、数字、特殊符号（如 !@#$%^&amp;*）中至少两类</div>
       </div>
       <div class="form-group">
         <label>用户类型 <span style="color:var(--danger);">*</span></label>
@@ -522,10 +524,9 @@
         <li>联网搜索与网页抓取</li>
         <li>调用可操作工具（技能、诊断等）</li>
         <li>执行沙箱命令（用户自建代码）</li>
-        <li>读取你上传的文件</li>
+        <li>访问你上传的文件（读取/使用）</li>
         <li>生成/写入输出文件</li>
       </ul>
-      <p class="perm-confirm-note">⛔ 软件本体、系统密钥与数据库受沙箱保护，任何模式下均不可被 Agent 控制。</p>
     </div>
     <div class="modal-footer">
       <button class="btn-cancel modal-close" id="perm-confirm-cancel">取消，保持请求批准</button>
@@ -543,6 +544,15 @@
   <div class="attach-menu-item" data-action="cloud">
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
     <span>从云文件选择</span>
+  </div>
+</div>
+
+<!-- 整屏拖放上传提示层：拖文件到页面任意位置即显示，任意位置松手即可上传 -->
+<div id="drop-overlay" class="drop-overlay hidden">
+  <div class="drop-overlay-inner">
+    <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+    <span class="drop-overlay-text">松开鼠标，即可上传文件</span>
+    <span class="drop-overlay-hint">支持拖放文档、图片等到此处</span>
   </div>
 </div>
 

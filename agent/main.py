@@ -49,7 +49,7 @@ def create_simulated_executor(tool_name: str, execution_prompt: str,
 
 
 def create_local_executor(tool_name: str, execution_code: str,
-                          dependencies: list = None, sandbox_pool=None):
+                          dependencies: list = None, sandbox_pool=None, allow_network: bool = False):
     """创建本地执行器
 
     Args:
@@ -77,10 +77,14 @@ def create_local_executor(tool_name: str, execution_code: str,
 
         # 提取 user_id 并移除，避免传入工具参数
         user_id = kwargs.pop("_user_id", 0)
+        # 提取 public_id 并移除，避免传入脚本 execute() 参数（沙箱内部用其做文件隔离）
+        public_id = kwargs.pop("_public_id", None)
         sandbox = sandbox_pool.get(user_id)
 
         try:
-            return sandbox.execute(execution_code, kwargs, timeout=60, user_id=user_id, tool_name=tool_name)
+            return sandbox.execute(execution_code, kwargs, timeout=60,
+                                   user_id=user_id, public_id=public_id, tool_name=tool_name,
+                                   allow_network=allow_network)
         except Exception as e:
             return f"[工具执行异常] {type(e).__name__}: {str(e)}"
 
@@ -189,7 +193,7 @@ def _create_executor(tool_name: str, execution_prompt: str,
                      http_config: dict, llm_client: LLMClient,
                      dependencies: list = None,
                      response_formatter: str = None,
-                     sandbox_pool=None):
+                     sandbox_pool=None, allow_network: bool = False):
     """根据 execution_mode 创建对应的执行器
 
     Args:
@@ -207,7 +211,8 @@ def _create_executor(tool_name: str, execution_prompt: str,
         callable: 执行函数
     """
     if execution_mode == "local_execution":
-        return create_local_executor(tool_name, execution_code, dependencies, sandbox_pool=sandbox_pool)
+        return create_local_executor(tool_name, execution_code, dependencies, sandbox_pool=sandbox_pool,
+                                     allow_network=allow_network)
     if execution_mode == "http_request":
         return create_http_executor(tool_name, http_config, execution_prompt, llm_client,
                                     response_formatter=response_formatter)

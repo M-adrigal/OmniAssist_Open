@@ -1,0 +1,18 @@
+# 沙箱共享基础 venv 依赖清单
+# 由 scripts/build_sandbox_venv.py 按当前 Python 小版本分桶构建到
+# tool_sandbox/shared/pyX.Y/venv。各用户沙箱通过 PYTHONPATH 继承，无需重复安装。
+# 注意：此处只放「跨技能通用的重型依赖」，用户专属依赖仍由各技能声明后在用户 venv 内安装。
+
+# 文档生成
+python-docx>=1.1.0
+openpyxl>=3.1.0
+python-pptx>=0.6.23
+reportlab>=4.0.0
+xlsxwriter>=3.0.0
+
+# 网页/HTML 解析（fetch_url 与文档技能常需）
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# 图片处理（含图 PDF/文档）
+Pillow>=10.0.0

@@ -4,25 +4,24 @@
 并使用**自己申请的 API Key 与私有 host**。多用户场景下，每个用户用各自凭据，互相隔离。
 
 ## 为什么放在这里
-像和风天气这类技能依赖第三方 API Key 和专属 host，不适合在系统级"写死"一份凭据。
+依赖第三方 API Key / 专属 host 的技能不适合在系统级"写死"一份凭据。
 把它下放到用户仓库后：
 - 系统默认只保留无需凭据的通用技能（calculator / datetime / chinese-counter /
   lunar-converter / document / web-fetch 等）；
 - 用户用自己申请的 key/host 编写或安装技能，密钥按 `user_id` 加密隔离，互不可见。
 
 ## 安装方式（二选一）
-1. 对话中让 Agent 调用 `install_skill_template("weather")`，会自动复制到
-   `agent/skills/user/{你的user_id}/weather/` 并立即生效；
+1. 对话中让 Agent 调用 `install_skill_template("<模板名>")`，会自动复制到
+   `agent/skills/user/{你的user_id}/<模板名>/` 并立即生效；
 2. 手动把对应子目录复制到 `agent/skills/user/{你的user_id}/<技能名>/`。
 
 ## 使用前必须设置自己的密钥
-安装后先通过 `set_user_secret` 写入你的凭据（仅对你自己可见），例如天气技能：
+安装后先通过 `set_user_secret` 写入你的凭据（仅对你自己可见），例如某需要 Key 的技能：
 
-- `qweather_api_host`：你的和风 API host，如 `np6heyjn2u.re.qweatherapi.com`
-  （注意：host 必须与你申请的 Key 所属订阅匹配，否则仍会 401/403）
-- `qweather_api_key`：你的和风 API Key
+- `<skill>_api_host`：该技能的 API host
+- `<skill>_api_key`：你的 API Key
 
-技能脚本里的 `https://{secret:qweather_api_host}/...&key={secret:qweather_api_key}`
+技能脚本里的 `https://{secret:<skill>_api_host}/...&key={secret:<skill>_api_key}`
 会在每次调用时，按**当前调用者 user_id** 解析成你设置的对应值。
 
 > 也可不装模板、完全自己写：在你自己的技能目录里新建 SKILL.md + scripts，

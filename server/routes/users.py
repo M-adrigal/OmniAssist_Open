@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Request
 from server.models import UserCreateRequest, UserUpdateRequest, UserResponse
-from server.database import list_users, create_user, update_user, delete_user, get_user_by_id
+from server.database import list_users, create_user, update_user, delete_user, get_user_by_id, get_user_by_public_id
 from server.routes.auth import require_permission
 
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -34,13 +34,14 @@ def create_user_api(req: UserCreateRequest, request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.put("/{user_id}", response_model=UserResponse)
-def update_user_api(user_id: int, req: UserUpdateRequest, request: Request):
+@router.put("/{public_id}", response_model=UserResponse)
+def update_user_api(public_id: str, req: UserUpdateRequest, request: Request):
     require_permission(request, "users", "write")
 
-    existing = get_user_by_id(user_id)
+    existing = get_user_by_public_id(public_id)
     if not existing:
         raise HTTPException(status_code=404, detail="用户不存在")
+    db_id = existing["id"]
 
     kwargs = {}
     if req.password is not None:
@@ -52,18 +53,22 @@ def update_user_api(user_id: int, req: UserUpdateRequest, request: Request):
     if req.description is not None:
         kwargs["description"] = req.description.strip()
 
-    user = update_user(user_id, **kwargs)
+    user = update_user(db_id, **kwargs)
     return UserResponse(**user)
 
 
-@router.delete("/{user_id}")
-def delete_user_api(user_id: int, request: Request, keep_files: bool = False):
+@router.delete("/{public_id}")
+def delete_user_api(public_id: str, request: Request, keep_files: bool = False):
     current_user = require_permission(request, "users", "delete")
 
-    if user_id == current_user["id"]:
+    if public_id == current_user["id"]:
         raise HTTPException(status_code=400, detail="不能删除自己的账号")
 
-    if not delete_user(user_id, keep_files=keep_files):
+    target = get_user_by_public_id(public_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    if not delete_user(target["id"], keep_files=keep_files):
         raise HTTPException(status_code=404, detail="用户不存在")
 
     return {"message": "用户已删除"}

@@ -31,7 +31,7 @@ from agent.user_secrets import set_user_secret, list_user_secrets_masked, delete
 def install_skill_template(template_name: str, _user_id=None):
     """把技能模板安装到当前用户的技能仓库（复制目录 + 立即加载）。
 
-    模板位于 agent/skill_templates/，需用户自带 API Key 的技能（如 weather）。
+    模板位于 agent/skill_templates/，需用户自带 API Key 的技能。
     安装后需先用 set_user_secret 设置该技能所需的 key/host 才能使用。
     """
     import os
@@ -221,6 +221,9 @@ def init_services():
     skill_scripts = _skill_registry.get_all_scripts()
     for script in skill_scripts:
         _risk_level, _require_approval, _risk_desc = _classify_skill_risk(script)
+        # 网页抓取类技能（web-fetch）需在沙箱内访问外网；按可信工具名放行网络，
+        # 仍保留沙箱的文件/导入隔离，避免全局放开 SANDBOX_NETWORK_ALLOWLIST。
+        _allow_net = script.name in ("web-fetch", "fetch_url", "web_fetch")
         _tool_registry.register_tool(
             name=script.name,
             description=script.description,
@@ -228,7 +231,8 @@ def init_services():
             func=_create_executor(
                 script.name, script.description, script.execution_mode,
                 script.source, script.http_config, _llm_client,
-                script.dependencies, script.response_formatter, sandbox_pool=_sandbox_pool
+                script.dependencies, script.response_formatter,
+                sandbox_pool=_sandbox_pool, allow_network=_allow_net
             ),
             risk_level=_risk_level,
             require_approval=_require_approval,
@@ -254,7 +258,7 @@ def init_services():
         name="web_search",
         description=(
             "联网搜索工具：通过 Tavily 搜索引擎检索最新/实时/外部信息。"
-            "当用户需要新闻、实时数据（天气/股价/汇率）、最新版本发布、特定事实查证、"
+            "当用户需要新闻、实时数据（股价/汇率）、最新版本发布、特定事实查证、"
             "教程步骤、对比分析，或任何需要联网获取的资料时使用。"
             "这是搜索工具而非网页抓取工具；若只需读取某个已知具体网址的页面内容，才用 web_fetch。"
         ),
@@ -344,11 +348,11 @@ def init_services():
     _tool_registry.register_tool(
         name="set_user_secret",
         description="保存当前用户私有的密钥/配置（如第三方 API Key、私有 host）。"
-                    "用于用户自带凭据的技能（天气、金价等）。密钥按用户加密隔离，其他用户不可见。",
+                    "用于用户自带凭据的技能。密钥按用户加密隔离，其他用户不可见。",
         parameters={
             "type": "object",
             "properties": {
-                "key_name": {"type": "string", "description": "密钥名称，如 qweather_api_key / qweather_api_host"},
+                "key_name": {"type": "string", "description": "密钥名称，如 third_party_api_key / third_party_api_host"},
                 "value": {"type": "string", "description": "密钥明文"},
             },
             "required": ["key_name", "value"]
@@ -384,12 +388,12 @@ def init_services():
     # 注册技能模板安装工具
     _tool_registry.register_tool(
         name="install_skill_template",
-        description="把官方技能模板（需自带 API Key 的，如 weather）安装到当前用户的技能仓库。"
+        description="把官方技能模板（需自带 API Key 的）安装到当前用户的技能仓库。"
                     "安装后需先用 set_user_secret 设置该技能需要的 key/host 才能使用。",
         parameters={
             "type": "object",
             "properties": {
-                "template_name": {"type": "string", "description": "模板名称，如 weather"},
+                "template_name": {"type": "string", "description": "模板名称，如 my_custom_skill"},
             },
             "required": ["template_name"]
         },
@@ -434,7 +438,7 @@ def init_services():
         parameters={
             "type": "object",
             "properties": {
-                "keywords": {"type": "object", "description": "关键词配置 {类别: [关键词模式列表]}，如 {\"weather\": [\"天气\", \"温度\"]}"},
+                "keywords": {"type": "object", "description": "关键词配置 {类别: [关键词模式列表]}，如 {\"document\": [\"生成报告\", \"导出Excel\"]}"},
             },
             "required": ["keywords"]
         },
@@ -501,7 +505,7 @@ def init_services():
         "diag_read_file",
         "【管理员】读取项目内的配置/技能定义/沙箱脚本（白名单目录+扩展名，禁止密钥文件）。用于直接查看代码定位语法错误等问题。",
         {"type": "object", "properties": {
-            "path": {"type": "string", "description": "相对项目根目录的路径，如 agent/skills/weather/SKILL.md"},
+            "path": {"type": "string", "description": "相对项目根目录的路径，如 agent/skills/document/SKILL.md"},
         }, "required": ["path"]},
         lambda path, _user_id=None: diag_read_file(path, _user_id),
     )
@@ -759,7 +763,7 @@ async def auth_middleware(request: Request, call_next):
     token = request.cookies.get("auth_token") or request.headers.get("Authorization", "").replace("Bearer ", "")
 
     from server.routes.auth import validate_token, decode_token
-    from server.database import get_user_must_change
+    from server.database import get_user_must_change, get_user_by_public_id
     if not token or not validate_token(token):
         if path.startswith("/api/"):
             return JSONResponse(status_code=401, content={"detail": "未登录"})
@@ -768,13 +772,23 @@ async def auth_middleware(request: Request, call_next):
     # 强制修改初始密码：除改密/登出/查自身外一律拦截
     if path not in _MUST_CHANGE_ALLOW:
         payload = decode_token(token)
-        if payload and get_user_must_change(int(payload.get("uid", 0))):
-            if path.startswith("/api/"):
-                return JSONResponse(
-                    status_code=403,
-                    content={"detail": "请先修改初始密码后再使用", "must_change_password": True},
-                )
-            return RedirectResponse(url="/login.html")
+        if payload:
+            # 令牌 uid 现在是不透明 public_id，需先解析出整数 db_id 再查强制改密状态
+            _uid = payload.get("uid")
+            _db_id = None
+            try:
+                _u = get_user_by_public_id(_uid)
+                if _u:
+                    _db_id = _u["id"]
+            except Exception:
+                _db_id = None
+            if _db_id and get_user_must_change(_db_id):
+                if path.startswith("/api/"):
+                    return JSONResponse(
+                        status_code=403,
+                        content={"detail": "请先修改初始密码后再使用", "must_change_password": True},
+                    )
+                return RedirectResponse(url="/login.html")
 
     return await call_next(request)
 

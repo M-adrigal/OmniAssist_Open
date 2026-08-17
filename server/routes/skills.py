@@ -79,7 +79,7 @@ def list_skills(request: Request, user_only: bool = False):
         user_only: 是否仅返回用户技能（默认 False，返回全部）
     """
     user = get_current_user(request)
-    user_id = user["id"]
+    user_id = user["db_id"]
 
     registry = get_skill_registry()
 
@@ -202,7 +202,7 @@ def get_user_skill_by_name(name: str, request: Request):
     只能按名称查，否则前端预览会一直报"技能未找到"。
     """
     user = get_current_user(request)
-    user_id = user["id"]
+    user_id = user["db_id"]
 
     # 优先查数据库
     rows = get_user_skills(user_id, skill_name=name)
@@ -272,7 +272,7 @@ def _db_skill_detail(skill: dict) -> dict:
 def get_skill(skill_id: int, request: Request):
     """获取单个技能详情"""
     user = get_current_user(request)
-    user_id = user["id"]
+    user_id = user["db_id"]
 
     for s in get_user_skills(user_id):
         if s["id"] == skill_id:
@@ -288,7 +288,7 @@ def create_skill(body: SkillCreate, request: Request):
     用户需要提供 SKILL.md 格式的内容（含 YAML frontmatter）。
     """
     user = get_current_user(request)
-    user_id = user["id"]
+    user_id = user["db_id"]
 
     # 含 HTTP 工具 / 任意代码格式化器的技能仅管理员可创建（防止 RCE）
     if _requires_admin_privilege(scripts):
@@ -326,7 +326,7 @@ def create_skill(body: SkillCreate, request: Request):
 def update_skill(skill_id: int, body: SkillUpdate, request: Request):
     """更新用户技能"""
     user = get_current_user(request)
-    user_id = user["id"]
+    user_id = user["db_id"]
 
     # 验证技能属于当前用户
     skills = get_user_skills(user_id)
@@ -364,7 +364,7 @@ def update_skill(skill_id: int, body: SkillUpdate, request: Request):
 def delete_skill(skill_id: int, request: Request):
     """删除用户技能"""
     user = get_current_user(request)
-    user_id = user["id"]
+    user_id = user["db_id"]
 
     skills = get_user_skills(user_id)
     owned = any(s["id"] == skill_id for s in skills)
@@ -405,7 +405,7 @@ def toggle_skill(skill_id: int, body: SkillToggle, request: Request):
     - 文件系统用户技能：没有数据库记录，同样用禁用标记
     """
     user = get_current_user(request)
-    user_id = user["id"]
+    user_id = user["db_id"]
 
     registry = get_skill_registry()
     name = body.name
