@@ -3,6 +3,9 @@ import re
 
 from agent.intent_keywords import select_tools_by_intent, TOOL_CATEGORIES
 from agent.model_gateway import ModelGateway
+from agent.temperature import (
+    TemperaturePolicy, AutoPolicy, build_policy, classify_task_type,
+)
 
 
 SYSTEM_PROMPT = """你是一个能使用工具的助手，可以根据情况调用工具，获得足够信息后直接给出答案。
@@ -30,7 +33,7 @@ class SimpleAgent:
     """Agent 主循环类，处理多轮对话和工具调用"""
 
     def __init__(self, llm_client, tool_registry, context_limit='', thinking_mode='low',
-                 skill_context="", silent=False):
+                 skill_context="", silent=False, temperature_policy=None):
         """初始化 SimpleAgent
 
         Args:
@@ -41,6 +44,9 @@ class SimpleAgent:
                 off=关闭思考；low=轻量思考且不展示（省 token）；high=强思考并展示。
             skill_context: 技能上下文，注入系统提示词
             silent: 静默模式，不打印终端输出（用于子 Agent）
+            temperature_policy: 温度策略实例（TemperaturePolicy）。为 None 时默认
+                使用 AutoPolicy（自动：按任务类型选基准 + 迭代收敛）。CLI / 子 Agent
+                等需要确定性输出的场景应显式传入 StaticPolicy。
         """
         self.llm = llm_client
         self.tool_registry = tool_registry
@@ -56,6 +62,7 @@ class SimpleAgent:
         self._system_prompt = SYSTEM_PROMPT
         self._context_limit_tokens = self._parse_context_limit(context_limit)
         self._gateway = ModelGateway(llm_client.model if hasattr(llm_client, 'model') else "")
+        self.temperature_policy = temperature_policy if temperature_policy is not None else AutoPolicy()
         self.messages = []
         self._rebuild_system_message()
 
@@ -147,6 +154,46 @@ class SimpleAgent:
         """
         self.context_limit = context_limit
         self._context_limit_tokens = self._parse_context_limit(context_limit)
+
+    def set_temperature_policy(self, policy: TemperaturePolicy):
+        """热更新温度策略（配置变更时由服务端调用）
+
+        Args:
+            policy: TemperaturePolicy 实例
+        """
+        if policy is not None:
+            self.temperature_policy = policy
+
+    def _resolve_temperature(self, iteration: int, phase: str, task_type: str | None) -> float | None:
+        """按当前策略解析本次调用的温度
+
+        结果可能为 None（模型不支持温度），由 ModelGateway 决定是否下发。
+
+        Args:
+            iteration: 当前迭代轮次（从 0 开始）
+            phase: 调用阶段（"tool"/"final"/""）
+            task_type: 轻量启发式任务类型（"code"/"writing"/"brainstorm"/"analysis"/None）
+
+        Returns:
+            float | None: 解析出的温度，或 None 表示跳过
+        """
+        return self.temperature_policy.resolve(
+            iteration=iteration,
+            phase=phase,
+            task_type=task_type,
+            model_cap=self._gateway.cap,
+        )
+
+    @staticmethod
+    def _tool_names_from_specs(tool_specs: list) -> list:
+        """从 OpenAI 工具 spec 列表中提取工具名"""
+        names = []
+        for spec in tool_specs or []:
+            fn = spec.get("function") if isinstance(spec, dict) else None
+            name = fn.get("name") if isinstance(fn, dict) else None
+            if name:
+                names.append(name)
+        return names
 
     def reset(self):
         """重置对话上下文"""
@@ -258,12 +305,18 @@ class SimpleAgent:
         ]
 
         tool_specs = self._select_tools(user_input)
+        task_type = classify_task_type(user_input, self._tool_names_from_specs(tool_specs))
 
-        for _ in range(max_iterations):
+        for iteration in range(max_iterations):
             content = ""
             tool_calls = None
 
-            for chunk in self.llm.chat_stream(messages, tools=tool_specs):
+            temp = self._resolve_temperature(iteration, "tool", task_type)
+            gw_cfg = self._gateway.build_params(
+                self.thinking_enabled, temperature=temp, reasoning_effort=self.reasoning_effort
+            )
+
+            for chunk in self.llm.chat_stream(messages, tools=tool_specs, **gw_cfg["api_params"]):
                 if chunk.get("content"):
                     content += chunk["content"]
                     if not self.silent:
@@ -323,10 +376,12 @@ class SimpleAgent:
         self._trim_messages()
 
         tool_specs = self._select_tools(user_input)
+        task_type = classify_task_type(user_input, self._tool_names_from_specs(tool_specs))
 
-        for _ in range(max_iterations):
+        for iteration in range(max_iterations):
+            temp = self._resolve_temperature(iteration, "tool", task_type)
             gw_cfg = self._gateway.build_params(
-                self.thinking_enabled, temperature=0, reasoning_effort=self.reasoning_effort
+                self.thinking_enabled, temperature=temp, reasoning_effort=self.reasoning_effort
             )
 
             # 使用流式调用，实时打印 token

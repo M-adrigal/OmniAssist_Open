@@ -119,7 +119,7 @@ class LLMClient:
         token_info = ""
         if hasattr(response, 'usage') and response.usage:
             token_info = f", tokens={response.usage.prompt_tokens}(入)+{response.usage.completion_tokens}(出)"
-        logger.info(f"API 请求: model={self.model}, messages={len(messages)}, tools={len(tools) if tools else 0}, 耗时 {_elapsed:.1f}s{token_info}")
+        logger.info(f"API 请求: model={self.model}, messages={len(messages)}, tools={len(tools) if tools else 0}, temperature={temperature}, 耗时 {_elapsed:.1f}s{token_info}")
 
         if hasattr(msg, "reasoning_content") and msg.reasoning_content:
             result["reasoning_content"] = msg.reasoning_content
@@ -169,6 +169,8 @@ class LLMClient:
             create_kwargs["reasoning_effort"] = reasoning_effort
         if extra_body is not None:
             create_kwargs["extra_body"] = extra_body
+
+        logger.info(f"API 流式请求: model={self.model}, messages={len(messages)}, tools={len(tools) if tools else 0}, temperature={temperature}")
 
         stream = self.client.chat.completions.create(**create_kwargs)
 

@@ -2843,6 +2843,11 @@ async function loadConfig() {
     const maxIterEl = $('#cfg-max-iterations');
     if (maxIterEl) maxIterEl.value = config.max_iterations != null ? config.max_iterations : '';
 
+    const tempModeEl = $('#cfg-temperature-mode');
+    if (tempModeEl) tempModeEl.value = config.temperature_mode === 'static' ? 'static' : 'auto';
+    const tempEl = $('#cfg-temperature');
+    if (tempEl) tempEl.value = config.temperature != null ? config.temperature : '';
+
     if (localStorage.getItem('thinkingMode') === null) {
       state.thinkingMode = config.thinking_mode || 'low';
     } else {
@@ -2867,6 +2872,10 @@ async function loadConfig() {
         if (gContextLimitEl) gContextLimitEl.value = globalCfg.context_limit || '';
         const gMaxIterEl = $('#cfg-global-max-iterations');
         if (gMaxIterEl) gMaxIterEl.value = globalCfg.max_iterations != null ? globalCfg.max_iterations : '';
+        const gTempModeEl = $('#cfg-global-temperature-mode');
+        if (gTempModeEl) gTempModeEl.value = globalCfg.temperature_mode === 'static' ? 'static' : 'auto';
+        const gTempEl = $('#cfg-global-temperature');
+        if (gTempEl) gTempEl.value = globalCfg.temperature != null ? globalCfg.temperature : '';
       } catch (e) {
         // 全局配置加载失败不阻塞
       }
@@ -2929,6 +2938,17 @@ async function saveConfig() {
   if (maxIterEl) {
     const v = parseInt(maxIterEl.value.trim(), 10);
     if (!isNaN(v) && v >= 1) body.max_iterations = v;
+  }
+
+  const tempModeEl = $(`#${prefix}temperature-mode`);
+  if (tempModeEl) {
+    const m = tempModeEl.value.trim();
+    if (m === 'static' || m === 'auto') body.temperature_mode = m;
+  }
+  const tempEl = $(`#${prefix}temperature`);
+  if (tempEl) {
+    const tv = parseFloat(tempEl.value.trim());
+    if (!isNaN(tv) && tv >= 0 && tv <= 2) body.temperature = tv;
   }
 
   const url = isGlobal ? '/api/config/global' : '/api/config';

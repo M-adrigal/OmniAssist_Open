@@ -23,6 +23,7 @@ import uuid
 
 from agent.agent import SimpleAgent
 from agent.tools import ToolRegistry
+from agent.temperature import StaticPolicy
 from agent.logger import get_logger
 
 logger = get_logger("pool")
@@ -141,7 +142,8 @@ class AgentPool:
                 tool_registry=tool_registry,
                 thinking_mode="low",       # 子 Agent 轻量思考、不展示
                 skill_context=skill_context,
-                silent=True                # 子 Agent 静默模式，不打印终端输出
+                silent=True,               # 子 Agent 静默模式，不打印终端输出
+                temperature_policy=StaticPolicy(0.0)  # 子 Agent 确定性输出，避免子任务发散
             )
             # 覆盖系统提示词为 Agent 专属提示词
             agent._system_prompt = profile['system_prompt']

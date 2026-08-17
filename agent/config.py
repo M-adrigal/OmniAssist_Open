@@ -144,6 +144,8 @@ class AgentConfig:
             'api_key': self.get_masked_api_key(),
             'thinking_mode': self.get('thinking_mode', 'low') or 'low',
             'context_limit': self.get('context_limit', ''),
+            'temperature_mode': self.get('temperature_mode', 'auto') or 'auto',
+            'temperature': self.get('temperature', 0.7) or 0.7,
         }
 
     def toggle_thought(self) -> bool:

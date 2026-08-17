@@ -25,6 +25,7 @@ from agent.sandbox import SandboxPool
 from agent.skills import SkillRegistry
 from agent.agent_pool import AgentPool
 from agent.logger import get_logger
+from agent.temperature import build_policy
 from agent.user_secrets import set_user_secret, list_user_secrets_masked, delete_user_secret
 
 
@@ -559,6 +560,16 @@ def init_services():
     if thinking_mode not in ("off", "low", "high"):
         thinking_mode = "low"
 
+    # 温度策略：默认 auto（按任务类型选基准 + 迭代收敛），可由配置覆盖
+    temperature_mode = "auto"
+    temperature_base = 0.7
+    if global_cfg:
+        temperature_mode = global_cfg.get("temperature_mode", "auto") or "auto"
+        temperature_base = global_cfg.get("temperature", 0.7) or 0.7
+    else:
+        temperature_mode = _config.get("temperature_mode", "auto") or "auto"
+        temperature_base = _config.get("temperature", 0.7) or 0.7
+
     # 构建技能上下文
     skill_context = _skill_registry.build_context()
 
@@ -567,6 +578,7 @@ def init_services():
         context_limit=context_limit,
         thinking_mode=thinking_mode,
         skill_context=skill_context,
+        temperature_policy=build_policy(temperature_mode, temperature_base),
     )
 
 
@@ -607,6 +619,13 @@ def update_agent_thinking_mode(thinking_mode: str):
         _agent.set_thinking_mode(thinking_mode or "low")
 
 
+def update_agent_temperature_policy(temperature_mode: str, temperature_base: float):
+    """热更新 Agent 的温度策略（配置变更时调用，无需重启）"""
+    global _agent
+    if _agent:
+        _agent.set_temperature_policy(build_policy(temperature_mode, temperature_base))
+
+
 def refresh_global_llm():
     global _llm_client, _agent
     from server.database import get_model_config
@@ -628,9 +647,12 @@ def refresh_global_llm():
 
     context_limit = cfg.get("context_limit", "")
     thinking_mode = cfg.get("thinking_mode", "low")
+    temperature_mode = cfg.get("temperature_mode", "auto") or "auto"
+    temperature_base = cfg.get("temperature", 0.7) or 0.7
     if _agent:
         _agent.update_context_limit(context_limit)
         _agent.set_thinking_mode(thinking_mode or "low")
+        _agent.set_temperature_policy(build_policy(temperature_mode, temperature_base))
 
 
 def get_session_store() -> dict:

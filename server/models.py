@@ -42,6 +42,8 @@ class ModelConfigUpdate(BaseModel):
     context_limit: Optional[str] = None
     thinking_mode: Optional[str] = None  # off/low/high，控制思考强度与是否展示
     max_iterations: Optional[int] = None
+    temperature_mode: Optional[str] = None  # static/auto，温度策略
+    temperature: Optional[float] = None  # 基准温度 0-2
 
 
 class ModelConfigResponse(BaseModel):
@@ -52,6 +54,8 @@ class ModelConfigResponse(BaseModel):
     config_type: str = "none"
     thinking_mode: str = "low"
     max_iterations: int = 10
+    temperature_mode: str = "auto"
+    temperature: float = 0.7
 
 
 class SearchConfigResponse(BaseModel):

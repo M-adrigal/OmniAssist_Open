@@ -14,6 +14,7 @@ from agent.tools import ToolRegistry
 from agent.llm import LLMClient
 from agent.agent import SimpleAgent
 from agent.config import AgentConfig
+from agent.temperature import StaticPolicy
 from agent.user_secrets import resolve_user_secrets_in_template
 
 
@@ -562,7 +563,8 @@ def main():
 
     agent = SimpleAgent(llm_client, tool_registry, context_limit=context_limit,
                         thinking_mode=config.get('thinking_mode', 'low') or 'low',
-                        skill_context=skill_context)
+                        skill_context=skill_context,
+                        temperature_policy=StaticPolicy(0.0))
 
     print("\n轻量级 AI Agent 底座已启动（输入 /help 查看可用命令）")
     print("-" * 50)

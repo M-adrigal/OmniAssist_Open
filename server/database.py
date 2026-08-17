@@ -96,6 +96,8 @@ def init_db() -> str:
             model_name TEXT DEFAULT '',
             context_limit TEXT DEFAULT '',
             thinking_mode TEXT DEFAULT 'low',
+            temperature_mode TEXT DEFAULT 'auto',
+            temperature REAL DEFAULT 0.7,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -119,6 +121,16 @@ def init_db() -> str:
 
     try:
         conn.execute("ALTER TABLE model_configs ADD COLUMN thinking_mode TEXT DEFAULT 'low'")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        conn.execute("ALTER TABLE model_configs ADD COLUMN temperature_mode TEXT DEFAULT 'auto'")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        conn.execute("ALTER TABLE model_configs ADD COLUMN temperature REAL DEFAULT 0.7")
     except sqlite3.OperationalError:
         pass
 
@@ -750,6 +762,14 @@ def get_model_config(user_id: int = None) -> Optional[dict]:
         d["max_iterations"] = int(d.get("max_iterations") or 10)
     except (TypeError, ValueError):
         d["max_iterations"] = 10
+
+    # 温度策略：mode 缺省为 auto；base 缺省为 0.7
+    raw_mode = d.get("temperature_mode")
+    d["temperature_mode"] = raw_mode if raw_mode in ("static", "auto") else "auto"
+    try:
+        d["temperature"] = float(d.get("temperature") if d.get("temperature") is not None else 0.7)
+    except (TypeError, ValueError):
+        d["temperature"] = 0.7
     return d
 
 
@@ -768,6 +788,8 @@ def resolve_model_config(user_id: int) -> dict:
         "config_type": "global",
         "thinking_mode": "low",
         "max_iterations": 10,
+        "temperature_mode": "auto",
+        "temperature": 0.7,
     }
     global_cfg = get_model_config(None) or {}
     personal = get_model_config(user_id) or {}
@@ -778,9 +800,9 @@ def resolve_model_config(user_id: int) -> dict:
 
     if personal:
         for key in ("model_name", "base_url", "context_limit", "thinking_mode",
-                    "max_iterations"):
+                    "max_iterations", "temperature_mode", "temperature"):
             val = personal.get(key)
-            if key == "max_iterations":
+            if key in ("max_iterations", "temperature"):
                 if val is not None:
                     merged[key] = val
             elif val not in (None, ""):
@@ -796,6 +818,13 @@ def resolve_model_config(user_id: int) -> dict:
     # 思考模式默认值：未显式配置时给 low（轻量思考、不展示），降低 token 消耗
     if merged.get("thinking_mode") not in ("off", "low", "high"):
         merged["thinking_mode"] = "low"
+    # 温度策略默认值：未显式配置时给 auto（自动：首轮发散、后续收敛）
+    if merged.get("temperature_mode") not in ("static", "auto"):
+        merged["temperature_mode"] = "auto"
+    try:
+        merged["temperature"] = float(merged.get("temperature", 0.7) or 0.7)
+    except (TypeError, ValueError):
+        merged["temperature"] = 0.7
     return merged
 
 
@@ -822,6 +851,16 @@ def save_model_config(user_id: int = None, **kwargs) -> dict:
             updates["max_iterations"] = max(1, int(kwargs["max_iterations"]))
         except (TypeError, ValueError):
             updates["max_iterations"] = 10
+    if "temperature_mode" in kwargs:
+        val = (kwargs["temperature_mode"] or "auto").strip().lower()
+        if val not in ("static", "auto"):
+            raise ValueError("温度策略必须是 static/auto 之一")
+        updates["temperature_mode"] = val
+    if "temperature" in kwargs:
+        try:
+            updates["temperature"] = max(0.0, min(2.0, float(kwargs["temperature"])))
+        except (TypeError, ValueError):
+            updates["temperature"] = 0.7
 
     if user_id is not None:
         existing = conn.execute("SELECT id FROM model_configs WHERE user_id = ?", (user_id,)).fetchone()
