@@ -3744,6 +3744,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (action === 'change-password') { openChangePassword(); }
       if (action === 'user-management') { loadUsers(); openModal('modal-user-management'); }
       if (action === 'logout') {
+        // 通知服务端吊销令牌（fire-and-forget），再清 cookie 跳转
+        fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
         document.cookie = 'auth_token=; path=/; max-age=0';
         window.location.href = '/login.html';
       }

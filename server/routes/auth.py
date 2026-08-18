@@ -26,10 +26,44 @@ from agent.logger import get_logger
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 logger = get_logger("auth")
 
-TOKEN_SECRET = secrets.token_hex(32)
-TOKEN_TTL = 1800
+# 令牌有效期：7 天。配合中间件滑动续期（剩余 < 阈值时自动换发新令牌），
+# 活跃用户可一直保持登录，无需重新登录。
+TOKEN_TTL = 7 * 24 * 3600
+# 滑动续期阈值：剩余有效期低于该值时自动续期（活跃用户永不过期）。
+# 默认 = TTL 的一半；配合中间件在每次有效请求后 set-cookie 新令牌。
+TOKEN_RENEW_THRESHOLD = TOKEN_TTL // 2
+
+
+def _load_or_create_secret() -> str:
+    """持久化令牌签名密钥：首次启动生成并写入 data/.token_secret，
+    之后每次启动复用同一密钥，避免服务重启导致全部旧 token 签名失效。
+
+    文件不可写时降级为每次随机（服务重启会掉线，但不至于崩溃）。
+    """
+    secret_file = os.path.join(os.path.dirname(DB_PATH), ".token_secret")
+    try:
+        if os.path.exists(secret_file):
+            with open(secret_file, "r") as f:
+                s = f.read().strip()
+                if len(s) >= 32:
+                    return s
+        s = secrets.token_hex(32)
+        with open(secret_file, "w") as f:
+            f.write(s)
+        try:
+            os.chmod(secret_file, 0o600)
+        except Exception:
+            pass
+        return s
+    except Exception:
+        return secrets.token_hex(32)
+
+
+TOKEN_SECRET = _load_or_create_secret()
 
 _active_tokens: dict[str, float] = {}
+# 已吊销令牌黑名单（内存态，重启清空）：logout 时加入，decode 时拒绝。
+_revoked_tokens: set[str] = set()
 
 # ---- 图形验证码（市面通用字符型图形验证码；单进程内存态，多 worker 时改用 Redis）----
 # 验证码一次性使用、5 分钟过期，避免被复用或离线爆破。
@@ -202,6 +236,16 @@ def _reset_login_failures(key: str):
     _login_failures.pop(key, None)
 
 
+def _sign_payload(payload: dict) -> str:
+    """用全局密钥对 payload 签名，返回 token 并登记活跃白名单。"""
+    payload_json = json.dumps(payload, separators=(",", ":"))
+    payload_b64 = urlsafe_b64encode(payload_json.encode()).decode().rstrip("=")
+    sig = hmac.new(TOKEN_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+    token = f"{payload_b64}.{sig}"
+    _active_tokens[token] = time.time()
+    return token
+
+
 def _generate_token(user_id: int, username: str, user_type: str) -> str:
     # 对外仅暴露不透明 public_id，不暴露自增主键
     pid = None
@@ -219,16 +263,28 @@ def _generate_token(user_id: int, username: str, user_type: str) -> str:
         "iat": int(time.time()),
         "exp": int(time.time()) + TOKEN_TTL,
     }
-    payload_json = json.dumps(payload, separators=(",", ":"))
-    payload_b64 = urlsafe_b64encode(payload_json.encode()).decode().rstrip("=")
-    sig = hmac.new(TOKEN_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
-    token = f"{payload_b64}.{sig}"
-    _active_tokens[token] = time.time()
-    return token
+    return _sign_payload(payload)
+
+
+def renew_token(token: str, payload: dict) -> str:
+    """滑动续期：基于现有 payload 重新签发 token（刷新 exp/iat）。
+
+    注意：不立即吊销旧 token（保留 _active_tokens 登记），避免并发请求
+    （同一 token 同时到达）中旧 token 被判失效导致偶发 401；旧 token 到
+    原 exp 自然失效。登出时 logout 端点会显式吊销。
+    """
+    new_payload = {
+        "uid": payload.get("uid"),
+        "un": payload.get("un", ""),
+        "ut": payload.get("ut", ""),
+        "iat": int(time.time()),
+        "exp": int(time.time()) + TOKEN_TTL,
+    }
+    return _sign_payload(new_payload)
 
 
 def decode_token(token: str) -> Optional[dict]:
-    if token not in _active_tokens:
+    if token in _revoked_tokens:
         return None
     try:
         payload_b64, sig = token.split(".", 1)
@@ -240,6 +296,8 @@ def decode_token(token: str) -> Optional[dict]:
         if payload.get("exp", 0) < time.time():
             _active_tokens.pop(token, None)
             return None
+        # 软白名单：token 有效即接受（含服务重启后白名单清空但签名/有效期仍有效的情况）
+        _active_tokens[token] = time.time()
         return payload
     except Exception:
         return None
@@ -327,7 +385,12 @@ def login(req: LoginRequest, request: Request):
 
 
 @router.post("/logout")
-def logout():
+def logout(request: Request):
+    token = request.cookies.get("auth_token") or request.headers.get("Authorization", "").replace("Bearer ", "")
+    if token:
+        _revoked_tokens.add(token)
+        _active_tokens.pop(token, None)
+        logger.info("用户登出，令牌已吊销")
     return {"message": "已登出"}
 
 

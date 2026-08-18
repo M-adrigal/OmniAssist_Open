@@ -784,35 +784,50 @@ async def auth_middleware(request: Request, call_next):
 
     token = request.cookies.get("auth_token") or request.headers.get("Authorization", "").replace("Bearer ", "")
 
-    from server.routes.auth import validate_token, decode_token
+    from server.routes.auth import decode_token, renew_token, TOKEN_TTL, TOKEN_RENEW_THRESHOLD
     from server.database import get_user_must_change, get_user_by_public_id
-    if not token or not validate_token(token):
+    import time as _time
+    payload = decode_token(token) if token else None
+    if not payload:
         if path.startswith("/api/"):
             return JSONResponse(status_code=401, content={"detail": "未登录"})
         return RedirectResponse(url="/login.html")
 
     # 强制修改初始密码：除改密/登出/查自身外一律拦截
     if path not in _MUST_CHANGE_ALLOW:
-        payload = decode_token(token)
-        if payload:
-            # 令牌 uid 现在是不透明 public_id，需先解析出整数 db_id 再查强制改密状态
-            _uid = payload.get("uid")
+        # 令牌 uid 现在是不透明 public_id，需先解析出整数 db_id 再查强制改密状态
+        _uid = payload.get("uid")
+        _db_id = None
+        try:
+            _u = get_user_by_public_id(_uid)
+            if _u:
+                _db_id = _u["id"]
+        except Exception:
             _db_id = None
-            try:
-                _u = get_user_by_public_id(_uid)
-                if _u:
-                    _db_id = _u["id"]
-            except Exception:
-                _db_id = None
-            if _db_id and get_user_must_change(_db_id):
-                if path.startswith("/api/"):
-                    return JSONResponse(
-                        status_code=403,
-                        content={"detail": "请先修改初始密码后再使用", "must_change_password": True},
-                    )
-                return RedirectResponse(url="/login.html")
+        if _db_id and get_user_must_change(_db_id):
+            if path.startswith("/api/"):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "请先修改初始密码后再使用", "must_change_password": True},
+                )
+            return RedirectResponse(url="/login.html")
 
-    return await call_next(request)
+    resp = await call_next(request)
+
+    # 滑动续期：剩余有效期低于阈值时换发新令牌并写回 cookie，
+    # 活跃用户持续保持登录，无需重新登录；也避免长期不使用导致 7 天过期。
+    try:
+        _exp = payload.get("exp", 0)
+        if _exp - _time.time() < TOKEN_RENEW_THRESHOLD:
+            new_token = renew_token(token, payload)
+            resp.set_cookie(
+                "auth_token", new_token,
+                max_age=TOKEN_TTL, path="/", samesite="lax",
+            )
+    except Exception:
+        pass
+
+    return resp
 
 
 @app.middleware("http")

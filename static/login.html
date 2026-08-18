@@ -634,7 +634,7 @@
 
         if (res.ok) {
           const data = await res.json();
-          document.cookie = `auth_token=${data.token}; path=/; max-age=86400; SameSite=Lax`;
+          document.cookie = `auth_token=${data.token}; path=/; max-age=604800; SameSite=Lax`;
           if (data.must_change_password) {
             window.location.href = '/?must_change_password=1';
           } else {
