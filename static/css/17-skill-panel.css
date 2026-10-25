@@ -1,0 +1,450 @@
+/* 17-skill-panel.css
+ * 「+」菜单 → 技能二级面板（贴菜单右缘联动展开）+ 上传弹窗三态 + 管理弹窗筛选/回收站
+ *
+ * 形态对齐：一级菜单项右侧带 ›；点「技能」在其右缘展开二级卡片 ——
+ * 顶部搜索、徽章列表（圆形色块 + 名称 + 单行描述）、底部两个操作行。
+ * 动画只做 transform/opacity；配色走 01-variables.css 的既有变量。
+ */
+
+/* ===== 一级菜单项右侧箭头（对齐截图的 › ） ===== */
+.attach-menu-item::after {
+  content: "";
+  flex-shrink: 0;
+  margin-left: auto;
+  width: 6px;
+  height: 6px;
+  border-top: 1.5px solid var(--text-muted);
+  border-right: 1.5px solid var(--text-muted);
+  transform: rotate(45deg);
+}
+/* 二级面板打开时，当前展开的那一项不显示箭头 */
+.attach-menu-item.active::after { opacity: 0; }
+
+/* ===== 技能二级面板 ===== */
+.skill-panel-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 9400;
+  background: transparent;   /* 只负责捕获点击关闭，不压暗界面 */
+}
+.skill-panel-mask.hidden { display: none; }
+
+.skill-panel {
+  position: fixed;
+  z-index: 9500;
+  width: 360px;
+  max-width: calc(100vw - 24px);
+  max-height: min(520px, calc(100vh - 120px));
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(16, 24, 40, 0.14), 0 0 0 1px var(--border);
+  overflow: hidden;
+  opacity: 0;
+  transform: translateX(-6px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  pointer-events: none;
+}
+.skill-panel:not(.hidden) {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+/* 搜索框：灰底圆角，放大镜图标内嵌 */
+.skill-panel-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 12px 8px;
+  padding: 0 12px;
+  height: 38px;
+  background: var(--bg-secondary);
+  border-radius: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.skill-panel-search:focus-within {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.skill-panel-search svg { flex-shrink: 0; }
+.skill-panel-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 14px;
+  color: var(--text-primary);
+  min-width: 0;
+}
+.skill-panel-input::placeholder { color: var(--text-muted); }
+
+/* 列表 */
+.skill-panel-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+}
+
+/* 技能行：单行横向 —— 徽章 | 名称 | 描述（超宽省略） | 选中勾；点行即选用/取消 */
+.skill-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  position: relative;
+}
+.skill-row:hover { background: var(--bg-hover); }
+.skill-row.selected { background: var(--bg-user-msg); }
+.skill-row.disabled { opacity: 0.45; cursor: not-allowed; }
+.skill-row.disabled:hover { background: transparent; }
+
+/* 圆形徽章：色板按技能名取色，取首个字符 */
+.skill-badge {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 500;
+  color: #fff;
+  line-height: 1;
+  user-select: none;
+}
+.skill-badge.bg-green  { background: #4caf7d; }
+.skill-badge.bg-amber  { background: #e8952f; }
+.skill-badge.bg-blue   { background: #4a90d9; }
+.skill-badge.bg-teal   { background: #2fa89b; }
+.skill-badge.bg-purple { background: #7c6fd8; }
+.skill-badge.bg-pink   { background: #d96f9f; }
+
+.skill-row-main { display: none; }   /* 旧版两行布局的主区，已改为单行 */
+.skill-row-name {
+  flex-shrink: 0;
+  max-width: 42%;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 描述横向填充剩余空间，超出即省略号（不换行、不撑破面板） */
+.skill-row-desc {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 选中标记：行尾小勾 */
+.skill-row-check {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  color: var(--accent);
+  opacity: 0;
+}
+.skill-row.selected .skill-row-check { opacity: 1; }
+
+.skill-row-tag {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  margin-left: 6px;
+  vertical-align: 1px;
+}
+
+/* 底部操作：两条图标行，分隔线隔开 */
+.skill-panel-foot {
+  border-top: 1px solid var(--border);
+  padding: 6px;
+  flex-shrink: 0;
+}
+.skill-panel-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+.skill-panel-action:hover { background: var(--bg-hover); }
+.skill-panel-action svg { color: var(--text-muted); flex-shrink: 0; }
+
+.skill-panel-hint {
+  padding: 2px 16px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* ===== 上传弹窗：扫描结果三态 ===== */
+.skill-upload-result { margin-top: 12px; }
+
+.skill-upload-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 10px;
+}
+.skill-upload-banner.ok {
+  background: rgba(76, 175, 125, 0.12);
+  color: #1e7a44;
+}
+.skill-upload-banner.warn {
+  background: rgba(232, 149, 47, 0.14);
+  color: #9a5b12;
+}
+.skill-upload-banner.block {
+  background: rgba(239, 83, 80, 0.12);
+  color: #b02a2a;
+}
+
+.skill-upload-findings {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+.skill-finding {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.skill-finding:last-child { border-bottom: none; }
+.skill-finding-msg { color: var(--text-primary); }
+.skill-finding-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-top: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.skill-finding.severity-block .skill-finding-msg { color: #b02a2a; }
+.skill-finding.severity-confirm .skill-finding-msg { color: #9a5b12; }
+
+/* ===== 管理弹窗：用户技能行新增的操作 ===== */
+.skill-uninstall {
+  color: var(--danger);
+}
+#skill-trash-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+#skill-trash-item:last-child { border-bottom: none; }
+#skill-trash-item .trash-name { color: var(--text-primary); }
+#skill-trash-item .trash-meta { color: var(--text-muted); font-size: 11px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .skill-panel { transition: none; }
+}
+
+/* 深色主题：三态底色提亮 + 徽章略降饱和 */
+.dark .skill-upload-banner.ok { color: #6ee7a8; }
+.dark .skill-upload-banner.warn { color: #fbbf6b; }
+.dark .skill-upload-banner.block { color: #fca5a5; }
+.dark .skill-finding.severity-block .skill-finding-msg { color: #fca5a5; }
+.dark .skill-finding.severity-confirm .skill-finding-msg { color: #fbbf6b; }
+.dark .skill-badge.bg-green  { background: #3f9269; }
+.dark .skill-badge.bg-amber  { background: #c07a24; }
+.dark .skill-badge.bg-blue   { background: #3d76b3; }
+.dark .skill-badge.bg-teal   { background: #26897f; }
+.dark .skill-badge.bg-purple { background: #6659b8; }
+.dark .skill-badge.bg-pink   { background: #b85a83; }
+
+/* ============================================================
+ * 技能管理弹窗（modal-skills）视觉重构
+ * 本文件在 13-skills-approval.css 之后加载，同特异性下覆盖其旧样式。
+ * 语言与二级面板统一：灰底圆角搜索、徽章列表、轻量文字按钮。
+ * ============================================================ */
+
+/* 搜索框：灰底圆角 + 内嵌放大镜（与二级面板同形态） */
+.skill-mg-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 12px;
+  background: var(--surface-sunken, var(--bg-secondary));
+  border-radius: 10px;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+  transition: box-shadow .15s;
+}
+.skill-mg-search:focus-within { box-shadow: 0 0 0 2px var(--accent); }
+.skill-mg-search svg { flex-shrink: 0; }
+.skill-mg-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.skill-mg-input::placeholder { color: var(--text-muted); }
+
+/* 筛选行 */
+.skill-mg-filterbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.skill-mg-select {
+  height: 30px;
+  padding: 0 26px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-dialog);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%239a9ab0' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+}
+.skill-mg-select:hover { border-color: var(--text-muted); }
+
+/* 轻量文字按钮（回收站 / 恢复） */
+.skill-mg-ghostbtn {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-dialog);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.skill-mg-ghostbtn:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+  background: var(--bg-hover);
+}
+
+/* 回收站的「彻底删除」：唯一一个不可恢复的操作，用危险色提示
+   （hover 才染红，常态保持和「恢复」同一视觉权重，避免误点） */
+.skill-trash-del:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: rgba(239, 83, 80, 0.08);
+}
+
+/* 列表：徽章 + 主区 + 操作，圆角行 + 极淡分隔 */
+.skill-mg-list .skill-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: 10px;
+  transition: background .15s;
+}
+.skill-mg-list .skill-item:last-child { border-bottom: none; }
+.skill-mg-list .skill-item:hover { background: var(--bg-hover); }
+.dark .skill-mg-list .skill-item:hover { background: rgba(255, 255, 255, 0.04); }
+.skill-mg-list .skill-item .skill-badge {
+  width: 32px;
+  height: 32px;
+  font-size: 13px;
+}
+.skill-mg-list .skill-info { flex: 1; min-width: 0; }
+.skill-mg-list .skill-name {
+  font-weight: 500;
+  font-size: 13.5px;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.skill-mg-list .skill-desc {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.skill-mg-list .skill-item.disabled .skill-name,
+.skill-mg-list .skill-item.disabled .skill-badge { opacity: .5; }
+
+/* 行内操作：文字按钮统一小号 muted，hover 转主色 */
+.skill-mg-list .skill-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.skill-mg-list .btn-preview {
+  height: 28px;
+  padding: 0 9px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color .15s, background .15s;
+}
+.skill-mg-list .btn-preview:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+.skill-mg-list .btn-preview.skill-uninstall:hover { color: var(--danger); }
+.skill-mg-list .skill-toggle { margin-left: 4px; }
+
+/* 回收站项：徽章 + 名称 / 时间 + 恢复 */
+#skill-trash-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: 8px;
+  font-size: 12px;
+}
+#skill-trash-item:last-child { border-bottom: none; }
+#skill-trash-item .trash-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: var(--text-primary);
+}
+#skill-trash-item .trash-name .skill-badge {
+  width: 26px;
+  height: 26px;
+  font-size: 11px;
+}
+#skill-trash-item .trash-meta { color: var(--text-muted); font-size: 11px; }

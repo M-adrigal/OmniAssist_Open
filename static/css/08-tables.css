@@ -1,0 +1,184 @@
+/* 08-tables.css
+ * 表格通用视觉（用户管理 / 文件库共用）
+ *
+ * 由 static/style.css 拆分而来（原第 2046-2221 行，共 4669 行）。
+ * 拆分方式：按原顺序连续切分，加载顺序与原文件一致，层叠结果不变。
+ * 注意：各文件之间靠 <link> 的先后顺序决定层叠，插入新文件时请一并确认顺序。
+ */
+
+/* ===== 表格通用视觉（用户管理 / 文件库共用一套口径） ===== */
+.user-table-wrap,
+.cloud-table-wrap {
+  overflow-x: auto;
+  /* 表格自带一层极淡的容器，行悬停时不会"浮"在白底上 */
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: var(--surface-dialog);
+}
+
+.user-table,
+.cloud-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+/* 表头：小字、无底色块、只留一条底线，视觉上"轻"于数据 */
+.user-table th,
+.cloud-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 11px 14px;
+  text-align: left;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  background: var(--surface-sunken);
+  border-bottom: 1px solid var(--line-soft);
+  white-space: nowrap;
+}
+
+.user-table td,
+.cloud-table td {
+  padding: 13px 14px;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--text-primary);
+}
+
+/* 最后一行不画线，交给容器圆角收口 */
+.user-table tbody tr:last-child td,
+.cloud-table tbody tr:last-child td { border-bottom: none; }
+
+.user-table tbody tr:hover td,
+.cloud-table tbody tr:hover td {
+  background: rgba(59, 130, 246, 0.04);
+}
+.dark .user-table tbody tr:hover td,
+.dark .cloud-table tbody tr:hover td {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+/* 首列（对外 ID）：public_id 有 26 字符，不截断会把整张表挤变形 */
+.user-table th:first-child,
+.user-table td:first-child {
+  width: 1%;
+  max-width: 150px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.user-table th:nth-child(2),
+.user-table td:nth-child(2) {
+  min-width: 100px;
+  font-weight: 500;
+}
+
+.user-table th:nth-child(3),
+.user-table td:nth-child(3) {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.user-table th:nth-child(5),
+.user-table td:nth-child(5) {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.user-table .user-created {
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.user-table th:nth-child(6),
+.user-table td:nth-child(6) {
+  width: 1%;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.user-table td {
+  vertical-align: middle;
+}
+
+.user-table .actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+.user-table .btn-sm {
+  padding: 5px 11px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 表格行内图标操作：与文字按钮同高，但只占 30px */
+.icon-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.icon-act:hover {
+  background: rgba(59, 130, 246, 0.10);
+  color: var(--accent);
+}
+.icon-act.danger:hover {
+  background: rgba(239, 83, 80, 0.12);
+  color: var(--danger);
+}
+.icon-act:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.user-type-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.user-type-badge.admin {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.user-type-badge.user {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.dark .user-type-badge.admin {
+  background: #1a237e;
+  color: #90caf9;
+}
+
+.dark .user-type-badge.user {
+  background: #1b5e20;
+  color: #a5d6a7;
+}
+

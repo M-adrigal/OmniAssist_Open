@@ -1,0 +1,38 @@
+{
+  "rows": [
+    {
+      "id": "doc-01",
+      "category": "文件生成",
+      "l1": false,
+      "detail": "应生成 .xlsx 文件，实际 []",
+      "answer": "Excel 文件生成时遇到了一点沙箱环境问题（系统在读取 MIME 类型文件时被拦截），我换个方式再试一次。\n\n",
+      "tools": [
+        "save_excel",
+        "save_excel",
+        "save_excel"
+      ],
+      "files": [],
+      "error": "同一操作连续失败 3 次（参数相同），已停止重试。请调整请求或检查相关功能是否正常。",
+      "elapsed_s": 5.6
+    },
+    {
+      "id": "doc-02",
+      "category": "文件生成",
+      "l1": true,
+      "detail": "应生成 .docx 文件，实际 ['你好世界.docx']",
+      "answer": "文件已生成：你好世界.docx",
+      "tools": [
+        "save_word"
+      ],
+      "files": [
+        "你好世界.docx"
+      ],
+      "error": "",
+      "elapsed_s": 3.1
+    }
+  ],
+  "judge": {},
+  "avg": null,
+  "l1_pass": 1,
+  "l1_fail": 1
+}

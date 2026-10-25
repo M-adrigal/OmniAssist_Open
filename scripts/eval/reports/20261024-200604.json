@@ -1,0 +1,23 @@
+{
+  "rows": [
+    {
+      "id": "doc-02",
+      "category": "文件生成",
+      "l1": true,
+      "detail": "应生成 .docx 文件，实际 ['你好世界.docx']",
+      "answer": "文件已生成：你好世界.docx",
+      "tools": [
+        "save_word"
+      ],
+      "files": [
+        "你好世界.docx"
+      ],
+      "error": "",
+      "elapsed_s": 2.5
+    }
+  ],
+  "judge": {},
+  "avg": null,
+  "l1_pass": 1,
+  "l1_fail": 0
+}

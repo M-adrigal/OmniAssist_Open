@@ -187,6 +187,51 @@ DEFAULT_CAPABILITY = {
     "supports_temperature": True,
 }
 
+# ==================== 视觉能力（能否接收图片输入） ====================
+# 独立于上面的能力字典：视觉是「能否接收 image_url 内容块」的二值判断，
+# 与各模型的 thinking/temperature 适配逻辑无关，单独维护更清晰、也不会误伤既有配置。
+#
+# 判定原则：**未命中即视为不支持**（安全降级）——宁可让图片降级成文字提示，
+# 也不要把图片塞给看不懂的模型导致上游直接报错。
+#
+# 关于 DeepSeek：官方已把 legacy ID `deepseek-v4-flash` / `deepseek-v4-pro`
+# 路由到 V4.1 Flash（原生多模态），故这两个 pattern 视为支持；
+# `deepseek-reasoner` 是纯文本推理模型，不支持（未列入即走降级）。
+VISION_MODEL_PATTERNS = (
+    "deepseek-flash*",
+    "deepseek-v4-flash*",
+    "deepseek-v4-pro*",
+    "deepseek*vl*",
+    "gpt-5*",
+    "gpt-4o*",
+    "gpt-4*vision*",
+    "o1*",
+    "o3*",
+    "o4*",
+    "claude*",
+    "qwen*vl*",
+    "doubao*vision*",
+    "gemini*",
+)
+
+
+def supports_vision(model_name: str) -> bool:
+    """判断模型是否支持图片输入（视觉/多模态）。
+
+    Args:
+        model_name: 模型名称（大小写不敏感）
+
+    Returns:
+        bool: 支持返回 True；未知/纯文本模型返回 False（走安全降级）
+    """
+    m = (model_name or "").strip().lower()
+    if not m:
+        return False
+    for pattern in VISION_MODEL_PATTERNS:
+        if fnmatch(m, pattern):
+            return True
+    return False
+
 # 思考模式三态：关（不思考）/ 低（轻思考、不展示）/ 高（强思考、展示）
 THINKING_MODES = ("off", "low", "high")
 
@@ -313,3 +358,8 @@ class ModelGateway:
     @property
     def reasoning_field(self) -> Optional[str]:
         return self.cap.get("reasoning_field")
+
+    @property
+    def supports_vision(self) -> bool:
+        """当前模型是否支持图片输入（未知模型返回 False，调用方应降级处理）"""
+        return supports_vision(self.model_name)

@@ -25,6 +25,12 @@ class ChatRequest(BaseModel):
     message: str
     web_search: str = "off"
     show_thought: bool = False
+    # 用户在技能面板里显式勾选的技能名（本轮优先使用，覆盖自动匹配）
+    selected_skills: list = []
+    # 本轮新上传的文件名（发完即清）。图片只发本轮上传的 —— 会话上传目录是
+    # 跨轮累积的，不限定就会把前几轮的图全部重发（叠加），既烧视觉 token
+    # 又让模型分不清哪张图对应当前问题。文档文本仍走全目录（跨轮引用是特性）。
+    uploaded_files: list = []
 
 
 class SessionCreate(BaseModel):
@@ -56,11 +62,118 @@ class ModelConfigResponse(BaseModel):
     max_iterations: int = 10
     temperature_mode: str = "auto"
     temperature: float = 0.7
+    # 两层模型结构下的补充字段：模型 ID 与显示名分离，切换供应商时显示名不变
+    entry_id: Optional[int] = None
+    display_name: str = ""
+    model_id: str = ""
+    provider_name: str = ""
+    entry_owner: str = ""
+    resolved_from: str = ""
 
 
 class SearchConfigResponse(BaseModel):
     tavily_api_key: Optional[str] = None
     tavily_api_key_masked: str = "(未设置)"
+
+
+# ===== 记忆（每位用户一份，四段）=====
+# 四段是「整份覆盖」而不是按字段增量：记忆是一份文件，用户在编辑器里删掉一条
+# 之后，服务端不该再把它拼回来。所以各段都允许缺省（缺省 = 该段清空）。
+
+class MemoryUpdate(BaseModel):
+    # 两种写法都收：
+    # - `sections` 是按段 key 组织的字典（推荐，加新段不用改这里）
+    # - work/personal/... 是老字段，留着让现有前端与调用方不用跟着改
+    sections: Optional[Dict[str, str]] = None
+    work: Optional[str] = None
+    personal: Optional[str] = None
+    focus: Optional[str] = None
+    recent: Optional[str] = None
+
+
+class MemoryEnabledUpdate(BaseModel):
+    enabled: bool
+
+
+class MemoryItemRequest(BaseModel):
+    section_key: str
+    content: Optional[str] = None
+    entry_id: Optional[int] = None
+
+
+class MemoryEvolveRequest(BaseModel):
+    session_id: Optional[str] = None
+    max_messages: Optional[int] = None
+
+
+class MemoryProposal(BaseModel):
+    section_key: str
+    section_title: str = ""
+    content: str
+
+
+class MemoryEvolveResponse(BaseModel):
+    # 只返回提议，落库由人勾选后走 POST /item —— 与 /extract 同一条口径
+    proposals: List[MemoryProposal] = []
+    session_id: Optional[str] = None
+    session_title: Optional[str] = None
+    message_count: int = 0
+    duplicate_skipped: int = 0
+    dropped: int = 0
+    raw: str = ""
+
+
+class MemoryVersion(BaseModel):
+    id: int
+    reason: str
+    chars: int = 0
+    created_at: Optional[str] = None
+
+
+class MemoryResponse(BaseModel):
+    # 老字段：段的纯文本形态（导出、老调用方都在用，加新段也不会破坏）
+    work: str = ""
+    personal: str = ""
+    focus: str = ""
+    recent: str = ""
+    sections: Dict[str, str] = {}
+    # 新字段：按段拆开的条目（带 id，界面逐条编辑 / 删除用）
+    items: Dict[str, List[Dict[str, Any]]] = {}
+    # 段定义：界面按它渲染，新增段前端不用改代码
+    registry: List[Dict[str, Any]] = []
+    enabled: int = 1
+    updated_at: Optional[str] = None
+    text: str = ""
+    total_chars: int = 0
+    warnings: List[str] = []
+    limits: Dict[str, Any] = {"total_chars": 4000, "recent_items": 20}
+    version_count: int = 0
+    versions: List[MemoryVersion] = []
+
+
+class MemoryExtractRequest(BaseModel):
+    text: str
+
+
+class MemoryExtractResponse(BaseModel):
+    work: str = ""
+    personal: str = ""
+    focus: str = ""
+    recent: str = ""
+    unmatched: str = ""
+    raw: str = ""
+
+
+class MemoryParseRequest(BaseModel):
+    text: str
+
+
+class MemoryParseResponse(BaseModel):
+    work: str = ""
+    personal: str = ""
+    focus: str = ""
+    recent: str = ""
+    unmatched: str = ""
 
 
 class ToolCreate(BaseModel):

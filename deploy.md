@@ -66,7 +66,7 @@ python server/main.py
 
 首次启动时会自动完成以下初始化：
 - 在 `data/` 目录下创建 SQLite 数据库（`users.db`），包含用户表、会话表、模型配置表、搜索配置表、权限表
-- 创建默认管理员账户：用户名 `admin`，密码 `admin123`
+- 创建默认管理员账户：用户名 `admin`，**初始密码随机生成，只打印在启动控制台**（`print` 到 stdout，不写进 `logs/` —— 日志文件管理员可下载）。记下它，或去控制台日志里找 `默认管理员初始密码` 那一行
 - 初始化默认权限（admin 拥有全部权限，user 拥有基础权限）
 - 创建密码文件 `data/.db_web_password`（权限 0o600），用于数据库管理界面认证
 
@@ -129,6 +129,8 @@ Environment="PATH=/home/agent/Lightweight_agent_service/venv/bin"
 # 若确有需要让沙箱内技能脚本访问特定外网（如某些需访问外部 API 的技能若改为沙箱运行），
 # 再按需放开，例如：
 # Environment="SANDBOX_NETWORK_ALLOWLIST=api.example.com,query1.finance.yahoo.com"
+# 说明：服务启动时会自动检测 17520 端口占用——若存在手动 nohup 残留实例会自动清理；
+#       若检测到本服务已由 systemd 托管则拒绝重复启动。请勿手动 nohup 启动本服务。
 ExecStart=/home/agent/Lightweight_agent_service/venv/bin/python server/main.py
 Restart=always
 RestartSec=10
@@ -206,6 +208,21 @@ sudo certbot renew --dry-run
 
 ## 11. 日常维护
 
+> **⚠️ 生产环境铁律：只允许 systemd 托管，禁止 `nohup` / 手动前台启动服务。**
+>
+> 手动启动的进程与 systemd 服务并存会**争抢 17520 端口**：systemd 绑定失败（`exit-code=3`），配合 `Restart=always` 陷入**反复重启循环**，服务长时间不可用（详见第 12 节"端口冲突"）。
+> 如需临时调试，请先 `sudo systemctl stop agent`，或改用其他端口（如 `PORT=17520 python server/main.py` 不支持，请直接修改后另起端口验证）。
+> 服务自身已内置端口守卫：手动启动时会检测到 systemd 托管服务并**拒绝启动**；systemd 重启时会自动清理手动残留实例。
+
+### 一键部署（推荐）
+
+```bash
+# 在服务器上，以服务运行用户（agent）执行；git pull + 依赖 + 重启 + 健康检查 一步完成
+bash scripts/deploy.sh
+```
+
+脚本会自动：预检 17520 端口占用并清理手动残留进程 → `git pull --ff-only` → 安装依赖 → `sudo systemctl restart agent` → 健康检查（15 次探测 `/api/health`）。
+
 ### 查看日志
 
 服务内置了日志系统，日志文件位于 `logs/` 目录：
@@ -236,10 +253,19 @@ sudo tail -f /var/log/nginx/error.log
 
 ### 更新代码
 
-> **v2.0.0 升级必读**：本版本引入双 ID 体系，升级前必须先跑迁移脚本回填 `public_id` 并重命名目录，否则存量用户会被全部判为未登录（401 锁死）。迁移脚本幂等，可重复执行。
+> **统一入口**：日常更新代码请直接执行 `bash scripts/deploy.sh`（自动处理端口冲突、拉代码、装依赖、重启、健康检查），**不要**手动 `nohup` 启动。
+>
+> **v2.0.0 升级必读**：该版本引入双 ID 体系，升级前必须先跑迁移脚本回填 `public_id` 并重命名目录，否则存量用户会被全部判为未登录（401 锁死）。迁移脚本幂等，可重复执行。
+>
+> **v2.1.0（2026-10-24）不需要跑迁移**：只新增了 1 张表（`usage_pending`）和 4 个字段（`user_skills.source/risk_level/confirmed_at`），`init_db()` 用 `CREATE TABLE IF NOT EXISTS` + 幂等 `ALTER` 自动补齐，**重启即完成**。若你是从 v2.0.0 之前直接跳过来，仍要先跑 `migrate_public_id.py`。
 
 ```bash
 cd /home/agent/Lightweight_agent_service
+
+# 常规更新（推荐）：
+bash scripts/deploy.sh
+
+# 或手动分步执行（升级场景，顺序不可颠倒）：
 git pull
 source venv/bin/activate
 pip install -r requirements.txt
@@ -255,7 +281,7 @@ sudo systemctl start agent
 
 > 迁移脚本仅重命名目录、不删除文件；`data/` 与 `document_output/` 受 `.gitignore` 保护，`git pull` 不会触碰用户数据。若脚本结尾提示「仍有 N 个用户缺少 public_id」，**禁止启动服务**，需先排查再继续。
 >
-> （可选）回归校验：在临时副本上验证整数外键修复，不污染真实库 —— `python3 scripts/verify_fk_fix.py`
+> （可选）回归校验：`python3 scripts/test_model_config.py`（在临时副本库上跑，不碰真实数据）。
 
 ### 备份数据
 ```bash
@@ -275,6 +301,7 @@ tar -czf agent-backup-$(date +%Y%m%d).tar.gz \
 ## 12. 故障排除
 
 ### 服务无法启动
+
 ```bash
 # 检查端口占用
 sudo ss -tlnp | grep 17520
@@ -286,11 +313,39 @@ python3 -c "import openai; print('OpenAI OK')"
 # 检查数据库文件权限
 ls -la data/users.db
 
-# 手动启动查看错误
+# 手动前台启动查看错误（⚠️ 先停掉 systemd 服务，避免端口争抢）
+sudo systemctl stop agent
 cd /home/agent/Lightweight_agent_service
 source venv/bin/activate
-python server/main.py
+python server/main.py        # 排障完必须 systemctl start agent 恢复托管
 ```
+
+### 端口冲突（`exit-code=3` / 反复重启循环）
+
+> **场景**：手动 `nohup` 启动与 systemd 托管并存，systemd 绑定 17520 失败反复重启。
+> **根因**：同一时间两种启动方式争抢同一端口。
+> **铁律**：生产环境只允许 systemd 托管，禁止手动启动。
+
+```bash
+# 1. 定位占用 17520 端口的进程
+sudo ss -tlnp | grep 17520
+#    输出如: users:(("python",pid=94909,fd=17))  ← pid 即占用者
+
+# 2. 确认是手动残留（而不是 systemd 托管）后终止它
+#    - 若该进程的 cgroup 含 agent.service（systemd 托管），请勿手动杀，
+#      直接 restart 即可：sudo systemctl restart agent
+#    - 否则为手动残留，终止并释放端口：
+sudo kill 94909            # 无权限时：sudo kill -9 94909
+
+# 3. 让 systemd 恢复
+sudo systemctl restart agent
+sudo systemctl status agent
+
+# 4. 验证健康
+curl -s http://127.0.0.1:17520/api/health
+```
+
+> 服务已内置端口守卫自动兜底：`systemctl restart agent` 时若存在手动残留实例会自动清理；反之手动启动遇到 systemd 托管服务会拒绝启动并提示。日常更新请统一用 `bash scripts/deploy.sh`。
 
 ### 无法访问
 ```bash
@@ -356,17 +411,17 @@ ls -la /home/agent/Lightweight_agent_service/tool_sandbox/shared/
 ls -la /home/agent/Lightweight_agent_service/tool_sandbox/
 
 # 3. 手动检查某用户沙箱是否正常（以用户 ID=1 为例）
-ls -la /home/agent/Lightweight_agent_service/tool_sandbox/1/venv/bin/python
+ls -la /home/agent/Lightweight_agent_service/tool_sandbox/user_1/venv/bin/python
 
 # 4. 跨 Python 版本注意：共享 venv 与用户 venv 的 Python 小版本必须一致。
 #    若用户 venv 是用不同 Python 创建的，沙箱会跳过共享继承、改为在该用户 venv 内单独安装，
 #    不会出现「跨版本注入 C 扩展导致 ImportError」的问题。排查版本：
 cat /home/agent/Lightweight_agent_service/tool_sandbox/shared/py3.14/venv/pyvenv.cfg
-cat /home/agent/Lightweight_agent_service/tool_sandbox/1/venv/pyvenv.cfg
+cat /home/agent/Lightweight_agent_service/tool_sandbox/user_1/venv/pyvenv.cfg
 
 # 5. pip 安装超时（网络慢）：共享 venv 用 SANDBOX_PIP_INDEX 控制镜像源；
 #    也可在用户 venv 中设置：
-/home/agent/Lightweight_agent_service/tool_sandbox/1/venv/bin/pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+/home/agent/Lightweight_agent_service/tool_sandbox/user_1/venv/bin/pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 6. 清理并重建某用户沙箱（以用户 ID=1 为例）
 rm -rf /home/agent/Lightweight_agent_service/tool_sandbox/1
@@ -426,12 +481,17 @@ LimitNPROC=65535
 
 ### 16.3 沙箱文件读取边界
 
-沙箱脚本读取文件时受以下边界约束（越界写入 `sandbox_audit.log` 并拒绝）：
+沙箱脚本读取文件时受以下边界约束（越界写 `sandbox_audit.log` 并拒绝）：
 
-- **系统/敏感目录拒绝**：`/etc`、`/home`、`/Users`、`/root`、`/var`、`/proc`、`/sys`、`/boot`、`/usr`、`/bin`、`/sbin`、`/lib`、`/opt` 及服务自身 `data/`/`workbuddy/`/用户 `workbuddy/` 目录。
-- **密钥文件拒绝**：文件名命中密钥清单（如 `id_rsa`、`*.pem`、`_db_secret` 等）一律拒绝。
-- **跨用户文档隔离**：仅允许访问「当前用户」的 `document_output/{uid}/` 目录，禁止读取其他用户的产出。
-- **写入白名单**：文件创建/写入仅限白名单目录（如 `document_output/{uid}/`、`/tmp`、`user_skill` 等），其余目录不可写。
+- **系统目录拒绝**：`/etc`、`/root`、`/var`、`/proc`、`/sys`、`/boot`、`/usr`、`/bin`、`/sbin`、`/lib`、`/opt`
+- **其他用户的家目录拒绝**：`/Users/<他人>`、`/home/<他人>`。**当前用户自己的家目录可读**，但其中的密钥目录（`.ssh`、`.aws`、`.kube`、`.netrc`、`.env` 等）仍拒绝
+- **密钥文件拒绝**：文件名命中密钥清单（`id_rsa`、`*.pem`、`_db_secret` 等）一律拒绝
+- **跨用户文档隔离**：只允许访问「当前用户」的 `document_output/{public_id}/`，禁读他人产出
+- **写入白名单**：仅限 `document_output/{public_id}/`、`TMPDIR`、`/tmp/user_skill` 等（`SANDBOX_WRITE_DIRS` 可追加），其余目录不可写
+- **唯一的读取例外**：系统 MIME 映射表（`/etc/{mime.types,apache2/mime.types,apache/mime.types,httpd/conf/mime.types}`）。它们是静态类型对照表、不含凭据，但 `mimetypes.init()` 会读；不放行会导致 `openpyxl` 等「导入即初始化 mimetypes」的库直接失败（Excel 生成不出来就是这个原因）
+
+> `os.open` **不是被删掉，而是换成了带同样校验的包装**（写判定按 `O_ACCMODE`/`O_CREAT` 等位，`dir_fd` 一律拒绝）。删掉会打死 `tempfile`，进而让一切用临时文件的库失灵。
+> `os.unlink` / `remove` / `makedirs` / `mkdir` / `rename` / `replace` / `symlink` / `link` 同样保留为受控版本；`chmod` / `kill` / `system` / `exec*` 仍然彻底删除。
 
 ### 16.4 run_command 参数路径限制
 

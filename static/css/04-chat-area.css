@@ -1,0 +1,799 @@
+/* 04-chat-area.css
+ * 主聊天区域：消息列、输入框、工具条、附件
+ *
+ * 由 static/style.css 拆分而来（原第 478-1254 行，共 4669 行）。
+ * 拆分方式：按原顺序连续切分，加载顺序与原文件一致，层叠结果不变。
+ * 注意：各文件之间靠 <link> 的先后顺序决定层叠，插入新文件时请一并确认顺序。
+ */
+
+/* ===== 主聊天区域 ===== */
+#chat-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background-color: var(--bg-canvas);
+  /* 顶部一层几乎察觉不到的冷暖柔光，压掉纯色的"平"，不干扰阅读 */
+  background-image:
+    radial-gradient(1240px 620px at 26% -14%, var(--bg-glow-a), transparent 72%),
+    radial-gradient(980px 520px at 90% -20%, var(--bg-glow-b), transparent 74%);
+  background-repeat: no-repeat;
+}
+
+/* 顶部会话标题栏（仅显示当前会话标题） */
+.chat-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--line-soft);
+  /* 透明：让工作区的柔光从最顶部连续下来，不再在标题栏下方断开 */
+  background: transparent;
+  /* 折叠后的胶囊绝对定位在这条栏里，不参与高度计算，展开/收起时标题栏不会跳动 */
+  position: relative;
+}
+
+/* 侧栏收起后左上角的品牌标记：只在这时出现，和展开态的侧栏 logo 同源同尺寸 */
+.header-brand {
+  display: none;
+  position: absolute;
+  left: 24px;
+  top: 50%;
+  transform: translateY(-50%);
+  align-items: center;
+}
+.header-brand svg { display: block; }
+
+/* 侧栏收起后的浮出胶囊：三个入口（展开 / 搜索 / 新建）收在一枚细边框里，
+   读成"一组工具"而不是三颗散落的按钮 */
+.header-rail {
+  display: none;
+  position: absolute;
+  left: 68px;
+  top: 50%;
+  transform: translateY(-50%);
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+}
+.dark .header-rail {
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: none;
+}
+
+#app.sidebar-collapsed .header-brand { display: flex; }
+#app.sidebar-collapsed .header-rail { display: flex; }
+/* 标题让开 logo + 胶囊：24 左边距 + 28 logo + 16 间隙 + 102 胶囊 + 12 间隙 */
+#app.sidebar-collapsed .chat-header { padding-left: 182px; }
+
+.header-rail button {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.header-rail button:hover {
+  background: rgba(16, 24, 40, 0.06);
+  color: var(--text-primary);
+}
+.dark .header-rail button:hover { background: rgba(255, 255, 255, 0.10); }
+
+.chat-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  /* 左右对称：原先右 60px 是为滚动条留位，会让整块内容左偏约 18px */
+  padding: 36px 32px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  /* 底部渐隐：滚到输入区上方的内容淡出，而不是被一条直线硬切。
+     渐隐高度与底部 padding 相等，滚到底时最后一条消息正好落在渐隐区之外，不会被吃掉。 */
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 32px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 32px), transparent 100%);
+}
+
+.welcome-message {
+  text-align: center;
+  margin-top: 10vh;
+  color: var(--text-secondary);
+}
+
+/* 空态：品牌标识 + 能力入口，替代原来的三行文字 */
+.welcome-brand {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+
+/* 欢迎页标记：与侧栏、登录页同一枚 SVG。
+   这里只当容器用，底色和圆角都由 SVG 自己出，避免两处各画一遍对不上 */
+.welcome-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.cap-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  max-width: 556px;
+  margin: 26px auto 0;
+}
+
+.cap-card {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  padding: 13px 14px;
+  border-radius: 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--line-soft);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+  text-align: left;
+  font-family: inherit;
+}
+.cap-card:hover {
+  border-color: rgba(59, 130, 246, 0.5);
+  box-shadow: 0 6px 18px rgba(16, 24, 40, 0.08);
+  transform: translateY(-1px);
+}
+.cap-card:active { transform: translateY(0); }
+
+.cap-ico {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cap-ico.blue { background: rgba(59, 130, 246, 0.11); color: #2563eb; }
+.cap-ico.violet { background: rgba(139, 92, 246, 0.11); color: #7c3aed; }
+.cap-ico.green { background: rgba(16, 185, 129, 0.12); color: #059669; }
+.cap-ico.amber { background: rgba(245, 158, 11, 0.13); color: #b45309; }
+
+.cap-body { min-width: 0; display: block; }
+.cap-title {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.35;
+}
+.cap-desc {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  line-height: 1.45;
+}
+
+.dark .cap-card { background: #1d1d23; border-color: rgba(255, 255, 255, 0.08); }
+.dark .cap-card:hover { border-color: rgba(59, 130, 246, 0.55); }
+.dark .cap-ico.blue { background: rgba(59, 130, 246, 0.16); color: #60a5fa; }
+.dark .cap-ico.violet { background: rgba(139, 92, 246, 0.18); color: #a78bfa; }
+.dark .cap-ico.green { background: rgba(16, 185, 129, 0.16); color: #34d399; }
+.dark .cap-ico.amber { background: rgba(245, 158, 11, 0.16); color: #fbbf24; }
+
+@media (max-width: 600px) {
+  .cap-grid { grid-template-columns: 1fr; max-width: 420px; }
+}
+
+/* Per-session message container
+   宽度跟着 --chat-col 走：侧栏收起时自动放宽，正文右边界与用户气泡右边界始终是同一条线。
+   min(…, 100%) 是窄屏兜底——视口不够宽时按可用空间收，不再靠固定的 760 撑出横向滚动。 */
+.session-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
+  max-width: min(var(--chat-col), 100%);
+  margin: 0 auto;
+}
+
+.welcome-message h1 {
+  font-size: 30px;
+  margin-bottom: 10px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+  color: var(--text-primary);
+}
+/* 标题与左上角品牌图标的蓝紫渐变呼应；不支持背景裁剪时退回纯色文字 */
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .welcome-message h1 {
+    background: linear-gradient(112deg, var(--text-primary) 34%, #3B82F6 68%, #8B5CF6 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .dark .welcome-message h1 {
+    background: linear-gradient(112deg, #f5f5f7 30%, #60a5fa 70%, #a78bfa 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+}
+
+.welcome-message code {
+  background: var(--bg-tertiary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+/* 消息行
+   以前每条消息前面有 32px 头像 + 12px 间隔，等于正文整体右移 44px；
+   更麻烦的是 AI 卡片只有 66ch 宽，用户气泡却贴到整列最右，
+   两块内容差 160px 以上，"人和 AI 离得很远"就是这么来的。
+   现在不用头像，两种角色共用同一条列宽。 */
+.message {
+  display: flex;
+  gap: 0;
+  max-width: 100%;
+  animation: fadeIn 0.3s ease;
+}
+
+/* 头像保留 DOM（历史模板里还有引用），仅视觉隐藏 */
+.message .avatar { display: none; }
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.message.user {
+  align-self: flex-end;
+  /* 气泡最宽 78%：再宽就和 AI 正文一样长，读起来不知道哪句是自己说的 */
+  /* 配合 align-self，宽度本来就会随内容收缩。
+     2026-10-24 那次"右侧空太多"不是缺这行，而是图片旁那行说明文字
+     参与了 flex 的"最大内容宽度"计算（见 css/12-file-picker.css 的 .msg-attach-item）。 */
+  max-width: 78%;
+  /* 上一段末尾还有一行 24px 的操作按钮，所以这里只补 12px 就够 */
+  margin-top: 12px;
+}
+.message.assistant {
+  align-self: stretch;
+  margin-top: 26px;
+}
+/* 第一块贴着容器顶，不要凭空多出 26px */
+.message:first-child { margin-top: 0; }
+
+.message .content {
+  padding: 12px 16px;
+  border-radius: var(--radius-lg);
+  line-height: 1.6;
+  font-size: 14px;
+  word-break: break-word;
+  /* 长回答限制行宽，超过约 66 字符换行时容易丢行 */
+  max-width: 66ch;
+}
+
+.message.user .content { background: var(--bg-user-msg); border-bottom-right-radius: 4px; }
+/* 助手消息靠描边+微投影与工作区底分开，避免白底白字一片 */
+.message.assistant .content {
+  background: var(--bg-assistant-msg);
+  border: 1px solid var(--line-soft);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+  border-bottom-left-radius: 4px;
+}
+
+.message .content pre {
+  background: #0d1117;
+  padding: 12px;
+  border-radius: var(--radius);
+  overflow-x: auto;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.message .content code {
+  background: rgba(255,255,255,0.1);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+.message .content pre code {
+  background: none;
+  padding: 0;
+}
+
+/* 消息操作
+   这一行固定占 24px。若默认完全隐形，这 24px 就会被读成"消息之间的空白"，
+   和下面的 margin 叠起来显得间隔特别大。所以常驻显示。
+   颜色不跟鼠标联动：整行随 hover 变深/变浅，会让注意力在"读正文"和"看按钮"之间被拽一下，
+   而这两个按钮本来就不需要被盯着——用浅一档的颜色常驻，指到具体按钮上再单独提亮。 */
+.msg-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 24px;
+  margin-top: 2px;
+}
+.msg-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
+  /* 行本身不再整体降透明度，改由这一层的颜色定深浅 */
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: inherit;
+  line-height: 1;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.message.user .msg-actions { justify-content: flex-end; }
+.msg-act svg { width: 18px; height: 18px; display: block; flex-shrink: 0; }
+/* 重新生成带文字，比只有图标的复制稍宽一点，视觉上才不是"两个图标" */
+.msg-act[data-regenerate] { padding-right: 9px; }
+/* 复制成功：对勾顶替复制图标，不再往按钮里塞中文（会把 24px 的行撑高、也打破图标节奏） */
+.msg-act .ico-check { display: none; }
+.msg-act.copied .ico-copy { display: none; }
+.msg-act.copied .ico-check { display: block; }
+.msg-act:hover { background: var(--bg-hover); color: var(--text-primary); }
+/* 深色的 --text-muted(#666) 在 #15151a 上只剩 3.3:1，图标会糊进背景，单独提一档 */
+.dark .msg-act { color: #8a8a99; }
+.dark .msg-act:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+
+/* 流式输出三点动画 */
+.streaming-cursor::after {
+  content: ".";
+  animation: dots 1.5s steps(1) infinite;
+}
+
+@keyframes dots {
+  0% { content: "."; }
+  33% { content: ".."; }
+  66% { content: "..."; }
+}
+
+/* 输入区域 */
+.chat-input-container {
+  /* 上留白只留一点：之前 16px 叠上消息区的 24px，会在输入卡上方形成一条裸露的底色带，
+     看起来像一块东西把对话切断了。现在紧贴消息区的渐隐过渡 */
+  /* 底部 18px 里匀出 6px 给免责声明，加了提示之后整体高度几乎不变 */
+  padding: 6px 20px 12px;
+  position: relative;
+  /* 与消息列同源：收起侧栏后一起变宽，输入框左右边始终对着正文左右边 */
+  max-width: min(var(--chat-shell), 100%);
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* AI 免责声明
+   放在输入框下方而不是上方：上方紧挨着消息区，插一行字会把"对话被切断"的观感重新做出来。
+   居中、小字、次级灰——要看得见，但不能和消息内容抢注意力。 */
+.ai-disclaimer {
+  margin: 7px 0 0;
+  text-align: center;
+  font-size: 11.5px;
+  line-height: 1.5;
+  letter-spacing: 0.3px;
+  /* 深色下 --text-muted 只有约 3.5:1，11.5px 的小字读不清，单独提一档 */
+  color: var(--text-secondary);
+  user-select: none;
+}
+.dark .ai-disclaimer { color: #8a8a99; }
+
+@media (max-width: 600px) {
+  /* 窄屏底部没有富余空间，字号收一档即可，不要整行隐藏——它是免责声明，需要常驻 */
+  .ai-disclaimer { font-size: 11px; margin-top: 6px; }
+}
+
+/* 输入区：文字框与工具条共用一层白底，附件/发送都在底部这一排 */
+.chat-composer {
+  background: #FFFFFF;
+  border-radius: 22px;
+  padding: 8px 10px 8px;
+  /* 用一条细描边定形，投影只做很小的一层：原先 20px 大模糊会向上晕出约 16px 灰影，
+     正好落在输入卡上缘，加重了"被挡住"的观感 */
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 4px 12px rgba(16, 24, 40, 0.05), 0 0 0 1px rgba(16, 24, 40, 0.05);
+  transition: box-shadow 0.2s;
+}
+/* 只在文字框聚焦时高亮，点工具条按钮不算（否则焦点会一直留在环上） */
+.chat-composer:has(#chat-input:focus) {
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 6px 16px rgba(16, 24, 40, 0.08), 0 0 0 2px rgba(59, 130, 246, 0.3);
+}
+
+.chat-input-wrapper { padding: 0; }
+
+#chat-input {
+  display: block;
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 15px;
+  line-height: 1.5;
+  resize: none;
+  /* 行数多到超过此高度后，文字框内部滚动，不再把整个输入区撑高 */
+  max-height: 200px;
+  overflow-y: auto;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  padding: 8px 6px;
+  /* 空框也留出完整三行的高度（3 × 22.5 + 上下 padding 16） */
+  min-height: 84px;
+}
+#chat-input::-webkit-scrollbar { width: 6px; }
+#chat-input::-webkit-scrollbar-track { background: transparent; }
+#chat-input::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+#chat-input::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+#chat-input::placeholder { color: var(--text-muted); }
+
+.btn-attach {
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s, color 0.2s;
+  flex-shrink: 0;
+}
+
+.btn-attach:hover {
+  background: rgba(59, 130, 246, 0.08);
+  color: var(--accent);
+}
+
+.btn-attach:active { transform: scale(0.96); }
+
+.file-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 0 4px;
+}
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 8px;
+  border-radius: 12px;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.15);
+  font-size: 13px;
+  color: var(--accent);
+  cursor: pointer;
+  max-width: 240px;
+  transition: background 0.15s;
+}
+
+.file-chip:hover {
+  background: rgba(59, 130, 246, 0.14);
+}
+
+.file-chip .chip-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.file-chip .chip-icon.text { background: #34D399; color: #fff; }
+.file-chip .chip-icon.pdf { background: #EF4444; color: #fff; }
+.file-chip .chip-icon.docx { background: #3B82F6; color: #fff; }
+.file-chip .chip-icon.xlsx { background: #10B981; color: #fff; }
+.file-chip .chip-icon.pptx { background: #F59E0B; color: #fff; }
+.file-chip .chip-icon.csv { background: #8B5CF6; color: #fff; }
+
+/* 图片附件的缩略图：与 chip-icon 同尺寸同圆角，object-fit 保证不被拉变形 */
+.file-chip .chip-thumb {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  object-fit: cover;
+  display: block;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.file-chip .chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-chip .chip-remove {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0,0,0,0.1);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+  transition: background 0.15s;
+  margin-left: 2px;
+  flex-shrink: 0;
+}
+
+.file-chip .chip-remove:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #EF4444;
+}
+
+.file-chips.hidden { display: none; }
+
+.btn-send {
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s, transform 0.1s;
+  flex-shrink: 0;
+}
+
+.btn-send:hover { background: var(--accent-hover); }
+.btn-send:active { transform: scale(0.96); }
+.btn-send:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+.btn-send .icon-stop { display: none; }
+.btn-send.streaming .icon-send { display: none; }
+.btn-send.streaming .icon-stop { display: inline; }
+
+.chat-input-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 0 0 0 2px;
+}
+/* 模型选择与发送一起贴在右侧 */
+.chat-input-toolbar .btn-model { margin-left: auto; }
+
+.btn-web-search,
+.btn-perm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: #F2F2F5;
+  border: none;
+  color: #374151;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  transition: background-color 0.2s, transform 0.1s;
+  user-select: none;
+}
+
+.btn-web-search:hover,
+.btn-perm:hover {
+  background: #E5E7EB;
+}
+
+.btn-web-search:active,
+.btn-perm:active {
+  transform: scale(0.96);
+}
+
+.btn-web-search.active {
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--accent);
+}
+
+.btn-web-search.active svg {
+  stroke: var(--accent);
+}
+
+/* 权限按钮激活态 = 完全访问（提权，用红色区分） */
+.btn-perm.active {
+  background: rgba(239, 83, 80, 0.14);
+  color: var(--danger);
+}
+
+.btn-perm.active svg {
+  stroke: var(--danger);
+}
+
+.btn-web-search.auto {
+  background: rgba(16, 185, 129, 0.10);
+  color: #059669;
+}
+
+.btn-web-search.auto svg {
+  stroke: #059669;
+}
+
+/* 权限按钮图标切换（请求批准=盾牌 / 完全访问=开锁） */
+.btn-perm[data-mode="request"] .perm-icon-full { display: none; }
+.btn-perm[data-mode="full"] .perm-icon-request { display: none; }
+
+/* 权限确认弹窗 */
+.perm-confirm-modal { max-width: 440px; }
+.perm-confirm-icon {
+  text-align: center;
+  font-size: 36px;
+  margin-bottom: 12px;
+}
+.perm-confirm-text {
+  text-align: center;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 6px;
+}
+.perm-confirm-text strong { color: var(--danger); }
+.perm-confirm-sub {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin: 0 0 10px;
+}
+.perm-confirm-sub strong { color: var(--text-primary); }
+.perm-confirm-list {
+  margin: 0 0 12px;
+  padding-left: 20px;
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.7;
+}
+.perm-confirm-note {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.22);
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0;
+}
+/* 暗色模式：提升警告弹窗对比度（原硬编码深色文字在深背景上不可见）*/
+.dark .perm-confirm-list { color: #e5e5e5; }
+.dark .perm-confirm-sub { color: #bdbdbd; }
+.dark .perm-confirm-sub strong { color: #ffffff; }
+.dark .perm-confirm-text strong { color: #ff8a80; }
+.dark .perm-confirm-note {
+  background: rgba(96, 165, 250, 0.14);
+  border-color: rgba(96, 165, 250, 0.35);
+  color: #cfd8dc;
+}
+.btn-danger {
+  background: #EF4444;
+  color: #fff;
+  border: none;
+  padding: 8px 18px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+.btn-danger:hover { background: #DC2626; }
+
+/* 免确认提示卡片（approval_skipped） */
+.approval-skipped {
+  margin: 10px 0;
+  border: 1px dashed var(--border, #ddd);
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: var(--bg-hover, #fafafa);
+  font-size: 13px;
+  color: var(--text-dim, #666);
+}
+.approval-skipped .skipped-head {
+  display: flex; align-items: center; gap: 8px;
+  font-weight: 600; color: #c0392b; margin-bottom: 6px;
+}
+.approval-skipped ul { margin: 6px 0 0; padding-left: 18px; }
+.approval-skipped li { margin: 2px 0; }
+/* 暗色模式：免确认提示卡片提高对比度 */
+.dark .approval-skipped {
+  background: #232323;
+  border-color: #4a4a4a;
+  color: #c9c9c9;
+}
+.dark .approval-skipped .skipped-head { color: #ff8a80; }
+
+/* 命令建议 */
+.command-suggestions {
+  position: absolute;
+  bottom: 100%;
+  left: 24px;
+  right: 24px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 50;
+  margin-bottom: 4px;
+}
+
+.command-suggestions.hidden { display: none; }
+
+.command-item {
+  padding: 10px 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  transition: background var(--transition);
+}
+
+.command-item:hover, .command-item.selected { background: var(--bg-hover); }
+
+.command-item .cmd-name {
+  font-weight: 600;
+  color: var(--accent);
+  min-width: 80px;
+}
+
+.command-item .cmd-desc {
+  color: var(--text-secondary);
+  flex: 1;
+}
+
+.command-item .cmd-category {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+

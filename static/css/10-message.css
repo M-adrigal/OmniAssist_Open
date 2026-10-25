@@ -1,0 +1,826 @@
+/* 10-message.css
+ * 消息体三段式、搜索区域、思考区域、压缩历史
+ *
+ * 由 static/style.css 拆分而来（原第 2513-3279 行，共 4669 行）。
+ * 拆分方式：按原顺序连续切分，加载顺序与原文件一致，层叠结果不变。
+ * 注意：各文件之间靠 <link> 的先后顺序决定层叠，插入新文件时请一并确认顺序。
+ */
+
+/* ===== 消息体三段式布局 ===== */
+.message-body {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 工具摘要折叠块 */
+.tool-summary {
+  margin-bottom: 6px;
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+/* ===== 产出文件卡片（对话内可见可下载）===== */
+.output-files {
+  margin-top: 8px;
+  border: 1px solid var(--border, #e3e3e8);
+  border-radius: var(--radius);
+  background: var(--bg-hover, #fafafa);
+  overflow: hidden;
+}
+.output-files-header {
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim, #888);
+  border-bottom: 1px solid var(--border, #eee);
+  background: var(--bg-elevated, #f3f3f5);
+}
+.output-file-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border, #eee);
+}
+.output-file-card:last-child { border-bottom: none; }
+.of-icon { font-size: 20px; line-height: 1; flex-shrink: 0; }
+.of-info { flex: 1; min-width: 0; }
+.of-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text, #222);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.of-name-link, .cloud-file-link { text-decoration: none; color: inherit; cursor: pointer; }
+.of-name-link:hover { text-decoration: underline; color: var(--accent, #2f6fed); }
+.cloud-file-link:hover { text-decoration: underline; }
+.inline-file-link {
+  color: var(--accent, #2f6fed);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.of-meta { font-size: 11px; color: var(--text-dim, #999); margin-top: 1px; }
+.of-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.of-preview, .of-download {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #ddd);
+  cursor: pointer;
+  text-decoration: none;
+  line-height: 1.6;
+}
+.of-preview {
+  background: var(--bg, #fff);
+  color: var(--text, #222);
+}
+.of-preview:hover { border-color: var(--accent, #4f7cff); color: var(--accent, #4f7cff); }
+.of-download {
+  background: var(--accent, #4f7cff);
+  border-color: var(--accent, #4f7cff);
+  color: #fff;
+}
+.of-download:hover { opacity: 0.9; }
+.preview-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono, ui-monospace, "SFMono-Regular", Menlo, monospace);
+  font-size: 12px;
+  max-height: 60vh;
+  overflow: auto;
+  background: var(--bg, #fff);
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #eee);
+}
+
+.tool-summary-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.tool-summary-header:hover {
+  color: var(--text-secondary);
+}
+
+.tool-summary-title {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.tool-error-badge {
+  color: #ef4444;
+  font-size: 11px;
+}
+
+.tool-summary-toggle {
+  display: inline-block;
+  font-size: 13px;
+  transition: transform 0.2s;
+  line-height: 1;
+}
+
+.tool-summary-body {
+  max-height: 600px;
+  overflow-y: auto;
+  transition: max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease;
+  padding: 6px 0 6px 8px;
+  border-left: 2px solid var(--border);
+  margin-left: 2px;
+}
+
+.tool-summary-body.collapsed {
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  border-left: none;
+}
+
+.tool-item {
+  padding: 4px 0;
+}
+
+.tool-item-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.tool-item-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.tool-item.error .tool-item-name {
+  color: #ef4444;
+}
+
+.tool-item.skipped .tool-item-name {
+  color: #757575;
+}
+.dark .tool-item.skipped .tool-item-name {
+  color: #9e9e9e;
+}
+
+.tool-item-index {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.tool-item-args {
+  margin-bottom: 4px;
+}
+
+.tool-item-args code {
+  display: block;
+  background: var(--bg-tertiary);
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+.tool-item-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-right: 4px;
+}
+
+.tool-item-result {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.tool-result-text {
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+.tool-result-text.error {
+  color: #ef4444;
+}
+
+.tool-result-text.skipped {
+  color: #757575;
+}
+.dark .tool-result-text.skipped {
+  color: #9e9e9e;
+}
+
+.tool-result-expand {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+  margin-left: 4px;
+  text-decoration: underline;
+}
+
+.tool-result-expand:hover {
+  color: var(--accent-hover);
+}
+
+/* ===== 搜索区域 ===== */
+.search-area {
+  margin-bottom: 6px;
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.search-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.search-header:hover {
+  color: var(--text-secondary);
+}
+
+.search-status {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.search-toggle {
+  display: inline-block;
+  font-size: 16px;
+  transition: transform 0.2s;
+  line-height: 1;
+}
+
+.search-content {
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 6px 0 6px 8px;
+  border-left: 2px solid var(--border);
+  margin-left: 2px;
+  transition: max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease;
+}
+
+.search-content.collapsed {
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  border-left: none;
+}
+
+.search-info {
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.search-info-item {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.search-label {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.search-results {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.search-result-expand {
+  display: inline-block;
+  margin-top: 4px;
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 0;
+}
+
+.search-result-expand:hover {
+  text-decoration: underline;
+}
+
+/* ===== 思考区域 ===== */
+.think-area {
+  margin-bottom: 10px;
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.think-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.think-header:hover {
+  color: var(--text-secondary);
+}
+
+.think-status {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.think-time {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* 折叠箭头
+   原来是 ▸ / ▾ 两个字体字符，13px 下几乎渲染成一个点。
+   改成 CSS 画的 V 形，方向直接看同级内容区是否 collapsed，不用 JS 再写一遍状态。 */
+.think-toggle {
+  display: inline-block;
+  position: relative;
+  width: 12px;
+  height: 12px;
+  font-size: 0;
+  flex: 0 0 auto;
+}
+.think-toggle::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 2.5px;
+  width: 5px;
+  height: 5px;
+  border-right: 1.4px solid currentColor;
+  border-bottom: 1.4px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.2s ease, top 0.2s ease;
+}
+.think-header:has(+ .think-content:not(.collapsed)) .think-toggle::before {
+  transform: rotate(-135deg);
+  top: 5px;
+}
+
+.think-content {
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 6px 0 6px 8px;
+  border-left: 2px solid var(--border);
+  margin-left: 2px;
+  transition: max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease;
+}
+
+.think-content.collapsed {
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  border-left: none;
+}
+
+.think-line {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  padding: 1px 0;
+  word-break: break-word;
+}
+
+/* 思考中动画 */
+.think-status .think-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: think-spin 0.8s linear infinite;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+@keyframes think-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 本轮「正在干什么」的状态行（后端 status 事件）
+   只在处理中/工具执行/异常重试时出现，正文一开始输出就收起；
+   带 .warn 的（工具异常提前结束、模型重试）会一直留着 ——
+   否则任务被掐断时用户只看到回答戛然截止、不知道发生了什么。 */
+.stream-status {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  margin: 0 0 6px 0;
+}
+.stream-status::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.5;
+  flex-shrink: 0;
+  transform: translateY(-2px);
+}
+.stream-status.warn {
+  color: var(--warning);
+}
+.stream-status.warn::before {
+  opacity: 1;
+}
+
+/* 最终答案区域
+   助手消息不做卡片：一整屏白色的框，每轮都把对话切成"一块一块"，
+   框与框之间那点留白就会被读成空隙。正文直接落在画布上，只有用户的提问是气泡。 */
+.answer-area {
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--text-primary);
+  word-break: break-word;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  max-width: none;
+}
+
+/* 用户气泡：右对齐、圆角、不加尾巴（主流对话界面都已去掉气泡尖角） */
+.message.user .answer-area {
+  background: var(--bg-user-msg);
+  border-radius: 14px;
+  padding: 9px 15px;
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.answer-area pre {
+  background: var(--bg-tertiary);
+  padding: 12px;
+  border-radius: var(--radius);
+  overflow-x: auto;
+  margin: 0;
+  font-size: 13px;
+}
+
+.answer-area code {
+  background: var(--bg-tertiary);
+  color: #e83e8c;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+.answer-area pre code {
+  background: none;
+  color: var(--text-primary);
+  padding: 0;
+}
+
+.answer-area .code-block {
+  margin: 4px 0;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--bg-tertiary);
+}
+
+.answer-area .code-block-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 12px;
+  background: var(--bg-tertiary);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.answer-area .code-block-lang {
+  font-weight: 500;
+}
+
+.answer-area .code-block-copy {
+  background: none;
+  border: 1px solid var(--text-muted);
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  transition: all 0.15s;
+}
+
+.answer-area .code-block-copy:hover {
+  border-color: var(--text-secondary);
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.answer-area .code-block pre {
+  border-radius: 0;
+  border: none;
+  margin: 0;
+}
+
+.answer-area p {
+  margin: 0 0 14px 0;
+  line-height: 1.75;
+}
+
+.answer-area p:last-child {
+  margin-bottom: 0;
+}
+
+/* 气泡里只有一句话，段距会把气泡撑高 */
+.message.user .answer-area p { margin: 0; }
+
+.answer-area ul,
+.answer-area ol {
+  margin: 4px 0 14px 0;
+  padding-left: 22px;
+}
+
+.answer-area li {
+  margin: 4px 0;
+  line-height: 1.72;
+}
+
+.answer-area table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 14px 0;
+  font-size: 13.5px;
+}
+
+.answer-area th,
+.answer-area td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.answer-area th {
+  background: var(--bg-tertiary);
+  font-weight: 600;
+}
+
+.answer-area blockquote {
+  border-left: 3px solid var(--accent);
+  margin: 14px 0;
+  padding: 2px 12px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.answer-area h1 { font-size: 19px; margin: 24px 0 10px 0; }
+.answer-area h2 { font-size: 17px; margin: 20px 0 8px 0; }
+.answer-area h3 { font-size: 15.5px; margin: 16px 0 6px 0; }
+.answer-area > :first-child { margin-top: 0; }
+
+.answer-area strong { font-weight: 600; }
+.answer-area em { font-style: italic; }
+
+.message .content p {
+  margin: 0 0 8px 0;
+  line-height: 1.7;
+}
+
+.message .content p:last-child {
+  margin-bottom: 0;
+}
+
+.message .content ul,
+.message .content ol {
+  margin: 4px 0 8px 0;
+  padding-left: 20px;
+}
+
+.message .content li {
+  margin: 2px 0;
+  line-height: 1.6;
+}
+
+.message .content table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.message .content th,
+.message .content td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.message .content th {
+  background: var(--bg-tertiary);
+  font-weight: 600;
+}
+
+.message .content blockquote {
+  border-left: 3px solid var(--accent);
+  margin: 8px 0;
+  padding: 4px 12px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.message .content h1 { font-size: 18px; margin: 12px 0 6px 0; }
+.message .content h2 { font-size: 16px; margin: 10px 0 6px 0; }
+.message .content h3 { font-size: 15px; margin: 8px 0 4px 0; }
+
+.message .content strong { font-weight: 600; }
+.message .content em { font-style: italic; }
+
+/* 响应式：移动端 */
+@media (max-width: 640px) {
+  .think-content {
+    max-height: 250px;
+  }
+
+  .tool-summary-body {
+    max-height: 400px;
+  }
+
+  .tool-item-args code {
+    max-height: 80px;
+  }
+}
+
+/* ===== 压缩历史记录 ===== */
+.compressed-summary {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin: 8px 0;
+  background: var(--bg-secondary);
+}
+
+.compressed-summary-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.compressed-summary-toggle {
+  font-size: 12px;
+  transition: transform 0.2s;
+}
+
+.compressed-summary-content.collapsed {
+  display: none;
+}
+
+.compressed-summary-text {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  padding: 8px 12px;
+  background: rgba(128, 128, 128, 0.06);
+  border-radius: 6px;
+}
+
+.compressed-rounds-label {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.compressed-round {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.compressed-round-header {
+  padding: 8px 12px;
+  background: rgba(128, 128, 128, 0.04);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.compressed-think-header,
+.compressed-search-header,
+.compressed-tools-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-muted);
+  user-select: none;
+  border-top: 1px solid var(--border);
+}
+
+.compressed-think-header:hover,
+.compressed-search-header:hover,
+.compressed-tools-header:hover {
+  background: rgba(128, 128, 128, 0.04);
+}
+
+.compressed-think-content,
+.compressed-search-content,
+.compressed-tools-content {
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text-primary);
+  border-top: 1px solid var(--border);
+}
+
+.compressed-think-content.collapsed,
+.compressed-search-content.collapsed,
+.compressed-tools-content.collapsed {
+  display: none;
+}
+
+.compressed-tool-item {
+  padding: 4px 0;
+}
+
+.compressed-search-results {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+.message.system {
+  opacity: 0.85;
+}
+
+.message.system .avatar {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+}
+
+.message.system .message-body {
+  max-width: 100%;
+}
+
+/* 上下文重置分隔线：提示「上面的内容不再发给模型」，但历史仍然保留可回溯 */
+.context-reset-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 22px 0 6px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  letter-spacing: 0.3px;
+}
+.context-reset-divider::before,
+.context-reset-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line-soft, rgba(16, 24, 40, 0.08));
+}
+.dark .context-reset-divider::before,
+.dark .context-reset-divider::after {
+  background: rgba(255, 255, 255, 0.1);
+}

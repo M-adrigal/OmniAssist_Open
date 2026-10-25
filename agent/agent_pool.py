@@ -147,6 +147,7 @@ class AgentPool:
             )
             # 覆盖系统提示词为 Agent 专属提示词
             agent._system_prompt = profile['system_prompt']
+            agent.usage_source = "subagent"   # token 用量归因到子 Agent
             agent._rebuild_system_message()
 
             self._agents[name] = agent
@@ -198,13 +199,16 @@ class AgentPool:
 
     # ---- 委派 ----
 
-    def delegate(self, agent_name: str, task: str, user_id: int = None) -> str:
+    def delegate(self, agent_name: str, task: str, user_id: int = None,
+                 usage_sink=None) -> str:
         """委派任务给子 Agent，同步返回结果
 
         Args:
             agent_name: 目标 Agent 名称
             task: 任务描述
             user_id: 用户 ID，用于文件输出隔离
+            usage_sink: 本次请求的 token 用量回传钩子。子 Agent 用的是全局 LLM 客户端，
+                不带 per-request 的 sink，必须靠线程作用域传下去，否则它的消耗会被丢弃。
 
         Returns:
             str: 子 Agent 的最终回复
@@ -217,29 +221,43 @@ class AgentPool:
         profile = self._profiles[agent_name]
         max_iter = profile.get('max_iterations', 5)
 
+        from agent.llm import current_usage_sink, usage_scope
+        sink = usage_sink or current_usage_sink()
+
         try:
-            result = agent.run(task, max_iterations=max_iter)
+            if sink is None:
+                result = agent.run(task, max_iterations=max_iter)
+            else:
+                with usage_scope(sink):
+                    result = agent.run(task, max_iterations=max_iter)
             return result
         except Exception as e:
             return f"[子Agent {agent_name} 执行异常] {type(e).__name__}: {str(e)}"
 
-    def delegate_parallel(self, tasks: list, user_id: int = None) -> dict:
+    def delegate_parallel(self, tasks: list, user_id: int = None,
+                          usage_sink=None) -> dict:
         """并行委派多个任务给不同 Agent
 
         Args:
             tasks: [{"agent": "analyst", "task": "分析销售数据"}, ...]
             user_id: 用户 ID
+            usage_sink: 本次请求的 token 用量回传钩子
 
         Returns:
             dict: {agent_name: result}
         """
+        from agent.llm import current_usage_sink
+        if usage_sink is None:
+            usage_sink = current_usage_sink()
+
         results = {}
         futures = {}
         for t in tasks:
             name = t['agent']
             task = t['task']
             timeout = self._profiles.get(name, {}).get('timeout', 60)
-            f = self._executor.submit(self.delegate, name, task, user_id)
+            # 线程本地变量不会跨线程池继承，必须显式把 sink 一起提交
+            f = self._executor.submit(self.delegate, name, task, user_id, usage_sink)
             futures[f] = (name, timeout)
 
         for f in concurrent.futures.as_completed(futures):

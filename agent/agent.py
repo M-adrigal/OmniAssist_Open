@@ -54,6 +54,7 @@ class SimpleAgent:
         self.skill_context = skill_context
         self.silent = silent
         self.user_id = None  # 当前用户 ID，用于加载用户级配置
+        self.usage_source = "chat"  # token 用量归因标签（chat/subagent），仅用于统计
         self.thinking_mode = 'low'
         self.thinking_enabled = False
         self.reasoning_effort = None
@@ -91,9 +92,17 @@ class SimpleAgent:
 
     @staticmethod
     def _estimate_tokens(messages: list) -> int:
-        """估算消息列表的 token 数量
+        """估算消息列表的 token 数量（用于压缩时机判断，不需要精确）。
 
         使用字符数/4 的粗略估算（1 token ≈ 4 英文字符）
+
+        ⚠️ 必须处理多模态 content：开图片功能后 `content` 可能是**内容块列表**
+        `[{'type':'text',...}, {'type':'image_url',...}]`。若直接按字符串处理，
+        `len()` 取到的是**列表的元素个数**（几个块就几），一张图会被算成不到 1 个
+        token —— 后果不是用量统计不准，而是**带图的长会话永远判定不到压缩阈值**，
+        最终撞上模型窗口上限被上游拒掉。
+
+        图片按每张固定预算计（复用 llm 模块的口径，避免两处数字各说一套）。
 
         Args:
             messages: 消息列表
@@ -101,10 +110,28 @@ class SimpleAgent:
         Returns:
             int: 估算的 token 数
         """
+        from agent.llm import IMAGE_TOKENS_PER_IMAGE
+
         total = 0
         for msg in messages:
             content = msg.get('content', '') or ''
-            total += len(content) // 4 + 1
+            if isinstance(content, str):
+                total += len(content) // 4 + 1
+            elif isinstance(content, list):
+                for seg in content:
+                    if not isinstance(seg, dict):
+                        continue
+                    if isinstance(seg.get('text'), str):
+                        total += len(seg['text']) // 4 + 1
+                    elif seg.get('type') == 'image_url':
+                        total += IMAGE_TOKENS_PER_IMAGE
+            # 工具调用参数也要计入（requests 体积的大头之一）
+            tc = msg.get('tool_calls')
+            if tc:
+                try:
+                    total += len(json.dumps(tc, ensure_ascii=False)) // 4 + 1
+                except (TypeError, ValueError):
+                    pass
         return total
 
     def _rebuild_system_message(self):
@@ -246,7 +273,8 @@ class SimpleAgent:
         )
 
     @staticmethod
-    def compress_messages(messages: list, llm_client, context_limit_tokens: int = 0) -> list:
+    def compress_messages(messages: list, llm_client, context_limit_tokens: int = 0,
+                          source: str = "compress") -> list:
         """压缩消息历史，将早期对话总结为摘要
 
         当消息的估算 token 数超过上下文限制的 70% 时触发压缩。
@@ -256,6 +284,7 @@ class SimpleAgent:
             messages: 消息列表（不含 system prompt）
             llm_client: LLMClient 实例，用于生成摘要
             context_limit_tokens: 上下文 token 限制，0 表示不限制
+            source: 用量归因标签（用于 token 统计，默认 compress）
 
         Returns:
             list: 压缩后的消息列表
@@ -279,7 +308,7 @@ class SimpleAgent:
         old_messages = messages[:-keep_count]
         recent_messages = messages[-keep_count:]
 
-        summary_text = _generate_summary(old_messages, llm_client)
+        summary_text = _generate_summary(old_messages, llm_client, source=source)
         compressed_metadata = _extract_compressed_metadata(old_messages)
 
         if summary_text:
@@ -316,7 +345,8 @@ class SimpleAgent:
                 self.thinking_enabled, temperature=temp, reasoning_effort=self.reasoning_effort
             )
 
-            for chunk in self.llm.chat_stream(messages, tools=tool_specs, **gw_cfg["api_params"]):
+            for chunk in self.llm.chat_stream(messages, tools=tool_specs,
+                                              source=self.usage_source, **gw_cfg["api_params"]):
                 if chunk.get("content"):
                     content += chunk["content"]
                     if not self.silent:
@@ -390,7 +420,8 @@ class SimpleAgent:
             tool_calls = None
             first_token = True
 
-            for chunk in self.llm.chat_stream(self.messages, tools=tool_specs, **gw_cfg["api_params"]):
+            for chunk in self.llm.chat_stream(self.messages, tools=tool_specs,
+                                              source=self.usage_source, **gw_cfg["api_params"]):
                 if chunk.get("reasoning_content"):
                     if first_token:
                         print("[思考] ", end="", flush=True)
@@ -495,7 +526,7 @@ def _extract_compressed_metadata(messages: list) -> dict:
     return {"rounds": rounds} if rounds else {}
 
 
-def _generate_summary(messages: list, llm_client) -> str:
+def _generate_summary(messages: list, llm_client, source: str = "compress") -> str:
     """使用 LLM 生成对话摘要"""
     conversation_text = ""
     for msg in messages:
@@ -514,7 +545,8 @@ def _generate_summary(messages: list, llm_client) -> str:
     try:
         response = llm_client.chat(
             [{"role": "user", "content": summary_prompt}],
-            tools=None
+            tools=None,
+            source=source,
         )
         return response.get("content", "").strip()
     except Exception:

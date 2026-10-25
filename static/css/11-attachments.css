@@ -1,0 +1,205 @@
+/* 11-attachments.css
+ * 附件菜单浮层、云文件管理表格
+ *
+ * 由 static/style.css 拆分而来（原第 3280-3476 行，共 4669 行）。
+ * 拆分方式：按原顺序连续切分，加载顺序与原文件一致，层叠结果不变。
+ * 注意：各文件之间靠 <link> 的先后顺序决定层叠，插入新文件时请一并确认顺序。
+ */
+
+/* ===== 附件菜单浮层 ===== */
+.attach-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  background: var(--bg-primary);
+  border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.12), 0 0 0 1px var(--border);
+  min-width: 180px;
+  overflow: hidden;
+  z-index: 100;
+  animation: attachMenuIn 0.15s ease-out;
+}
+
+@keyframes attachMenuIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.attach-menu.hidden { display: none; }
+
+.attach-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text-primary);
+  transition: background 0.15s;
+}
+
+.attach-menu-item:hover {
+  background: var(--bg-hover);
+}
+
+.attach-menu-item svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.attach-menu-item + .attach-menu-item {
+  border-top: 1px solid var(--border);
+}
+
+.dark .attach-menu {
+  background: #1e1e1e;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.4), 0 0 0 1px #333;
+}
+
+/* ===== 云文件管理表格 ===== */
+.cloud-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.cloud-toolbar .cloud-search-input {
+  flex: 1 1 220px;
+  min-width: 160px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  font-size: 13px;
+  background: var(--surface-dialog);
+  color: var(--text-primary);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.cloud-toolbar .cloud-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
+}
+
+.cloud-toolbar .cloud-filter-select {
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  font-size: 13px;
+  background: var(--surface-dialog);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.cloud-toolbar .cloud-filter-select:hover {
+  border-color: var(--accent, #4f7cff);
+}
+
+.cloud-toolbar .cloud-filter-select:focus {
+  outline: none;
+  border-color: var(--accent, #4f7cff);
+  box-shadow: 0 0 0 3px rgba(79, 124, 255, 0.14);
+}
+
+.cloud-table-wrap {
+  max-height: 58vh;
+  overflow: auto;
+}
+
+.cloud-table {
+  font-size: 13px;
+}
+
+/* 文件名列允许截断，其余列按内容收紧，操作列固定右对齐 */
+.cloud-table td {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-table th:nth-child(1) { min-width: 180px; }
+.cloud-table th:nth-child(4),
+.cloud-table th:nth-child(5),
+.cloud-table th:nth-child(6) { width: 1%; }
+
+/* 操作列：改成 4 个等宽图标按钮，列宽从 280px 收到 150px，整表不再横向溢出 */
+.cloud-table td.cloud-ops {
+  width: 1%;
+  max-width: none;
+  overflow: visible;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.cloud-table .btn-preview,
+.cloud-table .btn-download,
+.cloud-table .btn-rename,
+.cloud-table .btn-delete-cloud {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  margin-left: 2px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text-muted);
+  vertical-align: middle;
+  transition: background 0.15s, color 0.15s;
+}
+
+.cloud-table .btn-preview:hover,
+.cloud-table .btn-download:hover,
+.cloud-table .btn-rename:hover {
+  background: rgba(59, 130, 246, 0.10);
+  color: var(--accent);
+}
+
+.cloud-table .btn-delete-cloud:hover {
+  background: rgba(239, 83, 80, 0.12);
+  color: var(--danger, #e5484d);
+}
+
+/* 文件类型小方块：表格里统一 22px，不再撑高行 */
+.cloud-table .picker-file-icon {
+  width: 22px;
+  height: 22px;
+  font-size: 10px;
+  border-radius: 6px;
+  margin-right: 8px;
+}
+
+/* 来源/类型徽标：去 emoji，只留色块 + 文字，避免不同系统渲染成彩色方块 */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.badge-source-upload { background: rgba(59, 130, 246, 0.12); color: #1d4ed8; }
+.badge-source-generated { background: rgba(16, 185, 129, 0.13); color: #047857; }
+.badge-type { background: var(--surface-sunken-strong); color: var(--text-secondary); }
+.dark .badge-source-upload { background: rgba(59, 130, 246, 0.20); color: #93c5fd; }
+.dark .badge-source-generated { background: rgba(16, 185, 129, 0.18); color: #6ee7b7; }
+
+.cloud-preview-panel {
+  background: var(--bg-tertiary);
+  border-radius: var(--radius);
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+

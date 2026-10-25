@@ -484,6 +484,9 @@ class SkillRegistry:
 
         loaded = []
         for folder in sorted(os.listdir(user_dir)):
+            # 跳过隐藏目录（如 .trash —— 已删除技能的备份区，不是技能）
+            if folder.startswith("."):
+                continue
             skill_path = os.path.join(user_dir, folder)
             if not os.path.isdir(skill_path):
                 continue

@@ -1,0 +1,116 @@
+/* 06-modals.css
+ * 模态框与弹窗容器
+ *
+ * 由 static/style.css 拆分而来（原第 1347-1454 行，共 4669 行）。
+ * 拆分方式：按原顺序连续切分，加载顺序与原文件一致，层叠结果不变。
+ * 注意：各文件之间靠 <link> 的先后顺序决定层叠，插入新文件时请一并确认顺序。
+ */
+
+/* ===== 模态框 ===== */
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 兜底留白：小屏时弹窗不贴边，也避免圆角被窗口切掉 */
+  padding: 24px;
+}
+
+.modal.hidden { display: none; }
+
+/* 遮罩：不再用 60% 纯黑。降低不透明度 + 轻微模糊，背景仍有上下文，弹窗才不显得"压"在黑洞上 */
+.modal-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(16, 24, 40, 0.42);
+  -webkit-backdrop-filter: blur(6px) saturate(112%);
+  backdrop-filter: blur(6px) saturate(112%);
+}
+
+/* 弹窗本体：白底、18px 圆角、单向大阴影 + 极淡描边定形 */
+.modal-content {
+  position: relative;
+  background: var(--surface-dialog);
+  border: none;
+  border-radius: 18px;
+  width: 560px;
+  max-width: calc(100vw - 48px);
+  max-height: min(86vh, 880px);
+  display: flex;
+  flex-direction: column;
+  /* 圆角要裁掉子元素的直角背景（底栏、表头） */
+  overflow: hidden;
+  box-shadow:
+    0 0 0 1px var(--line-soft),
+    0 18px 48px -12px rgba(16, 24, 40, 0.24),
+    0 4px 12px -4px rgba(16, 24, 40, 0.10);
+  animation: modalIn 0.22s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+/* 宽度档位：四档够用，全部受 max-width 约束，小屏不溢出 */
+.modal-sm .modal-content { width: 420px; }
+.modal-content.modal-lg { width: 640px; }
+.modal-wide { width: 720px; }
+.modal-xl { width: 880px; }
+
+@keyframes modalIn {
+  from { opacity: 0; transform: scale(0.965) translateY(10px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* 头部：去掉硬边框，靠留白与字号建立层级；标题行与内容之间不再有线 */
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px 24px 14px;
+  flex: 0 0 auto;
+}
+
+.modal-header h3 {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* 关闭按钮：32px 方形热区，hover 才有底色 */
+.modal-header .btn-icon,
+.search-dialog-close {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  border-radius: 9px;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--text-muted);
+  transition: background var(--transition), color var(--transition);
+}
+.modal-header .btn-icon:hover,
+.search-dialog-close:hover {
+  background: var(--surface-sunken-strong);
+  color: var(--text-primary);
+}
+
+/* 内容区：min-height:0 修掉 flex 子项撑破容器导致底部被裁的问题 */
+.modal-body {
+  padding: 4px 24px 24px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 底栏：下沉一层底色形成"操作区"，与内容分开但不用分割线 */
+.modal-footer {
+  padding: 14px 24px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--surface-sunken);
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+

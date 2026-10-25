@@ -1,0 +1,251 @@
+/* 15-model-switcher.css
+ * 模型切换（聊天工具栏）
+ *
+ * 由 static/style.css 拆分而来（原第 4119-4355 行，共 4669 行）。
+ * 拆分方式：按原顺序连续切分，加载顺序与原文件一致，层叠结果不变。
+ * 注意：各文件之间靠 <link> 的先后顺序决定层叠，插入新文件时请一并确认顺序。
+ */
+
+/* ===== 模型切换（聊天工具栏） ===== */
+/* 与联网搜索/思考按钮同一视觉规格，只是它不是开关而是「当前值 + 下拉」 */
+.btn-model {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: #F2F2F5;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+  max-width: 260px;
+}
+.btn-model:hover { background: var(--bg-tertiary); }
+.btn-model span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.btn-model svg { flex: 0 0 auto; }
+.dark .btn-model {
+  background: #2a2a2a;
+  color: #cccccc;
+}
+.dark .btn-model:hover { background: #333333; }
+
+.btn-model.open .mm-btn-chevron { transform: rotate(180deg); }
+.btn-model .mm-btn-chevron {
+  flex: 0 0 auto;
+  opacity: 0.55;
+  transition: transform var(--transition);
+}
+
+.chat-input-toolbar { position: relative; }
+
+/* 模型下拉：单行列表（图标 + 名称 + 徽标 + 右侧数值/勾）+ 底部固定入口 */
+.model-menu {
+  position: absolute;
+  bottom: 46px;
+  left: 0;
+  z-index: 300;
+  width: 380px;
+  max-width: calc(100vw - 48px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+}
+.dark .model-menu {
+  border-color: #3a3a3a;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+.model-menu.hidden { display: none; }
+
+.mm-list {
+  max-height: 304px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+}
+.mm-list::-webkit-scrollbar { width: 6px; }
+.mm-list::-webkit-scrollbar-track { background: transparent; }
+.mm-list::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+.mm-list::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+.mm-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+.mm-item:hover { background: var(--bg-hover); }
+.mm-item.active { background: var(--bg-hover); }
+
+/* 首字图标：没有厂商 logo 资源，用显示名首字符占位，保证同族模型可扫读 */
+.mm-ico {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  user-select: none;
+}
+.mm-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.mm-item .mm-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.mm-tags {
+  display: flex;
+  gap: 5px;
+  flex: 0 0 auto;
+}
+.mm-tag {
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  line-height: 1;
+  white-space: nowrap;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+.mm-tag-user {
+  background: rgba(234, 140, 40, 0.14);
+  color: #b2650f;
+}
+.dark .mm-tag-user { color: #e0a458; }
+
+.mm-ctx {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.mm-check {
+  flex: 0 0 auto;
+  color: #2f6fc4;
+}
+.dark .mm-check { color: #5b9bf0; }
+
+/* 模型下拉里的思考强度：三档分段，和选模型是同一类设置 */
+.mm-think {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+}
+.mm-think-label {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+.mm-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+.mm-seg button {
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.mm-seg button:hover { color: var(--text-primary); }
+.mm-seg button.active[data-think="off"] {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+.mm-seg button.active[data-think="low"] {
+  background: rgba(16, 185, 129, 0.16);
+  color: #059669;
+}
+.mm-seg button.active[data-think="high"] {
+  background: rgba(59, 130, 246, 0.16);
+  color: #2563eb;
+}
+.dark .mm-seg { background: #232323; }
+.dark .mm-seg button.active[data-think="off"] { background: #3a3a3a; color: #fff; }
+.dark .mm-seg button.active[data-think="low"] { color: #34d399; }
+.dark .mm-seg button.active[data-think="high"] { color: #60a5fa; }
+
+.mm-empty {
+  padding: 20px 14px;
+  text-align: center;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--text-secondary);
+}
+.mm-empty span {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.mm-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 11px 16px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.mm-footer:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.mm-footer svg { flex: 0 0 auto; }
+
+/* 无可用模型：按钮变灰、不可点（管理员把模型全部隐藏时的兜底状态） */
+#btn-model.model-unavailable {
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 0.75;
+}

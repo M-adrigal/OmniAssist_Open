@@ -1,0 +1,290 @@
+/* 12-file-picker.css
+ * 文件选择器、用户气泡文件标签
+ *
+ * 由 static/style.css 拆分而来（原第 3477-3644 行，共 4669 行）。
+ * 拆分方式：按原顺序连续切分，加载顺序与原文件一致，层叠结果不变。
+ * 注意：各文件之间靠 <link> 的先后顺序决定层叠，插入新文件时请一并确认顺序。
+ */
+
+/* ===== 文件选择器 ===== */
+.file-picker-body {
+  display: flex;
+  flex-direction: column;
+  max-height: 60vh;
+}
+
+.picker-toolbar {
+  margin-bottom: 12px;
+}
+
+.picker-toolbar input {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  font-size: 13px;
+  background: var(--surface-dialog);
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+.picker-toolbar input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
+}
+
+.picker-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 150px;
+  max-height: 40vh;
+}
+
+.picker-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 10px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.picker-item:hover {
+  background: var(--surface-sunken);
+}
+
+.picker-item:has(input:checked) {
+  background: rgba(59, 130, 246, 0.07);
+}
+.dark .picker-item:has(input:checked) {
+  background: rgba(59, 130, 246, 0.14);
+}
+
+.picker-item input[type="checkbox"] {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.picker-item .picker-file-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.picker-file-icon.text { background: #34D399; }
+.picker-file-icon.pdf { background: #EF4444; }
+.picker-file-icon.docx { background: #3B82F6; }
+.picker-file-icon.xlsx { background: #10B981; }
+.picker-file-icon.pptx { background: #F59E0B; }
+.picker-file-icon.csv { background: #8B5CF6; }
+.picker-file-icon.md { background: #6B7280; }
+.picker-file-icon.png,
+.picker-file-icon.jpg,
+.picker-file-icon.jpeg { background: #8B5CF6; }
+
+.picker-item .picker-file-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.picker-item .picker-file-name {
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-item .picker-file-meta {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+.picker-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 12px;
+  margin-top: 8px;
+  border-top: 1px solid var(--line-soft);
+}
+
+#picker-count {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.picker-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ===== 用户消息气泡中的文件标签 ===== */
+.msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.msg-attach-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.msg-attach-tag .tag-icon {
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* 图片附件：直接在气泡里给缩略图，点击开原图（不再是文件名 chip）
+   尺寸上限 180×180 且 object-fit: cover —— 截图/长图都不会把消息撑变形 */
+/* 每张图包一层：宽图的说明行单独占一行，不参与 flex 的"最大内容宽度"计算 */
+.msg-attach-item {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: 100%;
+}
+
+/* 缩略图统一宽度：截图里的界面文字要能看清。
+   420 是"能读"和"不喧宾夺主"的折中——再小看不清，再大就把气泡撑满、右侧留白。 */
+.msg-attach-thumb {
+  display: inline-block;
+  line-height: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--line-soft, rgba(16, 24, 40, 0.08));
+  max-width: 100%;
+  vertical-align: top;
+}
+.msg-attach-thumb img {
+  display: block;
+  width: 420px;
+  max-width: 100%;
+  max-height: 320px;
+  height: auto;
+  object-fit: contain;
+  cursor: zoom-in;
+}
+/* 一条消息带多张图时收窄到 290：两张正好并排（290×2 + 间距 ≈ 584），
+   否则各占一行会剩一大截右侧空白。 */
+.msg-attach-item:not(:only-child) .msg-attach-thumb img {
+  width: 290px;
+}
+
+/* 超宽长条图（截图常是 20:1 以上）：420 宽缩完只剩十几像素高，看着像一条灰线。
+   这里不再撑满气泡（那会把气泡拉到 78%、右侧留白），只补一行说明把情况讲清楚。 */
+.msg-attach-widehint {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+.msg-attach-thumb:hover {
+  border-color: var(--accent);
+}
+.dark .msg-attach-thumb {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.dark .msg-attach-tag {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: rgba(59, 130, 246, 0.25);
+}
+
+/* modal-lg 尺寸 */
+.modal-lg .modal-content {
+  width: 600px;
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+  max-height: 80vh;
+  background: var(--bg-primary);
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+/* ===== 图片预览弹窗（点击缩略图，在本页看原图，不新开标签页）=====
+   为什么不用新标签页：聊天里点一张图，回来还要再找会话、再切一次，
+   尤其连着看几张时很难受。弹窗关掉就回到原位。
+   z-index 10000：要盖住技能面板（9500）与各设置弹窗（200）。 */
+#image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#image-lightbox.hidden {
+  display: none;
+}
+#image-lightbox .lightbox-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 10, 16, 0.78);
+  backdrop-filter: blur(3px);
+}
+#image-lightbox .lightbox-img {
+  position: relative;
+  max-width: 92vw;
+  max-height: 88vh;
+  width: auto;
+  height: auto;
+  border-radius: 10px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+  background: #fff;
+}
+#image-lightbox .lightbox-close {
+  position: absolute;
+  top: 18px;
+  right: 22px;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+#image-lightbox .lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+#image-lightbox .lightbox-caption {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  white-space: nowrap;
+}
+body.lightbox-open {
+  overflow: hidden;
+}

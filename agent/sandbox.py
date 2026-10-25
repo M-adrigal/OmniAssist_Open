@@ -1,5 +1,6 @@
 import os
 import json
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -640,9 +641,11 @@ class ToolSandbox:
     # `python3 -c "任意代码"` 会起一个不受沙箱 import/file 钩子约束的新进程，
     # 等于沙箱逃逸超级通道（可读任意文件、直连数据库、出网）。
     # 执行 AI 生成的 Python 代码请走 ToolSandbox.execute() 路径（带钩子约束）。
+    # awk 已从白名单移除：awk 内置 system()/管道可直接执行任意命令
+    # （`awk -v c=id 'BEGIN{system(c)}'`），等于把命令白名单整个架空。
     _ALLOWED_COMMANDS = {
         "ls", "cat", "echo", "date", "pwd",
-        "wc", "sort", "head", "tail", "grep", "awk", "sed", "jq", "cut",
+        "wc", "sort", "head", "tail", "grep", "sed", "jq", "cut",
         "tr", "uniq", "nl", "od", "base64", "xxd", "file", "stat", "printf",
         "true", "false", "test", "expr", "tee", "diff", "comm",
     }
@@ -766,6 +769,12 @@ class ToolSandbox:
                 "/boot", "/usr", "/bin", "/sbin", "/lib", "/opt",
             )
         })
+        # 读禁区的例外：系统 MIME 映射表（mimetypes.init() 会读的那几个文件）。
+        # 它们是静态类型对照表、不含凭据；不放行的话，任何「import 即初始化
+        # mimetypes」的库（openpyxl 就是）在沙箱里都 ImportError。
+        import mimetypes as _mimetypes_mod
+        mime_allow = sorted({os.path.realpath(p)
+                             for p in getattr(_mimetypes_mod, "knownfiles", [])})
         # 沙箱审计日志（集中记录命令执行与越权访问尝试）
         logs_dir = os.path.join(project_root, "logs")
         audit_log = os.path.join(logs_dir, "sandbox_audit.log")
@@ -779,6 +788,14 @@ class ToolSandbox:
             "import os as _os\n"
             "import socket as _sb_socket\n"
             "_SB_ORIG_OPEN = open\n"
+            # 趁 open 还是原版，先把 mimetypes 初始化好（它要读 /etc/.../mime.types）。
+            # 之后库里的惰性 guess_type() 不会再读盘；显式再 init() 的库由
+            # _MIME_ALLOW 兜底（见 _safe_open）。
+            "try:\n"
+            "    import mimetypes as _sb_mime\n"
+            "    _sb_mime.init()\n"
+            "except Exception:\n"
+            "    pass\n"
             f"_params = json.loads({json.dumps(params_json)})\n"
         )
         for key in params:
@@ -802,6 +819,14 @@ class ToolSandbox:
             "        for _f in _DANGEROUS_OS:\n"
             "            if hasattr(_mod, _f):\n"
             "                delattr(_mod, _f)\n"
+            # 删完要把「受控版本」装回去：用户代码每次 `import os` 都会走这里，
+            # 不装回去等于把下面那一串 `_os.X = _safe_X` 的赋值全部作废
+            # （tempfile 就是靠 os.open / os.unlink 干活的，缺一个就 AttributeError）。
+            # 表在运行期才建好，这里用 globals() 懒取，取不到就跳过。
+            "        _restore = globals().get('_SAFE_OS_RESTORE')\n"
+            "        if _restore:\n"
+            "            for _n, _fn in _restore.items():\n"
+            "                setattr(_mod, _n, _fn)\n"
             "    return _mod\n"
             "builtins.__import__ = _safe_import\n"
             "_orig_unlink = _os.unlink\n"
@@ -812,13 +837,22 @@ class ToolSandbox:
             "_orig_replace = _os.replace\n"
             "_orig_symlink = _os.symlink\n"
             "_orig_link = _os.link\n"
-            "_DANGEROUS_OS = ['system', 'popen', 'execv', 'execve', 'spawnl', 'spawnle', 'spawnlp', 'spawnlpe', 'spawnv', 'spawnve', 'spawnvp', 'spawnvpe', 'remove', 'rmdir', 'removedirs', 'renames', 'chmod', 'chown', 'kill', 'killpg', 'setuid', 'setgid', 'fork', 'forkpty', 'unlink', 'open']\n"
+            # os.open 在下面会被从 _DANGEROUS_OS 里删掉，但删掉会连带打死 tempfile
+            # （tempfile._get_default_tempdir 就是调 os.open）→ pandas/PIL/openpyxl
+            # 等一切用临时文件的库在沙箱里全部失灵。改为「先存原函数、再换成带同样
+            # 检查的包装」（见 _safe_os_open），安全边界不变、功能不再缺胳膊。
+            "_orig_os_open = _os.open\n"
+            # execl/execlp/execvp/posix_spawn* 必须一并删除：它们会直接替换进程镜像，
+            # 一旦调用，Python 层的 import/open/网络钩子全部失效（等价于完全逃逸）。
+            "_DANGEROUS_OS = ['system', 'popen', 'execv', 'execve', 'execl', 'execle', 'execlp', 'execlpe', 'execvp', 'execvpe', 'posix_spawn', 'posix_spawnp', 'spawnl', 'spawnle', 'spawnlp', 'spawnlpe', 'spawnv', 'spawnve', 'spawnvp', 'spawnvpe', 'remove', 'rmdir', 'removedirs', 'renames', 'chmod', 'chown', 'kill', 'killpg', 'setuid', 'setgid', 'fork', 'forkpty', 'unlink', 'open']\n"
             "for _func in _DANGEROUS_OS:\n"
             "    if hasattr(_os, _func):\n"
             "        delattr(_os, _func)\n"
             "try:\n"
             "    import importlib as _il\n"
-            "    for _b in ('reload', 'util'):\n"
+            "    # import_module 走 _bootstrap._gcd_import，不经 builtins.__import__，\n"
+            "    # 保留它等于给 import 钩子留了一个后门（可 import subprocess/ctypes）。\n"
+            "    for _b in ('reload', 'util', 'import_module'):\n"
             "        if hasattr(_il, _b):\n"
             "            delattr(_il, _b)\n"
             "except Exception:\n"
@@ -828,6 +862,7 @@ class ToolSandbox:
             f"_READ_SECRET_DIRS = {json.dumps(read_secret_dirs)}\n"
             f"_SECRET_NAMES = {json.dumps(sorted(self._SECRET_NAMES))}\n"
             f"_READ_DENY_PREFIXES = {json.dumps(read_deny)}\n"
+            f"_MIME_ALLOW = set({json.dumps(mime_allow)})\n"
             f"_DOC_ROOT = {json.dumps(doc_root)}\n"
             f"_USER_DOC = {json.dumps(user_doc)}\n"
             f"_SB_AUDIT_LOG = {json.dumps(audit_log)}\n"
@@ -937,7 +972,11 @@ class ToolSandbox:
             "    _mode = mode if isinstance(mode, str) else 'r'\n"
             "    _read = ('r' in _mode) or ('+' in _mode)\n"
             "    _write = ('w' in _mode) or ('a' in _mode) or ('x' in _mode) or ('+' in _mode)\n"
-            "    if _read and (_is_secret(_rp) or _under_prefix(_rp, _READ_DENY_PREFIXES) or _is_other_user_home(_rp) or (_rp.startswith(_DOC_ROOT + _os.sep) and not _rp.startswith(_USER_DOC + _os.sep))):\n"
+            # 系统 MIME 映射表放行：它们是**静态类型对照表**，不含任何凭据，
+            # 但 mimetypes.init() 会读它们 —— 被 /etc 前缀拦下会让 openpyxl 之类
+            # 「import 即初始化 mimetypes」的库直接 ImportError（save_excel 生成不出
+            # xlsx 就是这个原因，2026-10-24 由质量评估集发现）。
+            "    if _read and _rp not in _MIME_ALLOW and (_is_secret(_rp) or _under_prefix(_rp, _READ_DENY_PREFIXES) or _is_other_user_home(_rp) or (_rp.startswith(_DOC_ROOT + _os.sep) and not _rp.startswith(_USER_DOC + _os.sep))):\n"
             "        _sb_audit('file_read_denied', f'path={path}')\n"
             "        raise PermissionError(f'[沙箱] 禁止读取受限文件: {path}')\n"
             "    if _write and not _in_dirs(_rp, _WRITE_ALLOWED_DIRS):\n"
@@ -946,6 +985,33 @@ class ToolSandbox:
             "    return _orig_open(path, mode, *args, **kwargs)\n"
             "builtins.open = _safe_open\n"
             "_io.open = _safe_open\n"
+            # os.open 恢复（见上方 _orig_os_open 处的注释），检查口径与 _safe_open 一致。
+            # 不给 dir_fd：那条路径能绕过 realpath 校验。
+            "def _safe_os_open(path, flags, mode=0o777, *, dir_fd=None):\n"
+            "    if dir_fd is not None:\n"
+            "        raise PermissionError('[沙箱] os.open 不支持 dir_fd')\n"
+            "    _rp = _os.path.realpath(str(path))\n"
+            "    _acc = flags & _os.O_ACCMODE\n"
+            "    _read = (_acc == _os.O_RDONLY) or (_acc == _os.O_RDWR)\n"
+            "    _write = (_acc != _os.O_RDONLY) or bool(flags & (_os.O_CREAT | _os.O_TRUNC | _os.O_APPEND))\n"
+            "    if _read and _rp not in _MIME_ALLOW and (_is_secret(_rp) or _under_prefix(_rp, _READ_DENY_PREFIXES) or _is_other_user_home(_rp) or (_rp.startswith(_DOC_ROOT + _os.sep) and not _rp.startswith(_USER_DOC + _os.sep))):\n"
+            "        _sb_audit('file_read_denied', f'path={path}')\n"
+            "        raise PermissionError(f'[沙箱] 禁止读取受限文件: {path}')\n"
+            "    if _write and not _in_dirs(_rp, _WRITE_ALLOWED_DIRS):\n"
+            "        _sb_audit('file_write_denied', f'path={path}')\n"
+            "        raise PermissionError(f'[沙箱] 禁止写入禁区: {path}')\n"
+            "    return _orig_os_open(path, flags, mode)\n"
+            "_os.open = _safe_os_open\n"
+            # 「删除的危险函数 → 受控替代」对照表。_safe_import 每次 import os 都会
+            # 重新删一遍危险函数，必须靠这张表把它们换回受控版本，否则标准库
+            # （tempfile / shutil / pathlib）会撞 AttributeError。没有受控替代的
+            # （chmod / kill / system / exec* 等）保持删除，不进此表。
+            "_SAFE_OS_RESTORE = {\n"
+            "    'open': _safe_os_open, 'unlink': _safe_unlink, 'remove': _safe_unlink,\n"
+            "    'makedirs': _safe_makedirs, 'mkdir': _safe_mkdir,\n"
+            "    'rename': _safe_rename, 'replace': _safe_rename,\n"
+            "    'symlink': _safe_symlink, 'link': _safe_link,\n"
+            "}\n"
             # 受控命令执行（命令白名单，默认禁用 rm/sudo/dd 等危险命令）
             f"_ALLOWED_CMDS = set({allowed_cmds})\n"
             f"_DEFAULT_CWD = {json.dumps(tmpdir)}\n"
@@ -998,6 +1064,20 @@ class ToolSandbox:
             "except (ImportError, ValueError):\n"
             "    pass\n"
         )
+
+        # 内部别名随机化：加固代码与用户代码共享同一模块作用域，若保留
+        # _sb_subprocess / _SB_ORIG_OPEN / _orig_import / _orig_unlink 这类可猜测的全局名，
+        # 用户代码直接调用即可绕过全部钩子（等价于沙箱逃逸）。
+        # 这里在拼入用户代码【之前】统一改名（一致替换，不影响加固层自身逻辑），
+        # 使这些名字无法被预先猜到。真正的边界仍是独立子进程。
+        _rnd = secrets.token_hex(4)
+        for _name in (
+            "_sb_subprocess", "_SB_ORIG_OPEN", "_sb_socket", "_orig_import",
+            "_sb_orig_getaddrinfo", "_orig_open", "_orig_unlink", "_orig_remove",
+            "_orig_makedirs", "_orig_mkdir", "_orig_rename", "_orig_replace",
+            "_orig_symlink", "_orig_link", "_orig_os_open", "_os",
+        ):
+            wrapper = wrapper.replace(_name, f"{_name}_{_rnd}")
 
         indented_code = "\n".join(
             "    " + line if line.strip() else ""

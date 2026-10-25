@@ -1,0 +1,94 @@
+/* 01-variables.css
+ * 主题变量（:root 浅色 / .dark 深色）——必须最先加载
+ *
+ * 由 static/style.css 拆分而来（原第 1-77 行，共 4669 行）。
+ * 拆分方式：按原顺序连续切分，加载顺序与原文件一致，层叠结果不变。
+ * 注意：各文件之间靠 <link> 的先后顺序决定层叠，插入新文件时请一并确认顺序。
+ */
+
+:root {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f7f7f8;
+  --bg-tertiary: #ececf1;
+  --bg-chat: #ffffff;
+  --bg-input: #ffffff;
+  --bg-hover: #ececf1;
+  --bg-user-msg: #eaf1fd;
+  --bg-assistant-msg: #ffffff;
+  --text-primary: #1a1a2e;
+  --text-secondary: #6b6b80;
+  --text-muted: #9a9ab0;
+  --text-dim: #6b6b80;
+  --accent: #1976d2;
+  --accent-hover: #1565c0;
+  --danger: #ef5350;
+  --danger-hover: #e53935;
+  --success: #66bb6a;
+  --warning: #b26a00;
+  --border: #e0e0e8;
+  /* 比卡片再抬一层的表面（列表表头、状态条等）。原先只有消费方、没有定义，
+     全靠 var() 的第二个参数兜着 —— 暗色下兜底成浅灰就露馅了 */
+  --bg-elevated: #f3f3f5;
+  /* 等宽字体栈：代码块、预览文本、token 数字 */
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --shadow: 0 4px 24px rgba(0,0,0,0.08);
+  --transition: 0.2s ease;
+
+  /* 背景层次：外壳（侧栏/页面）→ 工作区 → 卡片，越往里越亮，白卡片才立得住 */
+  --bg-app: #e9ecf2;
+  --bg-canvas: #fbfbfd;
+  --bg-glow-a: rgba(59, 130, 246, 0.13);
+  --bg-glow-b: rgba(139, 92, 246, 0.10);
+  --line-soft: rgba(16, 24, 40, 0.08);
+
+  /* 弹窗与卡片表面：弹窗本体最亮，内部卡片/底栏下沉一层 */
+  --surface-dialog: #ffffff;
+  --surface-sunken: #f4f5f8;
+  --surface-sunken-strong: #eceef3;
+  --line-strong: rgba(16, 24, 40, 0.12);
+
+  /* 历史引用别名（此前未定义，导致多处背景/文字色静默失效） */
+  --bg: var(--bg-primary);
+  --text: var(--text-primary);
+}
+
+.dark {
+  --bg-primary: #111111;
+  --bg-secondary: #1a1a1a;
+  --bg-tertiary: #2a2a2a;
+  --bg-chat: #111111;
+  --bg-input: #1a1a1a;
+  --bg-hover: #2a2a2a;
+  --bg-user-msg: #1b2333;
+  --bg-assistant-msg: #1d1d23;
+  --text-primary: #ffffff;
+  --text-secondary: #aaaaaa;
+  --text-muted: #666666;
+  --text-dim: #b0b0b0;
+  --accent: #3b82f6;
+  --accent-hover: #2f74e0;
+  --danger: #ef5350;
+  --danger-hover: #e53935;
+  --success: #66bb6a;
+  --warning: #e0a458;
+  --border: #333333;
+  --bg-elevated: #24242b;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --shadow: 0 4px 24px rgba(0,0,0,0.5);
+
+  /* 深色同样三层，但方向相反：外壳最深，往上逐级提亮 */
+  --bg-app: #08080b;
+  --bg-canvas: #15151a;
+  --bg-glow-a: rgba(59, 130, 246, 0.13);
+  --bg-glow-b: rgba(139, 92, 246, 0.10);
+  --line-soft: rgba(255, 255, 255, 0.07);
+
+  /* 深色里卡片要抬起来，不能比弹窗底更暗 */
+  --surface-dialog: #191920;
+  --surface-sunken: #22222b;
+  --surface-sunken-strong: #2b2b36;
+  --line-strong: rgba(255, 255, 255, 0.12);
+}
+

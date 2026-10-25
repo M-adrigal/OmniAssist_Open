@@ -1,0 +1,599 @@
+/* 07-dialog-controls.css
+ * 弹窗内通用控件：搜索框、工具条、列表、徽标
+ *
+ * 由 static/style.css 拆分而来（原第 1455-2045 行，共 4669 行）。
+ * 拆分方式：按原顺序连续切分，加载顺序与原文件一致，层叠结果不变。
+ * 注意：各文件之间靠 <link> 的先后顺序决定层叠，插入新文件时请一并确认顺序。
+ */
+
+/* ===== 弹窗内的通用控件（搜索框 / 工具条 / 无边框列表） ===== */
+.ui-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.ui-search {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--surface-dialog);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+.ui-search:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
+}
+.ui-search::placeholder { color: var(--text-muted); }
+
+.ui-list {
+  display: flex;
+  flex-direction: column;
+}
+
+
+/* 表单 */
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.form-group input {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: 14px;
+  outline: none;
+  transition: border-color var(--transition);
+}
+
+.form-group input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
+
+.form-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.form-hint a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.form-error {
+  font-size: 12px;
+  color: var(--danger);
+  margin-top: 4px;
+  min-height: 1px;
+}
+
+.form-hint a:hover {
+  text-decoration: underline;
+}
+
+/* 分段式标签栏：替代原来的下划线 tab（原样式与头部边框叠成两条线） */
+.config-tabs {
+  display: inline-flex;
+  gap: 2px;
+  margin: 0 0 18px;
+  padding: 3px;
+  background: var(--surface-sunken);
+  border: none;
+  border-radius: 10px;
+}
+
+.config-tab {
+  padding: 7px 14px;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  margin-bottom: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.18s, background 0.18s;
+}
+
+.config-tab:hover {
+  color: var(--text-primary);
+}
+
+.config-tab.active {
+  background: var(--surface-dialog);
+  color: var(--text-primary);
+  border-bottom-color: transparent;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.10);
+}
+
+.config-tab-content.hidden {
+  display: none;
+}
+
+
+/* 工具列表 */
+.tools-container, .files-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Toggle 开关 */
+.toggle-label {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  cursor: pointer;
+}
+
+.toggle-label input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-switch {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bg-tertiary);
+  border-radius: 11px;
+  transition: all 0.2s;
+  border: 1px solid var(--border);
+}
+
+.toggle-switch::before {
+  content: "";
+  position: absolute;
+  height: 16px;
+  width: 16px;
+  left: 2px;
+  bottom: 2px;
+  background: var(--bg-primary);
+  border-radius: 50%;
+  transition: all 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+
+.toggle-label input:checked + .toggle-switch {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.toggle-label input:checked + .toggle-switch::before {
+  transform: translateX(18px);
+}
+
+/* 文件列表 */
+.file-folder {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.file-folder-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--bg-primary);
+  cursor: pointer;
+  transition: background var(--transition);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.file-folder-header:hover { background: var(--bg-hover); }
+
+.file-folder-header .arrow {
+  transition: transform var(--transition);
+  font-size: 12px;
+}
+
+.file-folder-header .arrow.open { transform: rotate(90deg); }
+
+.file-folder-body {
+  border-top: 1px solid var(--border);
+}
+
+.file-folder-body.hidden { display: none; }
+
+.file-folder-nested {
+  margin: 0;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+}
+
+.file-folder-nested:last-child { border-bottom: none; }
+
+.file-folder-nested .file-folder-header {
+  padding-left: 36px;
+  background: var(--bg-secondary);
+  font-size: 13px;
+}
+
+.file-folder-header-user {
+  background: var(--bg-secondary);
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px 10px 36px;
+  font-size: 13px;
+  transition: background var(--transition);
+}
+
+.file-item:hover { background: var(--bg-hover); }
+
+.file-item .file-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.file-item .file-name:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.file-item .file-size {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin: 0 12px;
+}
+
+.file-item .file-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.btn-preview {
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn-preview:hover {
+  background: var(--accent-hover);
+}
+
+/* 文件库操作按钮（下载/重命名/删除）与类别徽标 */
+.btn-download, .btn-rename {
+  display: inline-block;
+  padding: 3px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #ddd);
+  background: var(--bg, #fff);
+  color: var(--text, #222);
+  text-decoration: none;
+  cursor: pointer;
+  line-height: 1.6;
+}
+.btn-download:hover, .btn-rename:hover {
+  border-color: var(--accent, #4f7cff);
+  color: var(--accent, #4f7cff);
+}
+.cloud-ops { display: flex; gap: 8px; flex-wrap: nowrap; align-items: center; }
+.badge-category {
+  background: var(--bg-hover, #ececf1);
+  color: var(--text-dim, #666);
+  border: 1px solid var(--border, #e0e0e8);
+}
+/* 来源徽标：用户上传（蓝）/ 平台生成（绿） */
+.badge-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.badge-source-upload {
+  background: #e8f0fe;
+  color: #1a73e8;
+  border: 1px solid #c6dafc;
+}
+.badge-source-generated {
+  background: #e6f4ea;
+  color: #137333;
+  border: 1px solid #b7dfc3;
+}
+/* 暗色模式：来源徽标改为深底亮字，避免浅底色在深色界面过亮 */
+.dark .badge-source-upload {
+  background: rgba(26, 115, 232, 0.18);
+  color: #8ab4f8;
+  border-color: rgba(138, 180, 248, 0.35);
+}
+.dark .badge-source-generated {
+  background: rgba(19, 115, 51, 0.20);
+  color: #81c995;
+  border-color: rgba(129, 201, 149, 0.35);
+}
+/* 类型小徽标（扩展名） */
+.badge-type {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  background: var(--bg-hover, #ececf1);
+  color: var(--text-dim, #666);
+  border: 1px solid var(--border, #e0e0e8);
+}
+/* 文件预览 */
+.modal-xl {
+  width: 85vw;
+  max-width: 1100px;
+  max-height: 85vh;
+}
+
+.modal-xl .modal-body {
+  max-height: calc(85vh - 60px);
+  overflow-y: auto;
+}
+
+/* 文件库弹窗放大 */
+.cloud-modal-lg {
+  width: 92vw;
+  max-width: 1280px;
+  max-height: 90vh;
+}
+
+/* 预览模式：进一步放大并自适应撑满视口 */
+.cloud-modal-lg.preview-mode {
+  width: 94vw;
+  max-width: 1400px;
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.cloud-modal-lg.preview-mode .modal-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.cloud-modal-lg .modal-body {
+  max-height: calc(90vh - 64px);
+  overflow-y: auto;
+}
+
+.preview-content {
+  min-height: 200px;
+}
+
+.preview-code {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  overflow-x: auto;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13.5px;
+  line-height: 1.65;
+  white-space: pre;
+  color: var(--text-primary);
+}
+/* 预览内容区自适应填充，文本/表格内容独立滚动 */
+.cloud-preview-content .preview-code {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  margin: 0;
+}
+
+.preview-image-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 200px;
+}
+
+.preview-image {
+  max-width: 100%;
+  max-height: 65vh;
+  border-radius: var(--radius);
+  object-fit: contain;
+}
+
+.preview-pdf {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  border: none;
+  border-radius: var(--radius);
+}
+
+/* CSV 表格预览样式 */
+.preview-csv-table th {
+  background: var(--bg-tertiary);
+  padding: 8px 12px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-bottom: 2px solid var(--border);
+  position: sticky;
+  top: 0;
+}
+.preview-csv-table td {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border, #e0e0e8);
+  font-size: 13px;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-csv-table tr:nth-child(even) td {
+  background: rgba(0, 0, 0, 0.02);
+}
+.preview-csv-table tr:hover td {
+  background: var(--bg-hover);
+}
+
+/* 文件预览面板：flex 自适应纵列布局 */
+.cloud-preview-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 20px 24px;
+}
+
+/* 返回按钮独占一行（位于标题上方），标题独立一行 */
+.cloud-preview-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16px;
+  font-weight: 600;
+  margin: 6px 0 14px;
+}
+
+/* 内容区：自适应填充弹窗剩余空间并独立滚动 */
+.cloud-preview-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* CSV 表格滚动容器：填满剩余空间 */
+.preview-csv-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+/* 元信息小字（行数/提示等） */
+.preview-meta {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  margin: 0 0 8px;
+}
+
+/* 预览返回按钮 */
+.btn-preview-back {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start; /* 在 flex 纵列容器中不拉伸为全宽 */
+  gap: 4px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-bottom: 12px;
+}
+
+.btn-preview-back:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.preview-unsupported {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-secondary);
+}
+
+.preview-unsupported p {
+  font-size: 16px;
+}
+
+/* Toast */
+.toast {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  padding: 12px 20px;
+  border-radius: var(--radius);
+  font-size: 14px;
+  z-index: 300;
+  animation: toastIn 0.3s ease;
+  box-shadow: var(--shadow);
+}
+
+.toast.hidden { display: none; }
+.toast.success { background: #1b5e20; color: #a5d6a7; }
+.toast.error { background: #b71c1c; color: #ef9a9a; }
+.toast.info { background: var(--bg-tertiary); color: var(--accent); }
+.toast.warning { background: #e65100; color: #ffcc80; }
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* 加载 */
+.loading-text {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 20px;
+}
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* 响应式 */
+@media (max-width: 768px) {
+  #app { --sidebar-w: 220px; }
+  /* 侧栏窄 44px 后品牌名会被截成"OmniAs…"，字号和图标各收一点正好让开 */
+  .sidebar-brand { gap: 8px; }
+  .brand-name { font-size: 15px; letter-spacing: 0.2px; }
+  .brand-actions { gap: 0; margin-right: -4px; }
+  .brand-actions .btn-search-icon,
+  .brand-actions .btn-collapse { width: 28px; height: 28px; }
+  .drawer { width: 196px; }
+  .modal-content { width: 90vw; }
+  .modal-wide { width: 90vw; }
+  .modal-xl { width: 90vw; }
+  .message { max-width: 100%; }
+  .message.user { max-width: 86%; }
+}
+

@@ -29,6 +29,20 @@ from agent.temperature import build_policy
 from agent.user_secrets import set_user_secret, list_user_secrets_masked, delete_user_secret
 
 
+def _sync_user_skills_to_db(user_id):
+    """把指定用户的磁盘技能同步进 user_skills 索引表（供 sync_skills_to_db 工具调用）。"""
+    from agent.skill_sync import sync_user_from_fs
+    r = sync_user_from_fs(user_id)
+    return {
+        "user_id": user_id,
+        "skills_on_disk": r.get("on_disk", []),
+        "added_to_db": r.get("added", []),
+        "removed_stale": r.get("removed", []),
+        "unchanged": r.get("unchanged", 0),
+        "kept_disable_markers": r.get("kept_markers", 0),
+    }
+
+
 def install_skill_template(template_name: str, _user_id=None):
     """把技能模板安装到当前用户的技能仓库（复制目录 + 立即加载）。
 
@@ -286,6 +300,7 @@ def init_services():
 
     # 注册 Skill 编辑器工具（用户级 Skill CRUD）
     from agent.skill_editor import create_user_skill, update_user_skill, delete_user_skill, list_user_skills
+    from agent.skill_editor import restore_user_skill, list_trashed_skills, cleanup_trashed_skills
     _tool_registry.register_tool(
         name="create_user_skill",
         description="为用户创建一个新的自定义 Skill。Skill 包含 SKILL.md（技能描述）和可选的工具脚本。",
@@ -322,7 +337,7 @@ def init_services():
     )
     _tool_registry.register_tool(
         name="delete_user_skill",
-        description="删除用户的一个自定义 Skill（仅限用户级 Skill，系统 Skill 不可删除）。",
+        description="删除用户的一个自定义 Skill（仅限用户级 Skill，系统 Skill 不可删除）。删除采用软删除：技能目录会移入备份区，7 天内可用 restore_user_skill 恢复。",
         parameters={
             "type": "object",
             "properties": {
@@ -334,6 +349,55 @@ def init_services():
             delete_user_skill(_user_id, name), ensure_ascii=False
         ),
         risk_level="write", risk_description="删除自定义技能：{name}",
+    )
+    _tool_registry.register_tool(
+        name="restore_user_skill",
+        description="恢复一个被删除的自定义 Skill（从备份区取最近一份）。当「删了但没建回来」时用它找回。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "要恢复的 Skill 名称"},
+            },
+            "required": ["name"]
+        },
+        func=lambda name, _user_id=None: json.dumps(
+            restore_user_skill(_user_id, name), ensure_ascii=False
+        ),
+        risk_level="write", risk_description="恢复自定义技能：{name}",
+    )
+    _tool_registry.register_tool(
+        name="list_trashed_skills",
+        description="列出可恢复的已删除 Skill 备份（软删除区）。",
+        parameters={"type": "object", "properties": {}},
+        func=lambda _user_id=None: json.dumps(
+            list_trashed_skills(_user_id), ensure_ascii=False
+        ),
+    )
+    _tool_registry.register_tool(
+        name="cleanup_trashed_skills",
+        description="清理已删除 Skill 的备份区。默认删除超过 30 天的备份（可指定保留天数，0 表示全部清空）。清理后不可恢复。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "retention_days": {"type": "integer",
+                                   "description": "保留天数，默认 30；传 0 表示立即清空全部备份"},
+                "dry_run": {"type": "boolean", "description": "只统计将要删除哪些，不实际删除"},
+            },
+            "required": []
+        },
+        func=lambda retention_days=None, dry_run=False, _user_id=None: json.dumps(
+            cleanup_trashed_skills(_user_id, retention_days=retention_days, dry_run=bool(dry_run)),
+            ensure_ascii=False
+        ),
+        risk_level="write", risk_description="清理已删除技能的备份（保留 {retention_days} 天）",
+    )
+    _tool_registry.register_tool(
+        name="sync_skills_to_db",
+        description="把磁盘上的用户技能同步到数据库索引表（user_skills）。当查到该表为空但技能明明存在时用这个修复。磁盘是真相源，表只是索引。",
+        parameters={"type": "object", "properties": {}},
+        func=lambda _user_id=None: json.dumps(
+            _sync_user_skills_to_db(_user_id), ensure_ascii=False
+        ),
     )
     _tool_registry.register_tool(
         name="list_user_skills",
@@ -457,10 +521,12 @@ def init_services():
         diag_validate_skill,
     )
 
-    def _reg(name, desc, params, fn, risk_level="safe", risk_description=None):
+    def _reg(name, desc, params, fn, risk_level="safe", risk_description=None,
+             block_during_stream=False):
         _tool_registry.register_tool(
             name=name, description=desc, parameters=params, func=fn,
             risk_level=risk_level, risk_description=risk_description,
+            block_during_stream=block_during_stream,
         )
 
     _reg(
@@ -484,6 +550,10 @@ def init_services():
         {"type": "object", "properties": {}},
         lambda _user_id=None: diag_restart_service(_user_id),
         risk_level="exec", risk_description="重启主服务（当前连接将短暂中断）",
+        # 该工具会终止当前服务进程 → 禁止在流式响应生成期间执行，
+        # 否则服务会自杀（generator already executing + 本轮上下文丢失）。
+        # 事故记录：2026-10-23 11:16:25。改为延迟到本轮回复结束后执行。
+        block_during_stream=True,
     )
     _reg(
         "diag_check_env",
@@ -674,7 +744,9 @@ async def lifespan(app: FastAPI):
         logger.info(f"访问地址: http://localhost:17520")
         logger.info("=" * 60)
         logger.info("默认管理员账号: admin")
-        logger.info("默认管理员密码: admin123")
+        # 初始口令只打到控制台，绝不写进日志文件（logs/ 下的文件管理员可下载）
+        print(f"    默认管理员初始密码: {admin_pw}")
+        logger.info("默认管理员初始密码已打印到控制台（不写入日志）")
         logger.warning("首次登录需修改密码后方可使用！")
         logger.info("=" * 60)
 
@@ -723,9 +795,52 @@ async def lifespan(app: FastAPI):
     refresh_global_llm()
     _start_sqlite_web()
 
+    # 启动后台清理任务（技能备份保留 30 天，过期自动删）
+    try:
+        from server.cleanup_scheduler import cleanup_scheduler
+        cleanup_scheduler.start()
+    except Exception as e:
+        logger.warning(f"清理任务启动失败（已忽略）: {e}")
+
+    # 用户技能「磁盘 ↔ 表」对账：磁盘是真相源，表只是索引。
+    # 缺了这一步，Agent 查 user_skills 表会得到空结果，进而误判技能被删、甚至
+    # 怀疑自己不是管理员（2026-10-23 事故）。
+    try:
+        from agent.skill_sync import reconcile_all_users
+        _rec = reconcile_all_users()
+        if _rec.get("detail"):
+            logger.info(f"用户技能表对账：修正 {len(_rec['detail'])} 个用户的索引 "
+                        f"(新增 {sum(len(d['added']) for d in _rec['detail'])}，"
+                        f"清除幽灵 {sum(len(d['removed']) for d in _rec['detail'])})")
+        else:
+            logger.info("用户技能表对账完成：无需修正")
+    except Exception as e:
+        logger.warning(f"用户技能表对账失败（已忽略，不影响启动）: {e}")
+
+    # 用量 pending 对账：把上次进程死掉时没跑完的任务标成「中断」，
+    # 把「跑完了却一笔账没记上」的标成「异常」。缺了它，这些 token 会凭空消失
+    # 而看板显示一切正常（2026-10-24 加）。
+    try:
+        from server.usage_store import reconcile_pending
+        _pr = reconcile_pending()
+        if _pr.get("interrupted") or _pr.get("orphan"):
+            logger.warning(
+                f"用量对账完成：中断 {len(_pr['interrupted'])} 个、"
+                f"异常 {len(_pr['orphan'])} 个（详见 usage_pending 表）"
+            )
+        else:
+            logger.info("用量 pending 对账完成：无中断/异常")
+    except Exception as e:
+        logger.warning(f"用量 pending 对账失败（已忽略，不影响启动）: {e}")
+
     yield  # 服务运行中
 
     # shutdown
+    try:
+        from server.cleanup_scheduler import cleanup_scheduler
+        cleanup_scheduler.stop()
+    except Exception:
+        pass
     _cleanup()
 
 
@@ -768,7 +883,9 @@ async def no_cache_static(request: Request, call_next):
     """静态资源与页面禁用缓存，避免浏览器使用旧版 app.js/style.css。"""
     resp = await call_next(request)
     path = request.url.path
-    if path.startswith("/static/") or path in ("/", "/login.html", "/favicon.ico"):
+    # /usage 与静态资源一起禁缓存：看板页源码随版本变化，浏览器若缓存旧版
+    # （如仍带已下线的「折算成本」KPI），新旧 HTML/JS 混搭会显示不出来。
+    if path.startswith("/static/") or path in ("/", "/login.html", "/usage", "/favicon.ico"):
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         resp.headers["Pragma"] = "no-cache"
         resp.headers["Expires"] = "0"
@@ -837,10 +954,38 @@ async def global_exception_handler(request: Request, call_next):
     except Exception as e:
         import traceback
         logger.error(f"未捕获的异常: {e}\n{traceback.format_exc()}")
+        # 异常原文（含绝对路径、SQL、库内部信息）只进日志，不回给客户端
         return JSONResponse(
             status_code=500,
-            content={"detail": f"服务内部错误: {str(e)}"}
+            content={"detail": "服务内部错误，请联系管理员查看日志"}
         )
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """统一补齐安全响应头（注册在最后 = 最外层，500 响应也能带上）。
+
+    - nosniff：浏览器不再按内容嗅探 MIME，堵住「下载接口返回 text/html 被当页面执行」
+    - X-Frame-Options / frame-ancestors：防止被外部网站套进透明 iframe 做点击劫持
+      （用 SAMEORIGIN/'self' 而非 DENY/'none'，本站自己的 iframe 场景要能放行）
+    - CSP：禁止加载站外脚本（放宽 inline/data/blob，避免影响现有页面）
+    """
+    resp = await call_next(request)
+    try:
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        # SAMEORIGIN 而非 DENY：本站自己就用 iframe 嵌页面（Token 看板浮层 /usage、
+        # 文件库的 PDF 预览 /api/files/download?inline=1）。DENY 会把它们全部打成白屏，
+        # 而点击劫持防护要防的是「被外部网站嵌入」，同源放行不损失这个能力。
+        resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        resp.headers.setdefault("Referrer-Policy", "no-referrer")
+        resp.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; "
+            "object-src 'none'; frame-ancestors 'self'",
+        )
+    except Exception:
+        pass
+    return resp
 
 
 for router in routers:
@@ -859,6 +1004,12 @@ def serve_login():
     return FileResponse(os.path.join(static_dir, "login.html"))
 
 
+@app.get("/usage")
+def serve_usage():
+    """Token 消耗看板（独立页面，登录态复用同一 cookie）。"""
+    return FileResponse(os.path.join(static_dir, "usage.html"))
+
+
 @app.get("/favicon.ico")
 def serve_favicon():
     return FileResponse(os.path.join(static_dir, "favicon.svg"), media_type="image/svg+xml")
@@ -871,38 +1022,157 @@ def health():
 app.mount("/static", StaticFiles(directory=static_dir, html=False), name="static")
 
 
-def _check_and_free_port(port: int):
-    import signal
+def _pid_cmdline(pid: int) -> str:
+    """读取进程命令行（跨平台：优先 /proc，回退 ps）。失败返回空串。"""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            raw = f.read().replace(b"\x00", b" ").decode(errors="ignore").strip()
+            if raw:
+                return raw
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=3,
+        )
+        return r.stdout.strip()
+    except Exception:
+        return ""
+
+
+def _is_systemd_managed(pid: int) -> bool:
+    """判断进程是否由 systemd 托管（Linux 通过 cgroup；非 Linux 返回 False）。
+
+    systemd 服务进程的 cgroup 路径含 .service（如 system.slice/agent.service）；
+    手动 nohup 启动的进程通常在 session-*.scope / user scope，不含 .service。
+    """
+    try:
+        with open(f"/proc/{pid}/cgroup", "r") as f:
+            return ".service" in f.read()
+    except Exception:
+        return False
+
+
+def _is_self_process(cmdline: str) -> bool:
+    """判断命令行是否属于本服务相关进程（主服务 / uvicorn / sqlite-web 代理）。"""
+    return any(k in cmdline for k in ("server/main.py", "uvicorn", "sqlite_web", "sqlite-web"))
+
+
+def _port_has_listener(port: int) -> bool:
+    """端口上是否**真的有进程在 LISTEN**。
+
+    为什么不能只用 `_is_port_available()` 的 bind 探测：
+    Ctrl+C 停掉旧实例后，端口会进入 TIME_WAIT（macOS 约 30-60 秒）。
+    这段时间里 bind（不带 SO_REUSEADDR）必然失败 → 旧实现判「被占用」；
+    但内核残留状态没有任何进程持有，`lsof -ti` 也查不到 PID
+    → 报「被占用但无法确定占用进程」并退出，用户只能干等一分钟。
+    而 uvicorn 自带 SO_REUSEADDR，此时本来就能正常绑定启动。
+
+    区分办法是 connect：能连上 = 有真监听；ECONNREFUSED = 只是内核计时器残留。
+    """
     import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            s.connect(("127.0.0.1", port))
+            return True
+    except OSError:
+        return False
+
+
+def _check_and_free_port(port: int, fatal: bool = True):
+    """启动前端口占用处理：杜绝「手动 nohup 启动」与「systemd 托管」争抢端口。
+
+    决策逻辑：
+    - 端口空闲                          -> 正常启动；
+    - 端口无监听但 bind 失败（TIME_WAIT 残留）-> 放行：uvicorn 自带 SO_REUSEADDR
+                                          能直接绑定，否则用户每次重启都要白等
+                                          30-60 秒（见 _port_has_listener 注释）；
+    - 被本服务残留实例占用（cmdline 含本服务特征、且非 systemd 托管）
+                                       -> 自动清理后继续（例如手动 nohup 遗留进程，
+                                          systemd 重启时自动清掉，不再反复重启失败）；
+    - 被 systemd 托管服务占用            -> fatal 时拒绝启动并提示 systemctl restart agent
+                                          （绝不自动杀正式服务）；非 fatal（数据库代理端口）时跳过；
+    - 被其他程序占用 / 无权限终止         -> fatal 时输出排查指引并退出；非 fatal 时跳过。
+
+    Args:
+        port: 要检查的端口号。
+        fatal: True 表示端口冲突必须解决否则退出（主服务端口 17520）；
+               False 表示冲突时跳过该功能即可（sqlite-web 管理界面 17521/17523）。
+    """
+    import signal
     import time
 
     if _is_port_available(port):
         return
 
-    pids = _find_port_pids(port)
+    # bind 失败 ≠ 有人占用：先确认是否真有进程在 LISTEN。
+    # 双保险：lsof 查 LISTEN 进程（权威）→ connect 探测（兜底，防 lsof 无权限时漏判）。
+    # connect 探测本身会占用对方 accept 队列一个位置，backlog 满时会误判为无人监听，
+    # 所以必须以 lsof 结果为准，connect 只用于确认「确实没人」。
+    listening_pids = _find_port_pids(port, listen_only=True)
+    if not listening_pids and not _port_has_listener(port):
+        logger.info(
+            f"端口 {port} 当前无人监听（bind 失败应为 TIME_WAIT/FIN_WAIT 残留），"
+            f"继续启动（uvicorn 使用 SO_REUSEADDR 可正常绑定）"
+        )
+        return
+
+    pids = listening_pids or _find_port_pids(port)
     if not pids:
-        logger.warning(f"端口 {port} 被占用，但无法确定占用进程（可能在容器外）")
-        _force_release_port(port)
+        logger.warning(f"端口 {port} 有服务在监听，但无法确定占用进程（无权限或跨命名空间）")
+        if fatal:
+            logger.warning(
+                f"请人工排查：lsof -nP -iTCP:{port} -sTCP:LISTEN；"
+                f"若确为本服务残留实例，执行 pkill -f 'server/main.py' 后重试"
+            )
+            sys.exit(1)
         return
 
     for pid in pids:
         if pid == os.getpid():
             continue
-        try:
-            os.kill(pid, signal.SIGKILL)
-            logger.info(f"已终止占用端口 {port} 的进程 (PID: {pid})")
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            logger.warning(f"无权限终止进程 (PID: {pid})，端口 {port} 可能仍被占用")
+        cmdline = _pid_cmdline(pid)
+        if _is_systemd_managed(pid):
+            # systemd 托管的正式服务：绝不自动杀，提示正确操作
+            logger.error(f"端口 {port} 正被 systemd 托管服务占用 (PID {pid}, cmd: {cmdline})")
+            if fatal:
+                logger.error("禁止手动启动与正式服务争抢端口。如需重启请执行：sudo systemctl restart agent")
+                sys.exit(1)
+            logger.warning("非关键端口，已跳过")
+            return
+        if _is_self_process(cmdline):
+            # 本服务残留实例（手动 nohup 遗留）：自动清理
+            try:
+                os.kill(pid, signal.SIGKILL)
+                logger.warning(f"检测到本服务残留实例 (PID {pid})，已自动清理，继续启动")
+            except PermissionError:
+                logger.error(
+                    f"无权限终止残留实例 (PID {pid}, cmd: {cmdline})。"
+                    f"请先执行 sudo kill {pid} 释放端口 {port} 后再试"
+                )
+                sys.exit(1)
+            except ProcessLookupError:
+                pass
+            continue
+        # 其他程序占用
+        logger.error(
+            f"端口 {port} 被其他程序占用 (PID {pid}, cmd: {cmdline})。"
+            f"排查：ss -tlnp | grep {port}；确认可终止后执行：sudo kill {pid}"
+        )
+        if fatal:
+            sys.exit(1)
+        return
 
     for _ in range(10):
         time.sleep(0.3)
         if _is_port_available(port):
             return
 
-    logger.warning(f"端口 {port} 仍被占用，尝试强制释放...")
-    _force_release_port(port)
+    logger.error(f"端口 {port} 在清理后仍被占用，请人工排查后重试")
+    if fatal:
+        sys.exit(1)
 
 
 def _force_release_port(port: int):
@@ -930,16 +1200,24 @@ def _is_port_available(port: int) -> bool:
     import socket
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(("127.0.0.1", port))
+            # 注意：不设 SO_REUSEADDR 且绑定 0.0.0.0 —— BSD 系（macOS）上
+            # SO_REUSEADDR 允许「通配地址 + 具体地址」或两个通配地址重叠绑定，
+            # 若沿用旧实现（127.0.0.1 + SO_REUSEADDR）会把已被占用的端口误判为空闲。
+            s.bind(("0.0.0.0", port))
             return True
     except OSError:
         return False
 
 
-def _find_port_pids(port: int) -> list:
+def _find_port_pids(port: int, listen_only: bool = False) -> list:
+    """查找占用端口的进程 PID。
+
+    listen_only=True 只找 LISTEN 状态的进程（macOS: `lsof -sTCP:LISTEN`）。
+    判定「有没有人在监听」必须用这个口径：普通 lsof 会把 TIME_WAIT 残留的
+    客户端连接也列出来，而那些连接没有归属进程，只会误导判断。
+    """
     methods = [
-        ["lsof", "-ti", f":{port}"],
+        (["lsof", "-ti", f":{port}"] + (["-sTCP:LISTEN"] if listen_only else [])),
         ["fuser", f"{port}/tcp"],
         ["ss", "-tlnp"],
     ]
@@ -1000,8 +1278,9 @@ def _start_sqlite_web():
     DB_PROXY_PORT = 17521
     DB_BACKEND_PORT = 17523
 
-    _check_and_free_port(DB_PROXY_PORT)
-    _check_and_free_port(DB_BACKEND_PORT)
+    # 数据库管理界面端口：非致命——端口被占时跳过该功能，不影响主服务
+    _check_and_free_port(DB_PROXY_PORT, fatal=False)
+    _check_and_free_port(DB_BACKEND_PORT, fatal=False)
 
     password_file = os.path.join(os.path.dirname(DB_PATH), ".db_web_password")
     if os.path.isfile(password_file):

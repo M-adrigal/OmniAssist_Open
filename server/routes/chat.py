@@ -1,9 +1,11 @@
 import asyncio
+import base64
 import json
 import os
 import re
 import time
 import threading
+import uuid
 from functools import partial
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Request
@@ -13,7 +15,7 @@ from agent.intent_keywords import select_tools_by_intent
 from agent.model_gateway import ModelGateway, thinking_mode_to_flags
 from agent.logger import get_logger, set_context, clear_context
 from agent.parallel_executor import ParallelToolExecutor
-from agent.loop_guard import new_loop_state, evaluate as _eval_loop_guard
+from agent.loop_guard import new_loop_state, evaluate as _eval_loop_guard, _call_signature
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = get_logger("chat")
@@ -26,6 +28,7 @@ from server.routes.auth import get_current_user
 from server.approval_store import approval_store
 from server.trust_store import trust_store, audit_log
 from server.database import resolve_model_config
+from server.agent_audit import agent_audit
 
 
 def _is_role_exempt(user_id: int) -> bool:
@@ -103,6 +106,25 @@ def _sanitize_search(s):
     return ns
 
 
+def _content_to_text(content) -> str:
+    """把消息 content 归一成纯文本（用于脱敏落库与历史渲染）。
+
+    多模态消息的 content 是块数组（[{"type":"text",...},{"type":"image_url",...}]），
+    若直接 str(content) 会把整个结构压成一个字符串再被截断——既破坏图片，
+    又会生成一堆无意义文本。这里只取文本块；**图片块一律不落库**：
+    图片每次请求都从磁盘实时重建，库里不需要留第二份副本。
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for seg in content:
+            if isinstance(seg, dict) and isinstance(seg.get("text"), str):
+                parts.append(seg["text"])
+        return "\n".join(parts)
+    return str(content)
+
+
 def _sanitize_messages(messages):
     """返回脱敏 + 截断后的消息副本，不修改入参（内存中的原始消息保持完整用于渲染）。"""
     out = []
@@ -118,15 +140,15 @@ def _sanitize_messages(messages):
             if m.get("reasoning_content"):
                 nm["reasoning_content"] = _redact_secrets(str(m["reasoning_content"]))[:_MAX_THOUGHT]
             if m.get("content"):
-                nm["content"] = _redact_secrets(str(m["content"]))[:_MAX_ANSWER]
+                nm["content"] = _redact_secrets(_content_to_text(m["content"]))[:_MAX_ANSWER]
             if m.get("tools"):
                 nm["tools"] = [_sanitize_tool_call(t) for t in m["tools"]]
         elif role == "tool":
             if m.get("content"):
-                nm["content"] = _redact_secrets(str(m["content"]))[:_MAX_TOOL_RESULT]
+                nm["content"] = _redact_secrets(_content_to_text(m["content"]))[:_MAX_TOOL_RESULT]
         elif role == "user":
             if m.get("content"):
-                nm["content"] = _redact_secrets(str(m["content"]))[:_MAX_ANSWER]
+                nm["content"] = _redact_secrets(_content_to_text(m["content"]))[:_MAX_ANSWER]
         if m.get("search"):
             nm["search"] = _sanitize_search(m["search"])
         out.append(nm)
@@ -292,6 +314,164 @@ def _get_disabled_skills(user_id: int) -> set:
         return set()
 
 
+def _collect_selected_skills(skill_registry, user_id: int, selected_skills: list) -> list:
+    """把用户勾选的技能名解析成 Skill 对象列表（供置顶注入）。
+
+    过滤规则：
+      - 不存在的名字直接跳过（前端可能残留已卸载的技能）；
+      - 已被用户禁用的不注入（勾选不能越过禁用开关）；
+      - 最多取 5 个，防止一次勾选太多把系统提示撑爆。
+    """
+    if not selected_skills or not skill_registry:
+        return []
+    try:
+        disabled = _get_disabled_skills(user_id)
+    except Exception:
+        disabled = set()
+    try:
+        user_skills = skill_registry.get_user_skills(user_id) or {}
+    except Exception:
+        return []
+    chosen = []
+    for name in selected_skills[:5]:
+        if not isinstance(name, str) or not name.strip():
+            continue
+        skill = user_skills.get(name.strip())
+        if skill is None or name in disabled:
+            continue
+        chosen.append(skill)
+    return chosen
+
+
+def _select_round_documents(dir_doc_names: list, uploaded_files: list,
+                            last_round_files: list, message_text: str):
+    """按需选择要注入文本上下文的文档（替代原来的全量注入）。
+
+    背景：会话上传目录跨轮累积、从不清空。旧实现每轮把所有历史文档全文
+    注入系统提示词，token 随文档数线性增长，大文档会话越来越慢。
+    文档与图片不同 —— 文档有「基于我刚上传的文档…」的跨轮引用需求，
+    不能简单按轮隔离，故按四类信号按需注入：
+
+      1. **本轮上传/引用的文档**：uploaded_files 里的文档（含用户用
+         「@ 引用对话中的文件」主动引用的历史文件 —— 它走同一通道）；
+      2. **消息文本提到文件名的历史文档**：用户说「基于 report.docx 改成表格」，
+         按文件名子串匹配（兼容不带扩展名的口语，如「report」）；
+      3. **最近一轮上传的文档**：覆盖「刚才那个文档」这类无名称指代；
+      4. **老会话降级**：历史消息里没有上传清单（本次改造前的会话），
+         无法判断轮次 → 保持全量注入，兼容优先。
+
+    返回 (要注入文本上下文的文件名 set, 是否需要按需模式)。
+    """
+    dir_doc_names = list(dir_doc_names or [])
+    this_round = {str(f).strip() for f in (uploaded_files or []) if f}
+    last_round = {str(f).strip() for f in (last_round_files or []) if f}
+    text = (message_text or "").lower()
+
+    if last_round_files is None:
+        # 老会话：无历史上传清单 → 全量注入（旧行为）
+        return set(dir_doc_names), False
+
+    selected = set()
+    # 1. 本轮上传/引用（目录里真实存在的才算，防前端乱传名字）
+    selected |= {f for f in this_round if f in dir_doc_names}
+    # 2. 消息文本提及（完整文件名直接匹配；去扩展名的主名需 ≥2 字符，
+    #    单字母主名误匹配率太高，宁可漏匹配也不乱注入）
+    for name in dir_doc_names:
+        if name in selected:
+            continue
+        if name.lower() in text:
+            selected.add(name)
+            continue
+        base = os.path.splitext(name)[0].lower()
+        if len(base) >= 2 and base in text:
+            selected.add(name)
+    # 3. 最近一轮上传的文档（无名称指代兜底）
+    selected |= {f for f in last_round if f in dir_doc_names}
+    return selected, True
+
+
+def _build_doc_index_prompt(all_names: list, injected: set, on_demand: bool) -> str:
+    """构建「会话文档清单」提示词片段。
+
+    让模型知道本会话传过哪些文档、哪些的内容当前可见。用户引用了
+    未注入的文档时，引导用户重新上传或用「@ 引用对话中的文件」，
+    而不是让模型凭空猜测内容。
+    """
+    if not all_names:
+        return ""
+    lines = ["\n\n【本会话已上传的文档】（按上传时间倒序；标注「内容已注入」的其正文已包含在下方上下文中）"]
+    for name in all_names:
+        tag = "，内容已注入" if name in injected else "，内容未注入"
+        lines.append(f"- {name}{tag}")
+    if on_demand and len(injected) < len(all_names):
+        lines.append(
+            "若用户引用了「内容未注入」的文档，请提示用户重新上传该文件，"
+            "或在输入框用「@ 引用对话中的文件」选中它 —— 不要凭空猜测未注入文档的内容。"
+        )
+    return "\n".join(lines)
+
+
+def _context_messages(messages: list) -> list:
+    """裁出「这次要送给模型的那一段」历史。
+
+    两条规则：
+    1. `/reset` 是**上下文边界**：标记之前的消息仍留在会话里（用户能往回翻），
+       但不再送给模型。边界 = 最后一条带 `context_reset` 的消息之后。
+    2. 斜杠命令本身（`/reset`、`/help`）永远不送模型 —— 它们是指令，不是对话内容。
+
+    为什么不做成"清空 messages"：那会把用户的对话记录一起删掉（2026-10-24 反馈
+    「重置上下文后，之前的上下文丢失」）。记录该留，记忆该断，是两件事。
+    """
+    _start = 0
+    for i, m in enumerate(messages or []):
+        if isinstance(m, dict) and m.get("context_reset"):
+            _start = i + 1
+    out = []
+    for m in (messages or [])[_start:]:
+        if isinstance(m, dict) and (m.get("content") or "").strip().lower() in (
+                "/reset", "reset", "/help", "help"):
+            continue
+        out.append(m)
+    return out
+
+
+def _select_round_images(dir_images: list, uploaded_files: list):
+    """从会话目录的图片里挑出「本轮上传」的那些，并算出本轮被限额跳过的张数。
+
+    为什么需要它：会话上传目录（document_output/{uid}/uploads/{session_id}/）
+    跨轮累积、从不清空。若把目录里所有图片都送进请求，第 N 轮会带上前 N-1 轮
+    的全部图片（叠加）—— 视觉 token 按张计费，模型也分不清哪张对应当前问题。
+    文档文本仍走全目录（跨轮引用是文档场景的特性，有版本标注），只限图片。
+
+    Args:
+        dir_images: build_context_parts 返回的本会话目录图片列表
+            （已按其 max_images / max_total_bytes 限额剔除超限的那批）
+        uploaded_files: 前端上报的本轮上传文件名
+
+    Returns:
+        (本轮图片列表, 本轮被跳过的张数)。skipped 按本轮口径算：
+        本轮上传的图片总数（按扩展名判定，含被限额剔除的）− 实际放行的。
+        不能沿用 build_context_parts 的全局 skipped —— 那里面混着历史图，
+        会把「历史图超限」错报成本轮超限。
+    """
+    from agent.file_parser import IMAGE_EXTENSIONS
+
+    dir_images = dir_images or []
+    this_round = {str(f).strip() for f in (uploaded_files or []) if f}
+    if not this_round:
+        # 未上报本轮文件（旧客户端 / 重新生成）：本轮没有新图，不发历史图。
+        # 图片从不写入会话历史，重发只会叠加与浪费。
+        return [], 0
+    # 本轮上传且确实躺在目录里的图片（两侧空白都 strip 后再比，防止前后端
+    # 有一侧带了空格导致漏匹配 —— 漏匹配的后果是图被当历史图静默丢弃）
+    kept = [im for im in dir_images if (im.get("filename") or "").strip() in this_round]
+    n_round_images = sum(
+        1 for f in this_round if os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS
+    )
+    skipped = max(0, n_round_images - len(kept))
+    return kept, skipped
+
+
 def _build_skill_context(user_id: int, skill_registry) -> str:
     """构建用户技能上下文，注入系统提示词
 
@@ -369,10 +549,20 @@ def _filter_disabled_tools(tool_specs: list, user_id: int, skill_registry,
     return filtered
 
 
-def _resolve_llm_client(user_id: int):
-    from server.database import resolve_model_config
+def _resolve_llm_client(user_id: int, session_id: str = None):
+    """按「请求指定 → 会话记录 → 用户默认 → 平台默认」解析出本次要用的模型与凭据。
+
+    传入 session_id 是必需的：会话中途换过模型后，后续每轮必须继续用同一个，
+    否则用户切到 A 模型，下一句又被平台默认的 B 模型接走了。
+    """
+    from server.database import resolve_model_config, get_user_by_id
     from agent.llm import LLMClient
-    cfg = resolve_model_config(user_id)
+    # 管理员可以用被隐藏的模型（他要在管理端自己验证能不能跑），
+    # 普通用户不行 —— 管理员一旦把模型全部隐藏，普通用户就必须用不了。
+    _u = get_user_by_id(user_id) or {}
+    _is_admin = _u.get("user_type") == "admin"
+    cfg = resolve_model_config(user_id, session_id=session_id,
+                               include_hidden=_is_admin)
     if not cfg.get("api_key"):
         return None, cfg
     llm = LLMClient(
@@ -396,10 +586,16 @@ def _save_session_messages(session_id: str, messages: list, title: str = None, u
     update_session_messages(session_id, messages, title, user_id)
 
 
-def _save_user_message_immediate(session_id: str, message: str, user_id: int):
+def _save_user_message_immediate(session_id: str, message: str, user_id: int,
+                                 uploaded_files: list = None):
     """立即将用户消息持久化到 DB（流开始时调用，不等待 LLM 响应完成）。
 
     刷新/断连后用户消息不丢失。后续 _post_process_done 会追加助手消息并更新标题。
+
+    uploaded_files：本轮上传/引用的文件名清单，随消息落库。
+    它是「按需注入文档」的依据 —— 没有这份清单，后端无法区分
+    哪份文档是哪一轮传的，只能全量注入所有历史文档（token 随文档数线性增长）。
+    _sanitize_messages 用 dict(m) 拷贝，该字段会被保留。
     """
     try:
         store = get_session_store()
@@ -408,9 +604,13 @@ def _save_user_message_immediate(session_id: str, message: str, user_id: int):
         if existing_msgs and existing_msgs[-1].get("role") == "user" and existing_msgs[-1].get("content") == message:
             logger.debug(f"[IMMEDIATE_SAVE] 用户消息已存在，跳过 (session={session_id})")
             return
-        existing_msgs.append({"role": "user", "content": message})
+        msg = {"role": "user", "content": message}
+        _round_files = [str(f).strip() for f in (uploaded_files or []) if f]
+        if _round_files:
+            msg["uploaded_files"] = _round_files
+        existing_msgs.append(msg)
         _persist_messages(session_id, existing_msgs, user_id=user_id)
-        logger.info(f"[IMMEDIATE_SAVE] 用户消息已立即持久化 (session={session_id}, len={len(existing_msgs)})")
+        logger.info(f"[IMMEDIATE_SAVE] 用户消息已立即持久化 (session={session_id}, len={len(existing_msgs)}, files={_round_files})")
     except Exception as e:
         logger.warning(f"[IMMEDIATE_SAVE] 用户消息立即持久化失败 (session={session_id}): {e}")
 
@@ -449,6 +649,42 @@ def _save_assistant_message_immediate(
     except Exception as e:
         logger.warning(f"[IMMEDIATE_SAVE_AST] 助手消息立即持久化失败 (session={session_id}): {e}")
         return False
+
+
+def _run_deferred_tools(deferred: list, session_id: str, user_id: int,
+                        iteration: int = None, pub_id: str = None,
+                        registry=None, usage_sink=None):
+    """在本轮流式响应完全结束、消息已落库之后，执行被推迟的自伤型工具。
+
+    背景（2026-10-23 事故）：Agent 在流式生成途中调用 diag_restart_service，
+    服务在输出到一半时把自己关掉 → 生成器损坏（generator already executing），
+    该轮助手消息一条都没落库 → 用户刷新后上下文只剩自己的提问。
+
+    推迟到此刻执行的意义：
+      · 助手消息已写入 DB → 即使进程随即退出，本轮内容不会丢；
+      · done 事件已发出 → 前端不会卡在"生成中"；
+      · 审批仍走正常流程（该工具 risk_level=exec，本就需要用户确认）。
+    """
+    if not deferred:
+        return
+    for p in deferred:
+        name = p.get("name")
+        args = p.get("args") or {}
+        _t0 = time.time()
+        try:
+            result = registry.execute(name, args, user_id=user_id, public_id=pub_id,
+                                      usage_sink=usage_sink)
+        except Exception as e:
+            result = f"Error executing tool '{name}': {e}"
+        _dur = int((time.time() - _t0) * 1000)
+        agent_audit.record_tool(
+            session_id, user_id, name, arguments=args, result=result,
+            error=isinstance(result, str) and result.startswith("Error"),
+            duration_ms=_dur, iteration=iteration,
+            risk_level=registry.get_risk_level(name) if registry else None,
+            deferred=True,
+        )
+        logger.info(f"延迟工具执行完成 (session={session_id}, tool={name}, {_dur}ms)")
 
 
 def _post_process_done(
@@ -520,7 +756,9 @@ def _generate_title(user_message: str, assistant_response: str, llm_client) -> s
         f"助手: {assistant_response[:200]}"
     )
     try:
-        resp = llm_client.chat([{"role": "user", "content": prompt}], tools=None)
+        resp = llm_client.chat(
+            [{"role": "user", "content": prompt}], tools=None, source="title"
+        )
         title = resp.get("content", "").strip().strip('"').strip("'").strip("。").strip("，")
         if not title:
             return user_message[:30] + ("..." if len(user_message) > 30 else "")
@@ -535,7 +773,9 @@ def _compress_if_needed(messages: list, llm_client, config) -> list:
     context_limit_tokens = SimpleAgent._parse_context_limit(context_limit_str)
     if context_limit_tokens == 0:
         return messages
-    return SimpleAgent.compress_messages(messages, llm_client, context_limit_tokens)
+    return SimpleAgent.compress_messages(
+        messages, llm_client, context_limit_tokens, source="compress"
+    )
 
 
 SCENARIO_CONFIG = {
@@ -767,10 +1007,30 @@ async def _handle_command(message: str, session_id: str, user_id: int):
 
     if msg == "/reset" or msg == "reset":
         agent.reset()
-        if session_id and session_id in store:
-            store[session_id]["messages"] = []
-            _save_session_messages(session_id, [])
-        yield f"data: {json.dumps({'type': 'token', 'content': '对话上下文已重置，可以开始新的对话。'})}\n\n"
+        # 【不删历史】早期实现是 store[...]["messages"] = [] 直接清空 —— 用户的
+        # 对话记录会连同上下文一起消失，翻不回去（2026-10-24 反馈「重置后之前的
+        # 上下文丢失」）。现在改成在最后一条 /reset 消息上打标记：界面保留完整历史，
+        # 送模型时只取最后一个标记之后的消息（见 below 的 _ctx_start）。
+        if session_id:
+            try:
+                _msgs = _load_session_messages(session_id) or []
+                _marked = False
+                for _m in reversed(_msgs):
+                    if (isinstance(_m, dict) and _m.get("role") == "user"
+                            and (_m.get("content") or "").strip().lower() in ("/reset", "reset")):
+                        _m["context_reset"] = True
+                        _marked = True
+                        break
+                if not _marked:
+                    # 立即持久化线程可能还没把 /reset 这条写进去，兜底加一条边界标记
+                    _msgs.append({"role": "system", "content": "上下文已重置",
+                                  "context_reset": True})
+                _persist_messages(session_id, _msgs, user_id=user_id)
+                if session_id in store:
+                    store[session_id]["messages"] = _msgs
+            except Exception as e:
+                logger.warning(f"/reset 标记上下文边界失败 (session={session_id}): {e}")
+        yield f"data: {json.dumps({'type': 'token', 'content': '上下文已重置。历史记录仍保留在会话里，之后的对话不会再引用它。'})}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
         return
 
@@ -935,8 +1195,33 @@ def _collect_new_output_files(user_id, baseline):
     return files
 
 
+def _build_image_blocks(images: list) -> list:
+    """把图片元信息转成 OpenAI 兼容的 image_url 内容块（base64 data URL）。
+
+    只在发请求前读取磁盘并编码：图片字节**不写入会话历史**，避免 base64 入库
+    把 sessions.messages 撑爆；每次请求按磁盘现状实时重建。
+
+    读取失败或文件已被清理的图片静默跳过，不中断整轮对话。
+    """
+    blocks = []
+    for im in images or []:
+        path = im.get("path") or ""
+        try:
+            with open(path, "rb") as _f:
+                b64 = base64.b64encode(_f.read()).decode("ascii")
+        except Exception as e:
+            logger.warning(f"[IMAGE] 读取图片失败，已跳过: {im.get('filename')} ({e})")
+            continue
+        blocks.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{im.get('mime') or 'image/png'};base64,{b64}"},
+        })
+    return blocks
+
+
 async def _stream_chat(message: str, session_id: str = None, web_search: str = "off",
-                    user_id: int = None, public_id: str = None, show_thought: bool = False):
+                    user_id: int = None, public_id: str = None, show_thought: bool = False,
+                    selected_skills: list = None, uploaded_files: list = None):
     # 文件输出隔离使用对外不透明 public_id；缺失时回退到整数 user_id（兼容旧调用）
     pub_id = public_id if public_id is not None else user_id
     set_context(user_id=user_id, session_id=session_id)
@@ -947,6 +1232,12 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
     # 仅记录元数据，不记录用户输入内容（避免敏感信息落入终端/日志文件）
     logger.info(f"收到消息 (user={user_id}, session={session_id or '-'}, len={len(message)})")
+    # ---- 审计：对话开始 ----
+    agent_audit.record_turn(
+        session_id, user_id, "start",
+        message_len=len(message),
+        web_search=web_search,
+    )
 
 
     # 统一出口标志：确保 done 事件和 clear_context 在任何代码路径都执行
@@ -954,6 +1245,15 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
     _messages_saved = False
     _assistant_content_produced = False  # 是否已向用户产出过真实助手内容（用于 fallback 去污染）
     _llm_attempts = 0  # LLM 调用重试计数（应对网络抖动/临时错误）
+    # 延迟执行队列：会终止当前服务进程的工具（如 diag_restart_service）。
+    # 绝不能在流式生成期间执行——否则服务会在自己输出到一半时被杀，
+    # 生成器损坏（generator already executing）且本轮上下文全部丢失。
+    # 事故记录：2026-10-23 Agent 在流式中调 diag_restart_service，11:16:25 自杀。
+    _deferred_tools: list = []
+    # 这两个收集器初始化在 try 之外：finally 兜底会引用它们，
+    # 若在 try 内初始化，异常早于初始化点时 finally 会 NameError 而二次崩溃。
+    all_tool_calls: list = []
+    all_thoughts: list = []
 
     try:
         if user_id is None:
@@ -974,7 +1274,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                 _done_sent = True  # _handle_command 已发送 done
                 return
 
-        llm, cfg = await _run_sync(_resolve_llm_client, user_id)
+        llm, cfg = await _run_sync(_resolve_llm_client, user_id, session_id)
         if llm is None:
             from server.database import get_user_by_id
             user = get_user_by_id(user_id)
@@ -982,15 +1282,31 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             if is_admin:
                 yield f"data: {json.dumps({'type': 'error', 'content': '模型尚未配置，请到设置中配置模型 API Key'})}\n\n"
             else:
-                yield f"data: {json.dumps({'type': 'error', 'content': '模型尚未配置，请联系管理员配置全局模型，或在设置中配置个人模型'})}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'content': '当前没有可用的模型：管理员未开放任何模型，请联系管理员开通，或在设置中配置自己的模型'})}\n\n"
             return
 
         model_name = cfg.get("model_name", "").strip()
         gateway = ModelGateway(model_name)
 
+        # Token 用量埋点：把本次请求的 sink 挂到 LLM 客户端上。
+        # 该 client 由 _resolve_llm_client 每次新建，故按请求天然隔离；
+        # 之后链路里所有模型调用（对话/标题/压缩/子 Agent）都会自动落库。
+        _run_id = uuid.uuid4().hex[:12]
+        _usage_sink = None
+        try:
+            from server.usage_store import make_sink as _make_usage_sink
+            _usage_sink = _make_usage_sink(
+                user_id=user_id, session_id=session_id, run_id=_run_id,
+                provider_name=cfg.get("provider_name", ""),
+                entry_owner=cfg.get("entry_owner", ""),
+            )
+            llm.usage_sink = _usage_sink
+        except Exception as _e:
+            logger.warning(f"token 用量埋点初始化失败（不影响对话）: {_e}")
+
         # 思考模式：关(off)/低(low)/高(high)。低=轻量思考且不展示（省 token）；
         # 高=强思考并展示。display_thought 额外叠加本次请求的展示开关（body.show_thought）。
-        _mc_mode = resolve_model_config(user_id).get("thinking_mode", "low")
+        _mc_mode = cfg.get("thinking_mode", "low")
         if _mc_mode not in ("off", "low", "high"):
             _mc_mode = "low"
         _thinking_enabled, _effort = thinking_mode_to_flags(_mc_mode)
@@ -1098,6 +1414,11 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                 "\n\n重要：请直接给出最终回答，不要输出思考过程、分析过程或任何前置说明。"
             )
 
+        # 图片不随文本上下文注入：单独收集，待确认模型支持视觉后再以多模态块送入
+        _pending_images = []
+        _skipped_images = 0
+        _dir_image_count = 0
+
         if session_id and user_id:
             upload_dir = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -1117,12 +1438,82 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                             continue
                         _seen.add(_base)
                         uploaded.append(p)
-                    from agent.file_parser import parse_files, build_context_prompt
-                    parsed = await _run_sync(parse_files, uploaded)
-                    # 文件名 -> 上传时间（mtime），用于 build_context_prompt 标注版本/时间戳
+                    _all_names = [os.path.basename(p) for p in uploaded]
+                    # 文件名 -> 上传时间（mtime），用于标注版本/时间戳与「最新优先」
                     _file_meta = {os.path.basename(p): os.path.getmtime(p) for p in uploaded}
-                    file_context = await _run_sync(build_context_prompt, parsed, _file_meta)
-                    system_prompt = file_context + "\n\n" + system_prompt
+
+                    # ---- 按需选择要注入的文档（详见 _select_round_documents）----
+                    # 历史上传清单：从会话消息的 uploaded_files 字段还原（本轮不计入），
+                    # 取「最近一轮」作为无名称指代（"刚才那个文档"）的兜底。
+                    _last_round_files = None
+                    try:
+                        for _m in reversed(messages or []):
+                            if _m.get("role") == "user" and _m.get("uploaded_files"):
+                                _last_round_files = _m["uploaded_files"]
+                                break
+                    except Exception:
+                        _last_round_files = None
+                    from agent.file_parser import IMAGE_EXTENSIONS as _IMG_EXT
+                    _dir_docs = [n for n in _all_names
+                                 if os.path.splitext(n)[1].lower() not in _IMG_EXT]
+                    _dir_image_count = len(_all_names) - len(_dir_docs)
+                    _selected_docs, _on_demand = _select_round_documents(
+                        _dir_docs, uploaded_files, _last_round_files, message,
+                    )
+
+                    from agent.file_parser import parse_files, build_context_parts
+                    # 只解析选中的文档 + 本轮图片（图片按张计费，仍受 build_context_parts 限额）；
+                    # 未选中的历史文档不再 parse —— 省掉每轮全量解析的 CPU 与时间。
+                    _to_parse = [p for p in uploaded
+                                 if os.path.basename(p) in _selected_docs
+                                 or (os.path.splitext(p)[1].lower() in _IMG_EXT
+                                     and os.path.basename(p) in
+                                     {str(f).strip() for f in (uploaded_files or []) if f})]
+                    if _to_parse:
+                        parsed = await _run_sync(parse_files, _to_parse)
+                        _parts = await _run_sync(build_context_parts, parsed, _file_meta)
+                        # 文本类文件注入系统提示词（按需：仅选中的文档有正文）
+                        if _parts.get("text"):
+                            system_prompt = _parts["text"] + "\n\n" + system_prompt
+                        # ---- 图片只发「本轮上传」的（详见 _select_round_images）----
+                        _pending_images, _skipped_images = _select_round_images(
+                            _parts.get("images") or [], uploaded_files,
+                        )
+                    # 会话文档清单：让模型知道传过什么、哪些内容当前可见
+                    _idx_prompt = _build_doc_index_prompt(
+                        _dir_docs, _selected_docs, _on_demand,
+                    )
+                    if _idx_prompt:
+                        system_prompt += _idx_prompt
+
+                    # 【图片口径】"这一轮到底送了几张图"必须留日志。
+                    # 界面上的 chip 可能是上一次渲染残留，不能当事实（2026-10-24 用户
+                    # 问"没粘贴为什么也带给模型"，只能靠这行日志回答）。
+                    logger.info(
+                        f"[IMAGES] session={session_id} 本轮上报 "
+                        f"{len(uploaded_files or [])} 个文件；目录图片 {_dir_image_count} 张；"
+                        f"本轮送入 {len(_pending_images)} 张；限额跳过 {_skipped_images} 张"
+                    )
+
+        # ---- 图片门控：仅当模型支持视觉才发图，否则降级成文字提示（绝不静默丢弃）----
+        _image_blocks = []
+        if _pending_images:
+            if gateway.supports_vision:
+                _image_blocks = _build_image_blocks(_pending_images)
+            if _image_blocks:
+                if _skipped_images:
+                    system_prompt += (
+                        f"\n\n注意：用户本次共上传 {len(_pending_images) + _skipped_images} 张图片，"
+                        f"其中 {_skipped_images} 张因数量或体积超限未随本次请求发送，"
+                        f"实际可见 {len(_image_blocks)} 张。"
+                    )
+            else:
+                _names = "、".join(im.get("filename", "") for im in _pending_images)
+                system_prompt += (
+                    f"\n\n注意：用户上传了 {len(_pending_images)} 张图片（{_names}），"
+                    f"但当前模型不支持查看图片内容。请明确告知用户这一点，"
+                    f"不要凭空猜测或虚构图片内容；可建议用户切换到支持视觉的模型。"
+                )
 
         # 注入技能上下文
         if skill_registry and user_id:
@@ -1130,12 +1521,54 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             if skill_context:
                 system_prompt += "\n" + skill_context
 
+        # ---- 用户长期记忆（每位用户一份，四段）----
+        # 位置有讲究：放在技能之后、用户显式勾选之前。
+        # 显式勾选的技能是「这一轮就想用它」，优先级最高；长期记忆次之；通用提示垫底。
+        # 总开关关掉或四段全空时 build_prompt 返回空串，等于不注入 ——
+        # 不注入的那一轮，请求里就真的不该出现这段，否则废 token 也废注意力。
+        try:
+            from server.memory_store import get_memory as _get_memory
+            from server.memory_store import build_prompt as _build_memory_prompt
+            _memory_prompt = _build_memory_prompt(_get_memory(user_id))
+            if _memory_prompt:
+                system_prompt += "\n\n" + _memory_prompt
+                logger.debug(f"[MEMORY] 注入记忆 {len(_memory_prompt)} 字符 (user={user_id})")
+        except Exception as _e:
+            logger.warning(f"[MEMORY] 记忆注入失败（不影响对话）: {_e}")
+
+        # 用户显式勾选的技能：全文置顶注入，优先于上面的自动匹配上下文。
+        # 语义是「这次任务明确用它」——不靠模型猜，也不落库（每轮默认自动匹配）。
+        if selected_skills and skill_registry and user_id:
+            _chosen = _collect_selected_skills(skill_registry, user_id, selected_skills)
+            if _chosen:
+                _blocks = [
+                    "\n\n【用户在本轮明确指定使用以下技能，请优先遵循其指令，"
+                    "不要再自行挑选其他技能】"
+                ]
+                for _sk in _chosen:
+                    _blocks.append(
+                        f"\n## 技能：{_sk.name}\n{_sk.description}\n\n{_sk.instructions}"
+                    )
+                system_prompt += "".join(_blocks)
+                logger.info(
+                    f"用户显式指定技能 (user={user_id}): {[_sk.name for _sk in _chosen]}"
+                )
+
         chat_messages = [{"role": "system", "content": system_prompt}]
 
-        for msg in messages:
+        # 【上下文边界】/reset 之前的消息保留在会话里，但不送模型（详见 _context_messages）
+        for msg in _context_messages(messages):
             chat_messages.append(msg)
 
-        chat_messages.append({"role": "user", "content": message})
+        # 有图片时用户消息改为多模态内容块（文本块 + 图片块），格式与 OpenAI 兼容协议一致。
+        # 注意：仅存在于本次请求的 chat_messages 中，不会写入会话历史（见 _sanitize_messages）。
+        if _image_blocks:
+            chat_messages.append({
+                "role": "user",
+                "content": [{"type": "text", "text": message}] + _image_blocks,
+            })
+        else:
+            chat_messages.append({"role": "user", "content": message})
 
         cached_hint = _extract_cached_tool_context(messages)
         if cached_hint:
@@ -1149,15 +1582,25 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
         )
         tool_specs = await _run_sync(select_tools_by_intent, message, _all_specs, user_id)
         # 最大迭代次数：优先读取模型配置（个人 > 全局），未配置则用默认 10
+        # 复用本次请求已解析出的 cfg，避免为同一份配置再查一次库（多一次 join 开销）
         try:
-            _mc = resolve_model_config(user_id)
-            max_iterations = int(_mc.get("max_iterations", 10) or 10)
+            max_iterations = int(cfg.get("max_iterations", 10) or 10)
         except Exception:
             max_iterations = 10
         if max_iterations < 1:
             max_iterations = 10
         all_tool_calls = []
         all_thoughts = []
+        # 【任务生命周期登记】走到这里说明是「真的要调模型」的轮次（斜杠命令已在上面
+        # 分流返回）。登记后才能被启动对账判出「进程被杀、这一笔没记账」。
+        # ⚠️ 不能放在 chat_stream 入口：/help、/reset 这类不调模型的轮次也会被登记，
+        #    终结后账本里当然没有它的行 —— 会被误判成「未记账异常」，污染看板。
+        #    终结在 _run_chat_background 的 finally（成功/失败/取消都会走到）。
+        try:
+            from server.usage_store import mark_pending
+            mark_pending(session_id, user_id)
+        except Exception:
+            pass
         # 本轮对话开始前的产出文件基线，用于结束前 diff 出新增文件并推送给前端
         _output_baseline = _snapshot_output_files(pub_id)
         # 迭代级防护状态（防止模型陷入“调用-失败/诊断-再调用”死循环）
@@ -1190,6 +1633,8 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                 _stream_buf = ""
                 _in_thinking = False
                 _iter_tool_names = set()    # 本轮调用的工具名集合（空转检测用）
+                _iter_signatures: list = []  # 本轮每次调用的签名（工具名+参数哈希），空转检测用
+                _iter_fail_signatures: list = []  # 本轮失败调用的签名，loop_guard 判"同一操作反复失败"用
                 _iter_failed = False         # 本轮是否有工具报错
                 _iter_perm_denied = False    # 本轮是否出现“权限不足”
 
@@ -1338,6 +1783,15 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                     }
                     threading.Thread(target=_post_process_done, kwargs=_captured, daemon=True).start()
                     _messages_saved = True
+
+                    # ⛔ 延迟执行自伤型工具：此刻消息已落库、done 已发出，
+                    #    即使服务随即被关闭，本轮上下文与回复也不会丢。
+                    if _deferred_tools:
+                        _run_deferred_tools(
+                            _deferred_tools, session_id, user_id,
+                            iteration=iteration, pub_id=pub_id,
+                            registry=registry, usage_sink=_usage_sink,
+                        )
                     return
 
                 if full_content:
@@ -1360,14 +1814,35 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
                 # ===== 工具执行（含敏感操作审批门）=====
                 # 1) 划分无需审批 / 需要审批
-                _safe, _pending = [], []
+                #    ⛔ 先摘出自伤型工具（会终止服务进程，如重启服务）——
+                #    它们不能在本轮流式生成期间执行，否则服务会自杀：
+                #    生成器损坏（generator already executing）且本轮上下文全部丢失。
+                #    处理方式：移出本轮 → 整轮结束、消息落库后再执行。
+                _safe, _pending, _selfharm = [], [], []
                 for tc in tool_calls:
                     _tname = tc["function"]["name"]
                     _targs = json.loads(tc["function"]["arguments"])
+                    if registry.blocks_during_stream(_tname):
+                        _selfharm.append({"tc": tc, "name": _tname, "args": _targs})
+                        continue
                     if registry.needs_approval(_tname, _targs):
                         _pending.append({"tc": tc, "name": _tname, "args": _targs})
                     else:
                         _safe.append({"tc": tc, "name": _tname, "args": _targs})
+
+                if _selfharm:
+                    _deferred_tools.extend(_selfharm)
+                    _names = ", ".join(p["name"] for p in _selfharm)
+                    logger.warning(
+                        f"自伤型工具已延迟到本轮结束后执行 (session={session_id}, tools={_names})"
+                    )
+                    agent_audit.record_event(
+                        "tool_deferred", session_id=session_id, user_id=user_id,
+                        iteration=iteration,
+                        tools=[{"name": p["name"], "arguments": p["args"]} for p in _selfharm],
+                        reason="会终止服务进程，禁止在流式生成期间执行",
+                    )
+                    yield f"data: {json.dumps({'type': 'status', 'content': f'「{_names}」将在本轮回复完成后执行'})}\n\n"
 
                 # 2) 敏感工具审批门（逐项否决；会话信任 / 角色免确认则跳过）
                 _results_by_id = {}
@@ -1391,6 +1866,14 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                         audit_log("APPROVAL_SKIP", session=session_id, user=user_id,
                                    reason=_reason, tools=[i["tool"] for i in _items])
                         logger.info(f"敏感操作免确认直接执行 (session={session_id}, reason={_reason})")
+                        # ---- 审计：免确认路径同样留痕（用户没看到审批，但操作确实执行了）----
+                        agent_audit.record_approval_decision(
+                            session_id, user_id, "skipped", {"_": "auto-approved"},
+                            wait_ms=0,
+                            items=[{"name": it["tool"], "args": it["args"]} for it in _items],
+                            iteration=iteration,
+                            skipped_reason=_reason,
+                        )
                         yield f"data: {json.dumps({'type': 'approval_skipped', 'session_id': session_id, 'reason': _reason, 'items': _items}, ensure_ascii=False)}\n\n"
                         for p in _pending:
                             _results_by_id[p["tc"].get("id", "")] = None  # 待执行
@@ -1405,11 +1888,25 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                         } for p in _pending]
                         _gid, _ = approval_store.create(session_id, user_id, _items)
                         yield f"data: {json.dumps({'type': 'approval_required', 'group_id': _gid, 'session_id': session_id, 'items': _items}, ensure_ascii=False)}\n\n"
+                        # ---- 审计：记录发起了哪些敏感操作、等待用户决策 ----
+                        agent_audit.record_approval_requested(
+                            session_id, user_id, _gid,
+                            [{"name": it["tool"], "args": it["args"]} for it in _items],
+                            iteration=iteration,
+                        )
+                        _approval_t0 = time.time()
                         try:
                             _decisions = await asyncio.wait_for(approval_store.wait(_gid), timeout=600)
                         except asyncio.TimeoutError:
                             _decisions = {it["item_id"]: "reject" for it in _items}
                             logger.warning(f"审批等待超时，自动拒绝 (session={session_id}, group={_gid})")
+                        # ---- 审计：记录用户的决策与等待时长 ----
+                        agent_audit.record_approval_decision(
+                            session_id, user_id, _gid, _decisions,
+                            wait_ms=int((time.time() - _approval_t0) * 1000),
+                            items=[{"name": it["tool"], "args": it["args"]} for it in _items],
+                            iteration=iteration,
+                        )
                         yield f"data: {json.dumps({'type': 'approval_resolved', 'group_id': _gid, 'decisions': _decisions}, ensure_ascii=False)}\n\n"
                         approval_store.cleanup(_gid)
                         for p in _pending:
@@ -1451,7 +1948,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                 elif len(_to_exec) == 1:
                     p = _to_exec[0]
                     try:
-                        result = await _run_sync(registry.execute, p["name"], p["args"], user_id=user_id, public_id=pub_id)
+                        result = await _run_sync(registry.execute, p["name"], p["args"], user_id=user_id, public_id=pub_id, usage_sink=_usage_sink)
                         if isinstance(result, dict):
                             result_str = json.dumps(result, ensure_ascii=False)
                         else:
@@ -1474,7 +1971,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                     batch_results = [_results_by_id[tc.get("id", "")] for tc in tool_calls]
                 else:
                     _executor = ParallelToolExecutor()
-                    _exec_res = await _run_sync(_executor.execute_batch, [p["tc"] for p in _to_exec], registry, user_id=user_id, public_id=pub_id)
+                    _exec_res = await _run_sync(_executor.execute_batch, [p["tc"] for p in _to_exec], registry, user_id=user_id, public_id=pub_id, usage_sink=_usage_sink)
                     _map = {r["tool_call_id"]: r for r in _exec_res}
                     for p in _to_exec:
                         _results_by_id[p["tc"].get("id", "")] = _map.get(p["tc"].get("id", ""), {
@@ -1495,6 +1992,18 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                         "error": r["error"],
                     })
 
+                    # ---- 审计：记录每次工具调用（名称/参数/结果摘要/成败）----
+                    agent_audit.record_tool(
+                        session_id, user_id, r["name"],
+                        arguments=r.get("arguments"),
+                        result=r.get("result"),
+                        error=r.get("error"),
+                        iteration=iteration,
+                        risk_level=registry.get_risk_level(r["name"]),
+                    )
+                    # 调用签名供 loop_guard 判"是否在重复同一件事"
+                    _iter_signatures.append(_call_signature(r["name"], r.get("arguments")))
+
                     chat_messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call["id"],
@@ -1506,6 +2015,8 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                     _iter_tool_names.add(r["name"])
                     if r["error"]:
                         _iter_failed = True
+                        _iter_fail_signatures.append(
+                            _call_signature(r["name"], r.get("arguments")))
                     _rr = r.get("result") or ""
                     if isinstance(_rr, str) and (
                         "权限不足" in _rr or "permission denied" in _rr.lower() or "无权限" in _rr
@@ -1517,6 +2028,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                 _stop_msg, _stop_answer = _eval_loop_guard(
                     _loop_state, partial(_snapshot_output_files, pub_id),
                     _iter_failed, _iter_perm_denied, _iter_tool_names,
+                    _iter_signatures, _iter_fail_signatures,
                 )
                 if _stop_msg is not None:
                     # 先推送本轮可能已产生的产出文件，保证用户可见
@@ -1566,27 +2078,52 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             if _new_files:
                 yield f"data: {json.dumps({'type': 'files_created', 'files': _new_files}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
-        # Fallback: 异常退出时兜底保存。仅当已产出过真实助手内容才写入助手消息，
-        # 否则只保留用户消息，避免"(任务执行中断)"等虚假内容污染对话上下文、导致下一轮继续失败。
+        # Fallback: 异常/中断退出时兜底保存。
+        # ⚠️ 2026-10-23 事故：原逻辑只在「已产出真实助手内容」时才写助手消息，
+        #    流在 iteration=5 就断掉（还没产出文本）→ 助手消息一条没落库 →
+        #    用户刷新后上下文只剩自己的提问，看不到"这一轮发生过什么"。
+        # 现在改为：无论是否产出文本，都落一条**明确说明中断原因**的助手记录，
+        # 并把本轮已执行的工具调用一并带上，便于回看。
         if not _messages_saved and session_id and message:
             try:
                 if session_id not in store:
                     store[session_id] = {"title": "新对话", "created_at": time.time(), "messages": []}
                 store[session_id]["messages"].append({"role": "user", "content": message})
+                _used = [t.get("name") for t in (all_tool_calls or []) if t.get("name")]
                 if _assistant_content_produced:
                     store[session_id]["messages"].append({"role": "assistant", "content": "(任务执行中断)"})
+                else:
+                    _detail = f"（已调用工具：{'、'.join(_used)}）" if _used else ""
+                    store[session_id]["messages"].append({
+                        "role": "assistant",
+                        "content": f"(本轮执行中断，未产生回复{_detail})",
+                    })
+                if all_tool_calls:
+                    store[session_id]["messages"].append({
+                        "role": "assistant",
+                        "content": "",
+                        "tools": all_tool_calls,
+                    })
                 _persist_messages(session_id, store[session_id]["messages"], None, user_id)
-                logger.warning(f"消息通过 fallback 保存 (session={session_id}, has_content={_assistant_content_produced})")
+                logger.warning(f"消息通过 fallback 保存 (session={session_id}, has_content={_assistant_content_produced}, tools={len(all_tool_calls or [])})")
             except Exception as e:
                 logger.error(f"Fallback 保存消息失败 (session={session_id}): {e}")
+        agent_audit.record_turn(
+            session_id, user_id, "finish" if _done_sent else "abort",
+            iterations=iteration + 1,
+            tools_used=[t.get("name") for t in (all_tool_calls or [])],
+            assistant_saved=_messages_saved,
+            deferred_tools=[p.get("name") for p in (_deferred_tools or [])],
+        )
         clear_context()
 
 
 async def _run_chat_background(task: SessionTask, message: str, session_id: str,
                                 web_search: str, user_id: int, show_thought: bool,
-                                public_id: str = None):
+                                public_id: str = None, selected_skills: list = None,
+                                uploaded_files: list = None):
     """后台运行聊天任务：消费 _stream_chat 生成器，将事件放入 SessionTask 缓冲区。
-    
+
     与客户端连接解耦 — 即使客户端断开，任务也继续运行直到完成。
     """
     try:
@@ -1597,6 +2134,8 @@ async def _run_chat_background(task: SessionTask, message: str, session_id: str,
             user_id=user_id,
             show_thought=show_thought,
             public_id=public_id,
+            selected_skills=selected_skills,
+            uploaded_files=uploaded_files,
         ):
             task.add_event(event)
     except asyncio.CancelledError:
@@ -1621,6 +2160,14 @@ async def _run_chat_background(task: SessionTask, message: str, session_id: str,
         task.mark_completed()
         # 任务完成后延迟清理（保留 5 分钟供前端查询状态）
         asyncio.get_running_loop().call_later(300, lambda: remove_running_task(session_id))
+    finally:
+        # 任务生命周期终结登记：跑了这里（完成/失败/取消）就不是「中断」。
+        # 进程被杀的场景进不了 finally —— 那类留给启动对账标 interrupted。
+        try:
+            from server.usage_store import finalize_pending
+            finalize_pending(session_id)
+        except Exception:
+            pass
 
 
 async def _subscribe_to_task(task: SessionTask):
@@ -1654,10 +2201,13 @@ async def chat_stream(body: ChatRequest, request: Request):
 
     user = get_current_user(request)
 
-    # 验证会话存在性：如果提供了 session_id，检查是否在数据库中
+    # 验证会话：必须存在【且属于本人】。
+    # 只判存在会让任意登录用户拿着他人 session_id 读其全部历史、并把消息写进他人会话。
+    # 不存在与非本人统一返回 404（与 sessions.py 口径一致，不泄露会话是否存在）。
     if body.session_id:
         from server.database import get_session
-        if not get_session(body.session_id):
+        _s = get_session(body.session_id)
+        if not _s or _s.get("user_id") != user["db_id"]:
             raise HTTPException(status_code=404, detail="会话不存在")
 
     # 检查该会话是否已有正在运行的任务
@@ -1669,20 +2219,25 @@ async def chat_stream(body: ChatRequest, request: Request):
     task = SessionTask(body.session_id, body.message, user["db_id"])
     set_running_task(body.session_id, task)
 
+    # 【任务生命周期登记】注意：不在这里登记，改在 _stream_chat 真正要调模型之前
+    # （见下方 mark_pending 调用处的注释）—— 否则 /help、/reset 这类不调模型的
+    # 轮次会被启动对账判成「已终结但一笔账没记」的异常任务，造成假的未记账告警。
+
     # 【立即持久化用户消息】刷新/断连后不再丢失用户输入
     # 用独立线程写库，不阻塞 SSE 响应
     _sid_for_save = body.session_id
     _msg_for_save = body.message
     _uid_for_save = user["db_id"]
+    _files_for_save = body.uploaded_files or []
     threading.Thread(
         target=_save_user_message_immediate,
-        args=(_sid_for_save, _msg_for_save, _uid_for_save),
+        args=(_sid_for_save, _msg_for_save, _uid_for_save, _files_for_save),
         daemon=True,
     ).start()
 
     # 启动后台 asyncio.Task（与客户端连接解耦）
     task._bg_task = asyncio.create_task(
-        _run_chat_background(task, body.message, body.session_id, body.web_search, user["db_id"], body.show_thought, public_id=user["id"])
+        _run_chat_background(task, body.message, body.session_id, body.web_search, user["db_id"], body.show_thought, public_id=user["id"], selected_skills=body.selected_skills, uploaded_files=body.uploaded_files)
     )
 
     # 返回 SSE 响应（订阅任务事件）
@@ -1691,6 +2246,52 @@ async def chat_stream(body: ChatRequest, request: Request):
         media_type="text/event-stream",
         headers=_SSE_HEADERS,
     )
+
+
+@router.post("/regenerate/{session_id}")
+async def regenerate_last_turn(session_id: str, request: Request):
+    """重新生成最后一轮回答。
+
+    做法不是「再问一次」，而是先把最后一条用户消息及其之后的回复从历史里删掉，
+    再把这条消息原样交回前端重新发一次 /stream —— 于是：
+    - 用户消息会由 /stream 重新追加一遍，历史里不会出现两条一样的提问；
+    - 助手回复、思考过程、工具调用、产出文件全部重新生成，不复用旧结果；
+    - 上一轮若中途出错（回答是报错文本），重新生成也能把那条脏回复清掉。
+    """
+    user = get_current_user(request)
+    from server.database import get_session as db_get_session
+    session = db_get_session(session_id)
+    # 统一 404：不把「这个 ID 存在」这个事实泄漏给非归属用户
+    if not session or session.get("user_id") != user["db_id"]:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    running = get_running_task(session_id)
+    if running and running.status == "running":
+        raise HTTPException(status_code=409, detail="该会话有正在执行的任务，请等待完成")
+
+    # 直接用刚才这次读取的结果，不再多查一次库（两步之间若有新消息写入，反而会截错位置）
+    messages = session.get("messages") or []
+    last_user = -1
+    for idx in range(len(messages) - 1, -1, -1):
+        if (messages[idx] or {}).get("role") == "user":
+            last_user = idx
+            break
+    if last_user < 0:
+        raise HTTPException(status_code=400, detail="没有可重新生成的消息")
+
+    text = (messages[last_user].get("content") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="最后一条消息为空，无法重新生成")
+    # 指令（/reset 等）不是提问，重放会重复执行一次副作用
+    if text.startswith("/"):
+        raise HTTPException(status_code=400, detail="指令消息不支持重新生成")
+
+    _save_session_messages(session_id, messages[:last_user], user_id=user["db_id"])
+    logger.info(
+        f"[REGENERATE] session={session_id} 丢弃 {len(messages) - last_user} 条消息后重跑"
+        f"（user_id={user['db_id']}）"
+    )
+    return {"message": text, "dropped": len(messages) - last_user}
 
 
 @router.get("/subscribe/{session_id}")

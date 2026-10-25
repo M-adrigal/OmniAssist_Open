@@ -208,10 +208,35 @@ _login_failures: dict[str, dict] = defaultdict(lambda: {"count": 0, "first": 0.0
 
 
 def _client_ip(request: Request) -> str:
-    xff = request.headers.get("X-Forwarded-For")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    """取客户端真实 IP。
+
+    绝不无条件信任 X-Forwarded-For：该头由客户端任意填写，直接采信意味着攻击者
+    每次换一个 XFF 就是新的锁定键，登录失败锁定形同虚设（可无限制爆破）。
+    仅当 TCP 连接方本身在可信代理白名单（环境变量 TRUSTED_PROXY_IPS，逗号分隔）
+    时，才从 XFF 里自右往左取第一个不在白名单的跳作为真实客户端。
+    """
+    remote = request.client.host if request.client else "unknown"
+    trusted_raw = os.getenv("TRUSTED_PROXY_IPS", "").strip()
+    if not trusted_raw or remote == "unknown":
+        return remote
+
+    allow = {x.strip() for x in trusted_raw.split(",") if x.strip()}
+    if remote not in allow:
+        return remote
+
+    hops = [h.strip() for h in (request.headers.get("X-Forwarded-For") or "").split(",") if h.strip()]
+    for h in reversed(hops):
+        if h not in allow:
+            return h
+    return hops[0] if hops else remote
+
+
+def _login_keys(ip: str, username: str) -> tuple:
+    """登录失败计数的两个维度，任一超限即拒绝。
+
+    只用 ip 不行（可被伪造头绕过）；只用 username 也不行（遍历多账号时抓不到）。
+    """
+    return (f"u:{username}", f"ip:{ip}")
 
 
 def _login_allowed(key: str) -> tuple[bool, int]:
@@ -223,10 +248,25 @@ def _login_allowed(key: str) -> tuple[bool, int]:
     return True, 0
 
 
+# 该字典历史上无上限、无过期，伪造 IP/用户名即可灌爆内存（低成本 DoS）
+_LOGIN_FAILURES_MAX = 10000
+
+
+def _prune_login_failures(now: float):
+    """清理已过期的失败记录（封锁已解除且超过一个统计窗口未再失败）。"""
+    stale = [k for k, r in _login_failures.items()
+             if r["blocked_until"] <= now and now - r.get("last", 0) > _LOGIN_WINDOW]
+    for k in stale:
+        _login_failures.pop(k, None)
+
+
 def _record_login_failure(key: str):
     now = time.time()
+    if len(_login_failures) > _LOGIN_FAILURES_MAX:
+        _prune_login_failures(now)
     rec = _login_failures[key]
     rec["count"] += 1
+    rec["last"] = now
     if rec["count"] >= _LOGIN_MAX_ATTEMPTS:
         rec["blocked_until"] = now + _LOGIN_BLOCK
         logger.warning(f"登录失败次数过多，已临时封锁: {key}")
@@ -350,29 +390,33 @@ def require_login(request: Request):
 @router.post("/login", response_model=LoginResponse)
 def login(req: LoginRequest, request: Request):
     ip = _client_ip(request)
-    key = f"{ip}:{req.username}"
+    keys = _login_keys(ip, req.username)
 
     # 图形验证码校验（市面通用：登录前先过图形验证，拦截自动化爆破）
     ok, reason = _verify_captcha(req.captcha_id, req.captcha_code)
     if not ok:
         # 验证码错误也计入失败次数，避免绕过限流反复尝试
-        _record_login_failure(key)
+        for k in keys:
+            _record_login_failure(k)
         raise HTTPException(status_code=400, detail=reason)
 
-    allowed, wait = _login_allowed(key)
-    if not allowed:
-        raise HTTPException(
-            status_code=429,
-            detail=f"登录失败次数过多，请 {wait} 秒后再试",
-        )
+    for k in keys:
+        allowed, wait = _login_allowed(k)
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail=f"登录失败次数过多，请 {wait} 秒后再试",
+            )
 
     user = authenticate(req.username, req.password)
     if not user:
-        _record_login_failure(key)
+        for k in keys:
+            _record_login_failure(k)
         logger.warning(f"用户登录失败: {req.username} (密码错误) from {ip}")
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
-    _reset_login_failures(key)
+    for k in keys:
+        _reset_login_failures(k)
     token = _generate_token(user["id"], user["username"], user["user_type"])
     logger.info(f"用户登录成功: {req.username} (user_id={user['id']}, type={user['user_type']}) from {ip}")
     return LoginResponse(

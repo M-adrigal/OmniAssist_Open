@@ -31,7 +31,7 @@ class ParallelToolExecutor:
         self._max_workers = max_workers if max_workers is not None else MAX_WORKERS
 
     def execute_batch(self, tool_calls: list, registry, user_id: int = None,
-                      public_id: str = None) -> list:
+                      public_id: str = None, usage_sink=None) -> list:
         """并行执行一批工具调用
 
         Args:
@@ -39,17 +39,18 @@ class ParallelToolExecutor:
             registry: ToolRegistry 实例
             user_id: 当前用户内部整数 ID（权限判定 / DB 关联）
             public_id: 当前用户对外不透明 ID（沙箱文件输出隔离）
+            usage_sink: 本次请求的 token 用量回传钩子（工具内部若间接调模型时用）
 
         Returns:
             list: 按原始顺序排列的结果列表，每项为
                   {"name", "arguments", "result", "error", "tool_call_id"}
         """
         if self._max_workers <= 0 or len(tool_calls) <= 1:
-            return self._execute_sequential(tool_calls, registry, user_id, public_id)
+            return self._execute_sequential(tool_calls, registry, user_id, public_id, usage_sink)
 
-        return self._execute_parallel(tool_calls, registry, user_id, public_id)
+        return self._execute_parallel(tool_calls, registry, user_id, public_id, usage_sink)
 
-    def _execute_parallel(self, tool_calls, registry, user_id, public_id=None):
+    def _execute_parallel(self, tool_calls, registry, user_id, public_id=None, usage_sink=None):
         """并行执行（ThreadPoolExecutor）"""
         results = [None] * len(tool_calls)
 
@@ -60,7 +61,8 @@ class ParallelToolExecutor:
             for i, tc in enumerate(tool_calls):
                 name = tc["function"]["name"]
                 args = json.loads(tc["function"]["arguments"])
-                f = executor.submit(self._execute_one, registry, name, args, user_id, public_id)
+                f = executor.submit(self._execute_one, registry, name, args, user_id,
+                                    public_id, usage_sink)
                 futures.append((i, tc, f))
 
             for i, tc, f in futures:
@@ -81,7 +83,7 @@ class ParallelToolExecutor:
         return results
 
     @staticmethod
-    def _execute_one(registry, name, args, user_id, public_id=None):
+    def _execute_one(registry, name, args, user_id, public_id=None, usage_sink=None):
         """执行单个工具调用（线程安全）
 
         Args:
@@ -90,12 +92,14 @@ class ParallelToolExecutor:
             args: 参数字典
             user_id: 用户内部整数 ID
             public_id: 用户对外不透明 ID（文件输出隔离）
+            usage_sink: 本次请求的 token 用量回传钩子
 
         Returns:
             tuple: (result_str, error_flag)
         """
         try:
-            result = registry.execute(name, args, user_id=user_id, public_id=public_id)
+            result = registry.execute(name, args, user_id=user_id, public_id=public_id,
+                                      usage_sink=usage_sink)
             if isinstance(result, dict):
                 result_str = json.dumps(result, ensure_ascii=False)
             else:
@@ -111,7 +115,7 @@ class ParallelToolExecutor:
         except Exception as e:
             return f"工具执行错误: {str(e)}", True
 
-    def _execute_sequential(self, tool_calls, registry, user_id, public_id=None):
+    def _execute_sequential(self, tool_calls, registry, user_id, public_id=None, usage_sink=None):
         """串行执行（降级模式，当 max_workers <= 0 或仅 1 个工具调用时使用）"""
         results = []
         for tc in tool_calls:
@@ -121,6 +125,7 @@ class ParallelToolExecutor:
                 json.loads(tc["function"]["arguments"]),
                 user_id,
                 public_id,
+                usage_sink,
             )
             results.append({
                 "name": tc["function"]["name"],

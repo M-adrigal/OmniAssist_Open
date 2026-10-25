@@ -131,7 +131,8 @@ def list_skills(request: Request, user_only: bool = False):
             "enabled": bool(s.get("enabled", True)),
             "created_at": s.get("created_at", ""),
             "updated_at": s.get("updated_at", ""),
-            "source": "database",
+            "source": s.get("source") or "editor",
+            "risk_level": s.get("risk_level") or "low",
         })
 
     # 用户技能（从文件系统，补充数据库中没有的技能）
@@ -290,7 +291,12 @@ def create_skill(body: SkillCreate, request: Request):
     user = get_current_user(request)
     user_id = user["db_id"]
 
-    # 含 HTTP 工具 / 任意代码格式化器的技能仅管理员可创建（防止 RCE）
+    content = body.content or ""
+    scripts = body.scripts or "[]"
+
+    # 含 HTTP 工具 / 任意代码格式化器的技能仅管理员可创建（防止 RCE）。
+    # scripts 必须在校验之前取值——历史上这里引用了尚未赋值的局部变量，
+    # 导致接口恒 500，且这道管理员门禁从未真正执行过。
     if _requires_admin_privilege(scripts):
         require_admin(request)
 
@@ -302,9 +308,6 @@ def create_skill(body: SkillCreate, request: Request):
     registry = get_skill_registry()
     if registry and registry.get_system_skill(name):
         raise HTTPException(status_code=400, detail=f"技能名称 '{name}' 与系统技能冲突")
-
-    content = body.content or ""
-    scripts = body.scripts or "[]"
 
     try:
         saved = save_user_skill(user_id, name, content, scripts, enabled=1)

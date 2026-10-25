@@ -8,7 +8,6 @@
   <style>
     :root {
       --bg-primary: #ffffff;
-      --bg-secondary: #f7f7f8;
       --text-primary: #1a1a2e;
       --text-secondary: #6b6b80;
       --text-muted: #9a9ab0;
@@ -16,484 +15,676 @@
       --accent-hover: #1565c0;
       --danger: #ef5350;
       --border: #e0e0e8;
-      --radius: 8px;
-      --radius-lg: 12px;
-      --shadow: 0 4px 24px rgba(0,0,0,0.08);
       --transition: 0.2s ease;
+
+      /* 字体：不引外部字体（离线部署、国内网络取不到），靠系统栈分层 + 排版参数做质感。
+         西文走 SF / Segoe，中文落 PingFang / 雅黑，各用各的最优字形。 */
+      --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+                   "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei",
+                   Roboto, "Helvetica Neue", Arial, sans-serif;
+      /* 字标：西文优先，字距更紧、字重更高 */
+      --font-brand: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI",
+                    "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+      /* 等宽：验证码、技术文本 */
+      --font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, "Courier New", monospace;
+
+      /* 照片加载前的兜底底色，避免先闪一帧纯白 */
+      --scene-fallback: #dfe7f2;
+
+      /* 背景：一张真实拍摄的离焦散景照片，不再用 CSS 拼几何图层。
+         时段只叠一层极轻的色调，不影响画面结构与元素丰富度。 */
+      --scene-photo: url('/static/img/bg-light.jpg');
+      --scene-photo-filter: brightness(1.02) saturate(1.04);
+      /* 照片上的一层薄白：把背景提到"高调"，白卡片才浮得住 */
+      --scene-veil: linear-gradient(rgba(248, 250, 255, 0.16), rgba(248, 250, 255, 0.16));
+      --scene-tint: transparent;
+      --scene-vignette: radial-gradient(132% 96% at 50% 44%, transparent 46%, rgba(18, 28, 56, 0.20) 100%);
+
+      /* 玻璃面板：左右同一种材质，只差厚度。
+         右区不是"不透明的白块"，而是同一层玻璃压得更实——否则接缝处会读成两块不同的东西。 */
+      --panel-edge: rgba(255, 255, 255, 0.72);
+      --panel-shadow: 0 30px 80px rgba(16, 26, 54, 0.22), 0 2px 8px rgba(16, 26, 54, 0.08);
+      --panel-form-bg: radial-gradient(620px 280px at 2% -14%, rgba(176, 206, 255, 0.30), transparent 68%),
+                       linear-gradient(180deg, rgba(250, 252, 255, 0.72), rgba(244, 248, 255, 0.86));
+      --seam: rgba(16, 34, 68, 0.05);
+      /* 浅色下接缝两侧本来就有 20 级亮度差：把右侧边缘压回与左区同一明度，
+         再由它往右自然回亮——读起来是「折了一道」，不是「拼了一块」 */
+      --seam-fade: rgba(16, 34, 68, 0.20);
+
+      /* 左区 */
+      --showcase-bg: linear-gradient(155deg, rgba(214, 233, 255, 0.72) 0%, rgba(233, 228, 255, 0.72) 54%, rgba(206, 243, 240, 0.72) 100%);
+      /* 左区靠接缝一侧压暗：两块玻璃在交界处的明度先接近，接缝才不像一刀切 */
+      --showcase-shade: rgba(16, 34, 68, 0.10);
+      --showcase-lift: radial-gradient(520px 320px at 16% 4%, rgba(255, 255, 255, 0.34), transparent 70%),
+                       radial-gradient(440px 280px at 94% 96%, rgba(255, 255, 255, 0.18), transparent 72%);
+      --showcase-title: #0f172a;
+      --showcase-text: #47536b;
+      --flow-line: rgba(62, 102, 188, 0.38);
+      --flow-dot: rgba(42, 86, 176, 0.52);
+      --flow-dot-fill: #ffffff;
+      --flow-halo: rgba(96, 150, 230, 0.12);
+    }
+
+    .dark {
+      --bg-primary: #101018;
+      --text-primary: #e8e8f0;
+      --text-secondary: #a8a8bb;
+      --text-muted: #6f6f85;
+      --accent: #3b82f6;
+      --accent-hover: #2f74e0;
+      --border: #2a2a36;
+      --scene-fallback: #06070d;
+
+      --scene-photo: url('/static/img/bg-dark.jpg');
+      --scene-photo-filter: brightness(0.94) saturate(1.06);
+      --scene-veil: none;
+      --scene-vignette: radial-gradient(132% 96% at 50% 44%, transparent 30%, rgba(0, 0, 0, 0.62) 100%);
+
+      --panel-edge: rgba(255, 255, 255, 0.10);
+      --panel-shadow: 0 30px 80px rgba(0, 0, 0, 0.66), 0 2px 8px rgba(0, 0, 0, 0.44);
+      /* 原来这里是 88% 的近黑实色，与左侧 60% 的通透玻璃并排，接缝像被切了一刀。
+         压到 74~84% 让同一张照片也能透过来，左轻右重但同源。 */
+      --panel-form-bg: radial-gradient(620px 280px at 2% -14%, rgba(110, 150, 220, 0.12), transparent 68%),
+                       linear-gradient(180deg, rgba(13, 17, 30, 0.70), rgba(9, 12, 21, 0.84));
+      /* 深色下这条 1px 白发丝太扎眼，会把接缝读成"切开"；留 3% 只做玻璃边线的暗示 */
+      --seam: rgba(255, 255, 255, 0.035);
+      --seam-fade: rgba(0, 0, 0, 0.52);
+
+      --showcase-bg: linear-gradient(155deg, rgba(14, 19, 36, 0.58) 0%, rgba(18, 16, 33, 0.58) 54%, rgba(10, 22, 27, 0.58) 100%);
+      --showcase-shade: rgba(3, 5, 12, 0.50);
+      /* 深色下这两团白光必须收掉：照片的亮云 + 34% 白柔光叠在一起，
+         左区会变成一块发灰的雾，跟右区的深蓝黑彻底脱节 */
+      --showcase-lift: radial-gradient(520px 320px at 16% 4%, rgba(255, 255, 255, 0.10), transparent 70%),
+                       radial-gradient(440px 280px at 94% 96%, rgba(150, 180, 255, 0.06), transparent 72%);
+      --showcase-title: #eef2ff;
+      --showcase-text: #a2aec4;
+      --flow-line: rgba(140, 180, 255, 0.26);
+      --flow-dot: rgba(158, 200, 255, 0.50);
+      --flow-dot-fill: #0f1219;
+      --flow-halo: rgba(120, 170, 255, 0.14);
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
+    html, body { height: 100%; }
+
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      background: var(--bg-primary);
+      font-family: var(--font-sans);
+      background: var(--scene-fallback);
       color: var(--text-primary);
-      height: 100vh;
+      min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: background 0.8s ease;
       overflow: hidden;
       position: relative;
+      padding: 24px;
+      /* 浅底深字在 macOS 上默认会描粗，关掉子像素平滑字形才干净 */
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      text-rendering: optimizeLegibility;
     }
 
-    body::before {
-      content: '';
+    input, button, select, textarea { font-family: inherit; }
+
+    /* ============================================================
+       背景：一张照片 + 两层调节（时段色调、暗角）
+       摄影产生的景深与镜面反光，是手写渐变做不出来的东西
+       ============================================================ */
+    .scene {
       position: fixed;
       inset: 0;
-      background:
-        radial-gradient(ellipse 80% 60% at 20% 30%, rgba(59, 130, 246, 0.08) 0%, transparent 60%),
-        radial-gradient(ellipse 60% 80% at 80% 70%, rgba(139, 92, 246, 0.06) 0%, transparent 60%),
-        radial-gradient(ellipse 50% 50% at 50% 50%, rgba(16, 185, 129, 0.04) 0%, transparent 70%);
-      pointer-events: none;
       z-index: 0;
-      transition: opacity 0.8s ease;
+      overflow: hidden;
+      pointer-events: none;
     }
 
-    body::after {
-      content: '';
-      position: fixed;
+    .scene-photo {
+      position: absolute;
+      inset: -2%;
+      background-image: var(--scene-veil), var(--scene-photo);
+      background-size: cover;
+      background-position: center;
+      background-repeat: no-repeat;
+      filter: var(--scene-photo-filter);
+      transition: filter 0.6s ease;
+    }
+
+    /* 时段色调：极轻的一层，只在换上/夜里让画面偏一点冷暖 */
+    .scene-tint {
+      position: absolute;
       inset: 0;
-      background-image:
-        radial-gradient(circle at 15% 25%, rgba(59, 130, 246, 0.12) 0%, transparent 35%),
-        radial-gradient(circle at 85% 75%, rgba(139, 92, 246, 0.10) 0%, transparent 35%),
-        radial-gradient(circle at 50% 50%, rgba(16, 185, 129, 0.06) 0%, transparent 40%),
-        radial-gradient(circle at 30% 80%, rgba(245, 158, 11, 0.07) 0%, transparent 30%),
-        radial-gradient(circle at 70% 20%, rgba(236, 72, 153, 0.06) 0%, transparent 30%);
-      pointer-events: none;
-      z-index: 0;
-      transition: opacity 0.8s ease;
+      background: var(--scene-tint);
+      transition: background 0.9s ease;
     }
 
-    .bg-orb {
-      position: fixed;
-      border-radius: 50%;
-      filter: blur(60px);
-      pointer-events: none;
-      z-index: 0;
-      animation: orbFloat 12s ease-in-out infinite;
+    /* 暗角：把视线收回中间的面板 */
+    .scene-vignette {
+      position: absolute;
+      inset: 0;
+      background: var(--scene-vignette);
     }
 
-    .bg-orb:nth-child(1) {
-      width: 300px; height: 300px;
-      background: rgba(59, 130, 246, 0.10);
-      top: -10%; left: -5%;
-      animation-delay: 0s;
-      animation-duration: 14s;
-    }
+    body.time-morning   { --scene-tint: linear-gradient(160deg, rgba(255, 190, 122, 0.10), transparent 56%); }
+    body.time-noon      { --scene-tint: linear-gradient(160deg, rgba(160, 205, 255, 0.07), transparent 56%); }
+    body.time-afternoon { --scene-tint: linear-gradient(160deg, rgba(96, 165, 250, 0.08), transparent 56%); }
+    body.time-evening   { --scene-tint: linear-gradient(160deg, rgba(251, 146, 60, 0.12), transparent 58%); }
+    body.time-night     { --scene-tint: linear-gradient(160deg, rgba(22, 34, 74, 0.22), rgba(6, 10, 26, 0.14) 66%); }
+    .dark body.time-morning   { --scene-tint: linear-gradient(160deg, rgba(126, 74, 32, 0.16), transparent 56%); }
+    .dark body.time-noon      { --scene-tint: linear-gradient(160deg, rgba(28, 54, 96, 0.14), transparent 56%); }
+    .dark body.time-afternoon { --scene-tint: linear-gradient(160deg, rgba(18, 40, 84, 0.16), transparent 56%); }
+    .dark body.time-evening   { --scene-tint: linear-gradient(160deg, rgba(104, 44, 38, 0.18), transparent 58%); }
+    .dark body.time-night     { --scene-tint: linear-gradient(160deg, rgba(6, 10, 28, 0.34), rgba(2, 4, 12, 0.26) 66%); }
 
-    .bg-orb:nth-child(2) {
-      width: 250px; height: 250px;
-      background: rgba(139, 92, 246, 0.09);
-      bottom: -8%; right: -5%;
-      animation-delay: -4s;
-      animation-duration: 16s;
-    }
-
-    .bg-orb:nth-child(3) {
-      width: 200px; height: 200px;
-      background: rgba(16, 185, 129, 0.07);
-      top: 50%; left: 60%;
-      animation-delay: -8s;
-      animation-duration: 18s;
-    }
-
-    .bg-orb:nth-child(4) {
-      width: 180px; height: 180px;
-      background: rgba(245, 158, 11, 0.06);
-      top: 20%; right: 30%;
-      animation-delay: -6s;
-      animation-duration: 15s;
-    }
-
-    @keyframes orbFloat {
-      0%, 100% { transform: translate(0, 0) scale(1); }
-      25% { transform: translate(30px, -20px) scale(1.1); }
-      50% { transform: translate(-15px, 25px) scale(0.95); }
-      75% { transform: translate(-25px, -15px) scale(1.05); }
-    }
-
-    /* 亮色模式 - 时段背景 */
-    body.time-morning {
-      background: linear-gradient(160deg, #fdfbfb 0%, #f5f0e8 30%, #ebedee 100%);
-    }
-
-    body.time-noon {
-      background: linear-gradient(160deg, #f8f9fc 0%, #e8eef4 40%, #dce4ed 100%);
-    }
-
-    body.time-afternoon {
-      background: linear-gradient(160deg, #e8f0fe 0%, #d4e4fc 40%, #c2e9fb 100%);
-    }
-
-    body.time-evening {
-      background: linear-gradient(160deg, #fdf2e9 0%, #f5e0c8 30%, #e8d5c4 100%);
-    }
-
-    body.time-night {
-      background: linear-gradient(160deg, #0f0f23 0%, #1a1a2e 40%, #16213e 100%);
-    }
-
-    /* 暗色模式 - 时段背景 */
-    .dark body.time-morning {
-      background: linear-gradient(160deg, #1c1814 0%, #201c16 30%, #1a1a28 100%);
-    }
-
-    .dark body.time-noon {
-      background: linear-gradient(160deg, #1a1a26 0%, #1e1e2c 40%, #1a2232 100%);
-    }
-
-    .dark body.time-afternoon {
-      background: linear-gradient(160deg, #141c28 0%, #18202c 40%, #1a2434 100%);
-    }
-
-    .dark body.time-evening {
-      background: linear-gradient(160deg, #1c161a 0%, #201a1e 40%, #1a1a2a 100%);
-    }
-
-    .dark body.time-night {
-      background: linear-gradient(160deg, #080812 0%, #0c0c1a 40%, #0a1020 100%);
-    }
-
+    /* ============================================================
+       登录面板
+       ============================================================ */
     .login-container {
       display: flex;
-      width: 780px;
-      min-height: 460px;
-      background: rgba(255, 255, 255, 0.72);
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
-      border-radius: 16px;
-      box-shadow: 0 8px 40px rgba(0,0,0,0.1), 0 1px 3px rgba(0,0,0,0.06);
+      width: 940px;
+      max-width: 100%;
+      min-height: 560px;
+      backdrop-filter: blur(26px) saturate(140%);
+      -webkit-backdrop-filter: blur(26px) saturate(140%);
+      border-radius: 20px;
+      box-shadow: var(--panel-shadow);
       overflow: hidden;
       position: relative;
       z-index: 1;
-      border: 1px solid rgba(255, 255, 255, 0.3);
+      border: 1px solid var(--panel-edge);
     }
 
-    .login-illustration {
-      flex: 1;
-      background: linear-gradient(135deg, rgba(227, 242, 253, 0.65) 0%, rgba(187, 222, 251, 0.55) 100%);
+    /* ---------- 左：一条从"下达"到"产出"的动线 ---------- */
+    .login-showcase {
+      flex: 1.05;
+      background: var(--showcase-bg);
       display: flex;
       flex-direction: column;
+      padding: 40px 38px 38px;
+      position: relative;
+      overflow: hidden;
+      /* 接缝一侧的暗部，与右区左侧的内阴影对接，合成一道"折光"。
+         范围要够宽：照片的亮斑正好落在左区右下角，压窄了会形成一条亮边贴着接缝。 */
+      box-shadow: inset -104px 0 88px -58px var(--showcase-shade);
+    }
+    /* 展示区自身一层柔光，让半透明底色有明暗，不像贴了块色板 */
+    .login-showcase::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: var(--showcase-lift);
+      pointer-events: none;
+    }
+    .login-showcase > * { position: relative; }
+
+    .show-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+    /* 标志：全向环（Omni）+ 中心核心。缺口留在右下，对应"向外交付"。
+       不用字母缩写方块——那是占位做法，缩到 28px 就成了两个糊字。 */
+    .show-logo {
+      width: 42px;
+      height: 42px;
+      border-radius: 12px;
+      display: flex;
       align-items: center;
       justify-content: center;
-      padding: 40px;
-      transition: background 0.8s ease;
+      box-shadow: 0 6px 18px rgba(59, 130, 246, 0.34), 0 1px 2px rgba(16, 26, 54, 0.10);
+      flex-shrink: 0;
     }
-
-    /* 亮色模式 - 插画区时段背景 */
-    .login-illustration.time-morning {
-      background: linear-gradient(135deg, rgba(255, 236, 210, 0.65) 0%, rgba(252, 182, 159, 0.55) 40%, rgba(248, 205, 218, 0.50) 100%);
+    .show-logo svg {
+      width: 42px;
+      height: 42px;
+      display: block;
+      border-radius: 12px;
     }
-
-    .login-illustration.time-noon {
-      background: linear-gradient(135deg, rgba(200, 215, 235, 0.55) 0%, rgba(180, 200, 225, 0.50) 100%);
-    }
-
-    .login-illustration.time-afternoon {
-      background: linear-gradient(135deg, rgba(161, 196, 253, 0.60) 0%, rgba(194, 233, 251, 0.55) 100%);
-    }
-
-    .login-illustration.time-evening {
-      background: linear-gradient(135deg, rgba(246, 211, 101, 0.60) 0%, rgba(253, 160, 133, 0.55) 60%, rgba(244, 59, 71, 0.45) 100%);
-    }
-
-    .login-illustration.time-night {
-      background: linear-gradient(135deg, rgba(26, 26, 46, 0.70) 0%, rgba(22, 33, 62, 0.65) 50%, rgba(15, 52, 96, 0.55) 100%);
-    }
-
-    /* 暗色模式 - 插画区时段背景 */
-    .dark .login-illustration.time-morning {
-      background: linear-gradient(135deg, rgba(45, 38, 30, 0.75) 0%, rgba(50, 42, 35, 0.70) 40%, rgba(40, 35, 45, 0.65) 100%);
-    }
-
-    .dark .login-illustration.time-noon {
-      background: linear-gradient(135deg, rgba(38, 42, 50, 0.75) 0%, rgba(42, 46, 55, 0.70) 100%);
-    }
-
-    .dark .login-illustration.time-afternoon {
-      background: linear-gradient(135deg, rgba(28, 35, 48, 0.75) 0%, rgba(32, 40, 55, 0.70) 100%);
-    }
-
-    .dark .login-illustration.time-evening {
-      background: linear-gradient(135deg, rgba(45, 32, 38, 0.75) 0%, rgba(50, 38, 42, 0.70) 60%, rgba(42, 35, 45, 0.65) 100%);
-    }
-
-    .dark .login-illustration.time-night {
-      background: linear-gradient(135deg, rgba(18, 20, 38, 0.80) 0%, rgba(22, 26, 48, 0.75) 50%, rgba(15, 22, 40, 0.70) 100%);
-    }
-
-    .login-illustration svg {
-      width: 180px;
-      height: 180px;
-      margin-bottom: 24px;
-    }
-
-    .login-illustration h2 {
-      font-size: 20px;
+    /* 字标：Omni / Assist 分段着色，后半截用品牌蓝，一眼看出是两个词 */
+    .show-brand-name {
+      font-family: var(--font-brand);
+      font-size: 17.5px;
       font-weight: 700;
-      color: #1565c0;
-      margin-bottom: 8px;
+      color: var(--showcase-title);
+      letter-spacing: -0.3px;
+      line-height: 1.25;
+    }
+    .show-brand-name .bn-mark { color: var(--accent); }
+    .show-brand-tag {
+      font-size: 11.5px;
+      color: var(--showcase-text);
+      margin-top: 2px;
+      /* 中文小字拉开字距才不显得挤成一团 */
+      letter-spacing: 0.8px;
+      line-height: 1.3;
     }
 
-    .login-illustration p {
-      font-size: 14px;
-      color: #1976d2;
-      text-align: center;
-      line-height: 1.6;
+    /* 标题 + 动线 + 交付形态 是一个整体，居中落在品牌下方。
+       以前标题固定 50px、动线又被推到最底，中间空出 130px 的洞，整列像是没排完。 */
+    .show-copy {
+      margin-top: auto;
+      margin-bottom: auto;
+      min-width: 0;
     }
 
+    .show-headline {
+      font-size: 31px;
+      font-weight: 700;
+      line-height: 1.36;
+      color: var(--showcase-title);
+      letter-spacing: -0.4px;
+      flex-shrink: 0;
+    }
+
+    /* 流程：一条竖线串起三步，终点落在产出的文件上 */
+    .show-flow {
+      list-style: none;
+      position: relative;
+      margin-top: 34px;
+      padding-left: 28px;
+    }
+    .show-flow::before {
+      content: '';
+      position: absolute;
+      left: 10px;
+      top: 21px;
+      /* 止于最后一颗圆点的下沿：线再往下延伸就会悬空怼到交付形态那一行上 */
+      bottom: 15px;
+      width: 1px;
+      background: var(--flow-line);
+    }
+    .show-flow-item {
+      position: relative;
+      padding: 11px 0;
+      font-size: 13.5px;
+      line-height: 20px;
+      color: var(--showcase-title);
+      letter-spacing: 0.1px;
+    }
+    .show-flow-item::before {
+      content: '';
+      position: absolute;
+      left: -24px;
+      top: 15px;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--flow-dot-fill);
+      border: 1px solid var(--flow-dot);
+    }
+    /* 最后一步填实：动线走到这里就结束了。
+       末尾不再挂"产出格式"那行之后，靠这颗实心点收束，不需要再加文字。 */
+    .show-flow-item:last-child::before {
+      background: var(--flow-dot);
+      box-shadow: 0 0 0 3px var(--flow-halo);
+    }
+
+    /* 动线自己收尾，末尾不再挂"产出格式"这类说明。
+       试过具体文件名（被读成假数据）、四个格式徽章（被读成四个按钮）、
+       一行"产出 Word/Excel/PPT/PDF"（普通），都属于"讲产品能产出什么"——
+       左边要说的是"怎么用"，不是"会给你什么"。 */
+
+    /* ---------- 右：表单 ---------- */
     .login-form {
       flex: 1;
       display: flex;
       flex-direction: column;
       justify-content: center;
-      padding: 48px 40px;
+      padding: 48px 44px;
+      min-width: 0;
+      position: relative;
+      background: var(--panel-form-bg);
+      /* 接缝：一条极细的线 + 从线往右晕开的暗部。
+         只有一根 1px 实线时，两块板是"拼"起来的；加一层衰减阴影才像一块板被折了一道。 */
+      box-shadow: inset 76px 0 62px -52px var(--seam-fade),
+                  inset 1px 0 0 var(--seam);
     }
 
+    /* 表单标题比左侧标题低一档：两边同号同粗时，视线会先在两块"大标题"之间来回跳 */
     .login-form h1 {
-      font-size: 24px;
+      font-size: 22px;
       font-weight: 700;
-      margin-bottom: 4px;
-    }
-
-    .login-form .subtitle {
-      font-size: 13px;
-      color: var(--text-muted);
+      letter-spacing: -0.3px;
+      /* 副标题删掉后，标题与第一个字段之间靠这一个值定距 */
       margin-bottom: 32px;
     }
 
     .form-group {
-      margin-bottom: 20px;
+      margin-bottom: 18px;
     }
 
     .form-group label {
       display: block;
-      font-size: 13px;
+      font-size: 12.5px;
       font-weight: 500;
       color: var(--text-secondary);
-      margin-bottom: 6px;
+      letter-spacing: 0.4px;
+      margin-bottom: 7px;
     }
 
     .form-group input {
       width: 100%;
       padding: 0 14px;
-      height: 42px;
-      line-height: 42px;
+      /* 与验证码字段同高：两块并排时差 2px 会被一眼看出来 */
+      height: 46px;
+      line-height: 46px;
       font-size: 14px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: var(--bg-secondary);
+      border: 1px solid #dde1ea;
+      border-radius: 10px;
+      background: #f4f6fa;
       color: var(--text-primary);
       outline: none;
-      transition: border-color var(--transition), box-shadow var(--transition);
+      transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
     }
+    .dark .form-group input { border-color: #2f3140; background: #191b24; }
+
+    .form-group input:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
 
     .form-group input:focus {
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.12);
+      background: var(--bg-primary);
+      box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.14);
     }
+    .dark .form-group input:focus { box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.22); }
 
-    /* 图形验证码 */
-    .captcha-row {
+    /* 图形验证码：输入框 / 图片 / 刷新合成一个字段。
+       图片是整块里唯一的高亮白面，所以不能顶边——顶边就成了一道白条。
+       现在它是一块带圆角的独立小卡，四周留出深色缝，白面被"框住"而不是"露出来"。 */
+    .captcha-field {
       display: flex;
-      gap: 8px;
       align-items: center;
+      height: 46px;
+      border: 1px solid #dde1ea;
+      border-radius: 10px;
+      background: #f4f6fa;
+      transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
+    }
+    .dark .captcha-field { border-color: #2f3140; background: #191b24; }
+
+    .captcha-field:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+
+    /* 焦点落在整块上：光标在验证码输入框里时，图片和刷新按钮一起被点亮 */
+    .captcha-field:focus-within {
+      border-color: var(--accent);
+      background: var(--bg-primary);
+      box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.14);
+    }
+    .dark .captcha-field:focus-within {
+      background: #12141c;
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.22);
     }
 
-    .captcha-row input {
+    .captcha-field input {
       flex: 1;
+      min-width: 0;
+      height: 100%;
+      padding: 0 8px 0 14px;
+      border: none;
+      background: transparent;
+      outline: none;
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 14.5px;
+      font-weight: 600;
+      letter-spacing: 3px;
       text-transform: uppercase;
-      letter-spacing: 2px;
     }
-
-    .captcha-row input::placeholder {
-      letter-spacing: normal;
-      text-transform: none;
+    /* 抵掉 .form-group input 的通用规则：验证码输入自己不带边框和阴影，
+       边框、底色、聚焦光环全部由外层容器统一表现，否则会出现两层阴影。 */
+    .captcha-field input:hover,
+    .captcha-field input:focus {
+      border-color: transparent;
+      background: transparent;
+      box-shadow: none;
     }
 
     .captcha-img {
-      height: 42px;
-      min-width: 120px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: var(--bg-secondary);
-      cursor: pointer;
+      /* 后端固定出 150x52 的图，等比缩到 34 高约 98 宽。
+         宽度写死是为了占位：图片没到之前先留出同样的空间，否则整行会跳一下 */
+      flex: 0 0 98px;
+      height: 34px;
       display: flex;
       align-items: center;
       justify-content: center;
       padding: 0;
+      border-radius: 6px;
       overflow: hidden;
-      user-select: none;
-      transition: border-color var(--transition);
-    }
-
-    .captcha-img:hover { border-color: var(--accent); }
-
-    .captcha-img img {
-      height: 100%;
-      display: block;
-    }
-
-    .captcha-img .captcha-text {
-      font-family: "Courier New", monospace;
-      font-size: 20px;
-      font-weight: 800;
-      letter-spacing: 4px;
-      color: #1976d2;
-      padding: 0 10px;
-    }
-
-    .captcha-refresh {
-      font-size: 11px;
-      color: var(--accent);
-      margin-top: 4px;
+      background: #ffffff;
+      /* 一层发丝级描边定形：白面在黑底上不描边会显得边缘发虚、像漏光 */
+      box-shadow: 0 0 0 1px rgba(16, 34, 68, 0.10), 0 1px 2px rgba(16, 34, 68, 0.08);
       cursor: pointer;
       user-select: none;
+      transition: box-shadow var(--transition);
+    }
+    .dark .captcha-img { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 2px 8px rgba(0, 0, 0, 0.45); }
+    .captcha-img:hover { box-shadow: 0 0 0 1px rgba(25, 118, 210, 0.55), 0 1px 3px rgba(16, 34, 68, 0.10); }
+    .dark .captcha-img:hover { box-shadow: 0 0 0 1px rgba(120, 170, 255, 0.55), 0 2px 8px rgba(0, 0, 0, 0.45); }
+
+    /* 深色下把白面压到 90%、略降饱和：黑底上一块纯白 + 彩色字母是全页最亮的东西，
+       压一档之后它退到"可读的部件"，不再是贴上去的贴纸 */
+    .captcha-img img {
+      height: 34px;
+      width: auto;
+      display: block;
+    }
+    .dark .captcha-img img { filter: brightness(0.9) saturate(0.8); }
+
+    /* 后端没给图、只给字符时的兜底 */
+    .captcha-img .captcha-text {
+      font-family: var(--font-mono);
+      font-size: 17px;
+      font-weight: 800;
+      letter-spacing: 4px;
+      color: #2a56b0;
+      padding: 0 9px;
     }
 
-    .dark .captcha-img .captcha-text { color: #6ab0ff; }
+    /* 验证码取不到时的提示（点击图片即可重试） */
+    .captcha-retry {
+      font-size: 11.5px;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      padding: 0 6px;
+    }
+
+    /* 刷新：不再是"第三个格子"，就是图片右侧一枚图标，hover 才有底 */
+    .captcha-btn {
+      flex: 0 0 auto;
+      width: 30px;
+      height: 30px;
+      margin: 0 9px 0 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: color var(--transition), background var(--transition);
+    }
+    .captcha-btn:hover { color: var(--accent); background: rgba(25, 118, 210, 0.08); }
+    .dark .captcha-btn:hover { background: rgba(59, 130, 246, 0.14); }
+    .captcha-btn svg { width: 15px; height: 15px; }
+
+    /* 点刷新时图标转一圈，让"换了一张"这件事有反馈 */
+    .captcha-btn.spinning svg { animation: captchaSpin 0.5s ease; }
+    @keyframes captchaSpin { to { transform: rotate(360deg); } }
+
+    /* 密码显示/隐藏：绝对定位挂在字段右侧，不新增一行，不占布局高度 */
+    .field-wrap { position: relative; }
+    .field-wrap input { padding-right: 46px; }
+
+    .pw-toggle {
+      position: absolute;
+      right: 6px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border: none;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: color var(--transition), background var(--transition);
+    }
+    .pw-toggle:hover { color: var(--accent); background: rgba(25, 118, 210, 0.08); }
+    .dark .pw-toggle:hover { background: rgba(59, 130, 246, 0.14); }
+    .pw-toggle svg { width: 16px; height: 16px; }
+    .pw-toggle .ico-eyeoff { display: none; }
+    .pw-toggle.showing .ico-eye { display: none; }
+    .pw-toggle.showing .ico-eyeoff { display: block; }
+
+    /* 校验未过：出错的字段描红。写在 :focus / :focus-within 之后，靠顺序取胜 */
+    .form-group input.invalid,
+    .captcha-field.invalid,
+    .captcha-field.invalid:focus-within {
+      border-color: var(--danger);
+      box-shadow: 0 0 0 3px rgba(211, 47, 47, 0.12);
+    }
+    .dark .form-group input.invalid,
+    .dark .captcha-field.invalid,
+    .dark .captcha-field.invalid:focus-within {
+      box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.20);
+    }
 
     .btn-login {
       width: 100%;
-      padding: 11px 0;
+      /* 字距 6px 会在末字后多出 6px 空隙，左侧补等量 padding 才真正居中 */
+      padding: 13px 0;
       font-size: 15px;
       font-weight: 600;
+      letter-spacing: 3px;
       color: #fff;
       background: var(--accent);
       border: none;
-      border-radius: var(--radius);
+      border-radius: 10px;
       cursor: pointer;
-      transition: background var(--transition);
-      margin-top: 8px;
+      transition: background var(--transition), transform var(--transition), box-shadow var(--transition);
+      box-shadow: 0 4px 14px rgba(25, 118, 210, 0.28);
     }
+    .dark .btn-login { box-shadow: 0 4px 14px rgba(59, 130, 246, 0.30); }
 
     .btn-login:hover { background: var(--accent-hover); }
-    .btn-login:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn-login:active { transform: translateY(1px); }
+    .btn-login:disabled { opacity: 0.6; cursor: not-allowed; box-shadow: none; }
 
+    /* 报错放在按钮上方：视线还在字段上时就能看见，不用跑到按钮下面去找。
+       不再常驻 20px 占位——空状态下不撑高度，出错时按钮轻微下移一次，比天天挂着一段空白划算 */
     .error-msg {
       font-size: 13px;
+      line-height: 18px;
       color: var(--danger);
-      margin-top: 12px;
+      margin-bottom: 12px;
       text-align: center;
-      min-height: 20px;
     }
 
-    .dark .login-container {
-      background: rgba(30, 30, 38, 0.85);
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
-      box-shadow: 0 8px 40px rgba(0,0,0,0.5), 0 1px 3px rgba(255,255,255,0.04);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-    }
-
-    .dark .login-form {
-      background: rgba(30, 30, 38, 0.95);
-    }
-
-    .dark .login-form h1 {
-      color: #f0f0f5;
-    }
-
-    .dark .login-form .subtitle {
-      color: #9999aa;
-    }
-
-    .dark .form-group label {
-      color: #bbbbcc;
-    }
-
-    .dark .form-group input {
-      background: rgba(42, 42, 52, 0.9);
-      border-color: rgba(255, 255, 255, 0.1);
-      color: #e8e8f0;
-    }
-
-    .dark .form-group input::placeholder {
-      color: #666680;
-    }
-
-    .dark .form-group input:focus {
-      border-color: #4a90d9;
-      box-shadow: 0 0 0 3px rgba(74, 144, 217, 0.25);
-    }
-
-    .dark .login-illustration h2 {
-      color: #e0e8ff;
-    }
-
-    .dark .login-illustration p {
-      color: #aabbdd;
-    }
-
-    .dark .time-night .login-illustration h2,
-    .dark .time-night .login-illustration p {
-      color: #e0e8ff;
-    }
-
-    .dark .error-msg {
-      color: #f87171;
-    }
-
-    @media (max-width: 800px) {
+    /* 窄屏：展示区收起为一条品牌带，不占整屏 */
+    @media (max-width: 900px) {
       .login-container {
         flex-direction: column;
-        width: 90vw;
+        width: 100%;
+        max-width: 460px;
         min-height: auto;
       }
-      .login-illustration { padding: 32px 24px; }
-      .login-illustration svg { width: 100px; height: 100px; }
-      .login-form { padding: 32px 24px; }
+      /* 收成一条品牌带：不再有"左右"，接缝的暗部换成一条底边发丝线 */
+      .login-showcase { padding: 26px 26px 22px; flex: none; box-shadow: inset 0 -1px 0 var(--seam); }
+      .show-copy { display: none; }
+      .login-form { padding: 28px 26px 30px; }
+    }
+
+    @media (max-height: 640px) and (min-width: 901px) {
+      .login-container { min-height: 480px; }
+      .login-showcase { padding: 28px 30px; }
+      .show-headline { font-size: 22px; }
+      .show-flow { margin-top: 20px; }
+      .show-flow-item { padding: 8px 0; }
+      .login-form { padding: 32px 38px; }
+      .login-form h1 { margin-bottom: 22px; }
     }
   </style>
 </head>
 <body>
-  <div class="bg-orb"></div>
-  <div class="bg-orb"></div>
-  <div class="bg-orb"></div>
-  <div class="bg-orb"></div>
+  <div class="scene" aria-hidden="true">
+    <div class="scene-photo"></div>
+    <div class="scene-tint"></div>
+    <div class="scene-vignette"></div>
+  </div>
+
   <div class="login-container">
-    <div class="login-illustration">
-      <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <linearGradient id="login-grad" x1="0" y1="0" x2="200" y2="200">
-            <stop offset="0%" stop-color="#3B82F6"/>
-            <stop offset="100%" stop-color="#8B5CF6"/>
-          </linearGradient>
-        </defs>
-        <rect x="50" y="30" width="100" height="100" rx="24" fill="url(#login-grad)" opacity="0.9"/>
-        <text x="100" y="92" text-anchor="middle" fill="white" font-size="36" font-weight="800" font-family="sans-serif">OA</text>
-        <circle cx="100" cy="160" r="4" fill="#3B82F6" opacity="0.4"/>
-        <circle cx="80" cy="170" r="3" fill="#8B5CF6" opacity="0.3"/>
-        <circle cx="120" cy="170" r="3" fill="#8B5CF6" opacity="0.3"/>
-        <circle cx="100" cy="180" r="2" fill="#3B82F6" opacity="0.2"/>
-      </svg>
-      <h2>OmniAssist</h2>
-      <p>智能对话 · 沙箱执行 · 审批管控</p>
+    <div class="login-showcase">
+      <div class="show-brand">
+        <div class="show-logo">
+          <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="OmniAssist">
+            <defs>
+              <linearGradient id="oa-brand" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#3B82F6"/>
+                <stop offset="52%" stop-color="#6366F1"/>
+                <stop offset="100%" stop-color="#8B5CF6"/>
+              </linearGradient>
+            </defs>
+            <rect width="48" height="48" rx="13" fill="url(#oa-brand)"/>
+            <!-- 外环：缺口朝右下，代表向外交付 -->
+            <path d="M24 36 A 12 12 0 1 1 36 24" stroke="#FFFFFF" stroke-width="2.9" stroke-linecap="round"/>
+            <!-- 内环：缺口朝左上，与外环反向，形成"内外两圈在转"的关系 -->
+            <path d="M24 18 A 6 6 0 1 1 18 24" stroke="#FFFFFF" stroke-width="2.9" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div>
+          <div class="show-brand-name">Omni<span class="bn-mark">Assist</span></div>
+          <div class="show-brand-tag">通用智能体服务平台</div>
+        </div>
+      </div>
+
+      <div class="show-copy">
+        <h2 class="show-headline">把一句话<br>变成一份能交付的成果</h2>
+
+        <ol class="show-flow">
+          <li class="show-flow-item">自然语言下达任务</li>
+          <li class="show-flow-item">沙箱内执行工具与脚本</li>
+          <li class="show-flow-item">敏感操作经审批后执行</li>
+        </ol>
+
+      </div>
     </div>
+
     <div class="login-form">
       <h1 id="greeting">欢迎回来</h1>
-      <p class="subtitle">请登录以继续使用服务</p>
       <div class="form-group">
-        <label>用户名</label>
-        <input type="text" id="username" placeholder="请输入用户名" autocomplete="username">
+        <label for="username">用户名</label>
+        <input type="text" id="username" autocomplete="username">
       </div>
       <div class="form-group">
-        <label>密码</label>
-        <input type="password" id="password" placeholder="请输入密码" autocomplete="current-password">
+        <label for="password">密码</label>
+        <div class="field-wrap">
+          <input type="password" id="password" autocomplete="current-password">
+          <button type="button" class="pw-toggle" id="pw-toggle" title="显示密码" aria-label="显示密码">
+            <svg class="ico-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="ico-eyeoff" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
       </div>
       <div class="form-group">
-        <label>图形验证码</label>
-        <div class="captcha-row">
-          <input type="text" id="captcha-code" placeholder="请输入右侧字符" autocomplete="off" maxlength="4">
+        <label for="captcha-code">图形验证码</label>
+        <div class="captcha-field">
+          <input type="text" id="captcha-code" autocomplete="off" maxlength="4">
           <div class="captcha-img" id="captcha-img" title="点击刷新验证码">
             <span class="captcha-text">...</span>
           </div>
+          <button type="button" class="captcha-btn" id="captcha-refresh" title="刷新验证码" aria-label="刷新验证码">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
+          </button>
         </div>
-        <div class="captcha-refresh" id="captcha-refresh">看不清？点击图片刷新</div>
       </div>
-      <button class="btn-login" id="btn-login" onclick="handleLogin()">登 录</button>
-      <div class="error-msg" id="error-msg"></div>
+      <div class="error-msg" id="error-msg" role="status" aria-live="polite"></div>
+      <button class="btn-login" id="btn-login" onclick="handleLogin()">登录</button>
     </div>
   </div>
 
@@ -501,15 +692,11 @@
     (function() {
       const hour = new Date().getHours();
       const greetingEl = document.getElementById('greeting');
-      const illustEl = document.querySelector('.login-illustration');
 
       let timeClass = '';
       let greeting = '';
-      if (hour >= 5 && hour < 8) {
+      if (hour >= 5 && hour < 11) {
         greeting = '早上好，欢迎回来';
-        timeClass = 'time-morning';
-      } else if (hour >= 8 && hour < 11) {
-        greeting = '上午好，欢迎回来';
         timeClass = 'time-morning';
       } else if (hour >= 11 && hour < 13) {
         greeting = '中午好，欢迎回来';
@@ -525,7 +712,7 @@
         timeClass = 'time-night';
       }
       greetingEl.textContent = greeting;
-      illustEl.classList.add(timeClass);
+      // 时段只加在 body 上：色调层统一由 --scene-tint 驱动，背景照片不跟着换
       document.body.classList.add(timeClass);
 
       function applyTheme() {
@@ -557,6 +744,30 @@
 
     let currentCaptchaId = '';
 
+    // 校验失败时只给一行红字，等于让人自己找哪个框错了。
+    // 所以同时把出错的字段描红、把光标送回去。
+    // 验证码字段的边框画在外层容器上，取值时才拿得到它。
+    function fieldBox(el) {
+      return el.closest('.captcha-field') || el;
+    }
+
+    function showFieldError(el, msg) {
+      errorMsg.textContent = msg;
+      fieldBox(el).classList.add('invalid');
+      el.focus();
+    }
+
+    function clearFieldError(el) {
+      if (fieldBox(el).classList.contains('invalid')) {
+        fieldBox(el).classList.remove('invalid');
+      }
+      if (errorMsg.textContent) errorMsg.textContent = '';
+    }
+
+    [usernameInput, passwordInput, captchaInput].forEach((el) => {
+      el.addEventListener('input', () => clearFieldError(el));
+    });
+
     async function loadCaptcha() {
       try {
         const res = await fetch('/api/auth/captcha', { cache: 'no-store' });
@@ -570,13 +781,34 @@
           captchaImg.innerHTML = `<span class="captcha-text">${data.image || '????'}</span>`;
         }
       } catch (e) {
-        captchaImg.innerHTML = `<span class="captcha-text">ERR</span>`;
+        // 图片本身就是可点的重试入口，所以提示要直接把动作说出来
+        captchaImg.innerHTML = `<span class="captcha-retry">点击重试</span>`;
       }
     }
 
-    captchaImg.addEventListener('click', loadCaptcha);
-    document.getElementById('captcha-refresh').addEventListener('click', loadCaptcha);
+    // 刷新：图标转一圈，让"换了一张"这件事有反馈。
+    // 先移除类再强制重排，否则连续点击第二次不会重放动画。
+    function refreshCaptcha() {
+      const btn = document.getElementById('captcha-refresh');
+      btn.classList.remove('spinning');
+      void btn.offsetWidth;
+      btn.classList.add('spinning');
+      loadCaptcha();
+    }
+    captchaImg.addEventListener('click', refreshCaptcha);
+    document.getElementById('captcha-refresh').addEventListener('click', refreshCaptcha);
     loadCaptcha();
+
+    // 密码显示/隐藏：切 type 即可，切完把光标留在原处（密码一长就靠这个回位）
+    const pwToggle = document.getElementById('pw-toggle');
+    pwToggle.addEventListener('click', () => {
+      const willShow = passwordInput.type === 'password';
+      passwordInput.type = willShow ? 'text' : 'password';
+      pwToggle.classList.toggle('showing', willShow);
+      pwToggle.title = willShow ? '隐藏密码' : '显示密码';
+      pwToggle.setAttribute('aria-label', pwToggle.title);
+      passwordInput.focus();
+    });
 
     let isComposing = false;
     const setComposing = (v) => { isComposing = v; };
@@ -602,19 +834,19 @@
       }
     });
 
+    // 触屏设备不自动聚焦：一进页面就弹键盘，会把表单顶出屏幕
+    if (!window.matchMedia('(hover: none) and (pointer: coarse)').matches) {
+      usernameInput.focus();
+    }
+
     async function handleLogin() {
       const username = usernameInput.value.trim();
       const password = passwordInput.value;
       const captchaCode = captchaInput.value.trim();
 
-      if (!username || !password) {
-        errorMsg.textContent = '请输入用户名和密码';
-        return;
-      }
-      if (!captchaCode) {
-        errorMsg.textContent = '请输入图形验证码';
-        return;
-      }
+      if (!username) { showFieldError(usernameInput, '请输入用户名'); return; }
+      if (!password) { showFieldError(passwordInput, '请输入密码'); return; }
+      if (!captchaCode) { showFieldError(captchaInput, '请输入图形验证码'); return; }
 
       btnLogin.disabled = true;
       btnLogin.textContent = '登录中...';
@@ -651,7 +883,7 @@
         errorMsg.textContent = '网络错误，请重试';
       } finally {
         btnLogin.disabled = false;
-        btnLogin.textContent = '登 录';
+        btnLogin.textContent = '登录';
       }
     }
   </script>

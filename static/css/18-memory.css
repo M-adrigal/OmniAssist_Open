@@ -1,0 +1,509 @@
+/* 18-memory.css
+ * 记忆面板：参照设置类页面的版式 ——
+ *   卡片一：总开关（标题 + 一句说明 + 拨动开关）
+ *   卡片二：管理记忆（标题 + 说明 + 按钮组；下方默认渲染成可读文本）
+ * 编辑是临时态（点「编辑」才出现，保存或取消后回到查看态）。
+ *
+ * 视觉口径与项目一致：有质感但不降可读性。全部复用既有变量，
+ * 不贴纹理、不做彩色装饰条、不加多余动效。
+ */
+
+.mem-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* 两张卡片：与全局卡片同语言，只是更轻 */
+.mem-card {
+  padding: 14px 16px 15px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+}
+
+/* 卡片头：左边标题+说明，右边开关或按钮组 */
+.mem-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.mem-row-text {
+  min-width: 0;
+}
+
+.mem-row-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.mem-row-desc {
+  margin-top: 3px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+/* 拨动开关（iOS 式）：40×22，选中染主色 */
+.mem-pill {
+  position: relative;
+  flex: none;
+  display: inline-block;
+  cursor: pointer;
+  user-select: none;
+}
+
+.mem-pill input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.mem-pill-track {
+  display: block;
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--line-soft);
+  transition: background var(--transition);
+}
+
+.mem-pill-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform var(--transition);
+}
+
+.mem-pill input:checked + .mem-pill-track {
+  background: var(--accent);
+}
+
+.mem-pill input:checked + .mem-pill-track::after {
+  transform: translateX(18px);
+}
+
+.mem-pill input:focus-visible + .mem-pill-track {
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+}
+
+/* 管理按钮组：窄屏允许换行 */
+.mem-mgmt {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.mem-btn-danger {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: transparent;
+}
+
+.mem-btn-danger:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* 一级主操作（从对话提炼）：描边强调，不抢「保存」的实心按钮 */
+.mem-btn-accent {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: transparent;
+}
+
+.mem-btn-accent:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* 「⋯」菜单：导入 / 导出 / 历史 / 清空（清空是唯一破坏性项，排最后且标红） */
+.mem-menu {
+  margin-top: 10px;
+  padding: 4px;
+  background: var(--surface-dialog, var(--surface-sunken));
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px -12px rgba(16, 24, 40, 0.28);
+}
+
+.mem-menu-item {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text-primary);
+  background: none;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.mem-menu-item:hover {
+  background: var(--surface-sunken);
+}
+
+.mem-menu-item.danger {
+  color: var(--danger);
+}
+
+.mem-subhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+/* 模型提炼出的提议：默认全勾，用户做减法 */
+.mem-prop {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+
+.mem-prop input[type="checkbox"] {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+
+.mem-prop-text {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.mem-prop-tag {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  background: var(--surface-sunken);
+  border-radius: 5px;
+}
+
+/* 历史版本 */
+.mem-ver {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 13px;
+}
+
+.mem-ver:last-child {
+  border-bottom: none;
+}
+
+/* 导入前的差异预览：哪段会变、哪段会被清空，一眼看到 */
+.mem-diff {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 12.5px;
+}
+
+.mem-diff-name {
+  color: var(--text-secondary);
+}
+
+.mem-diff-state {
+  color: var(--text-muted);
+}
+
+.mem-diff-state.ok {
+  color: var(--success, #1d9e75);
+}
+
+.mem-diff-state.warn {
+  color: #b45309;
+}
+
+.mem-diff-state.danger {
+  color: var(--danger);
+}
+
+.mem-preview {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+/* ---------- 查看模式：按段渲染成可读文本 ---------- */
+
+.mem-view {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+/* 关掉开关时整块内容降透明度：让用户一眼看出「现在没在用」 */
+.mem-view.is-off {
+  opacity: 0.55;
+}
+
+.mem-view-sec + .mem-view-sec {
+  margin-top: 14px;
+}
+
+.mem-view-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mem-view-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 3px;
+}
+
+.mem-view-actions {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  flex: none;
+}
+
+/* 行内文字按钮：编辑 / 删除 / 恢复。
+   常驻可见（不做 hover 才出现 —— 那样用户根本发现不了可以点） */
+.mem-link-btn {
+  padding: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.mem-link-btn:hover {
+  color: var(--accent);
+}
+
+.mem-link-btn.danger:hover {
+  color: var(--danger);
+}
+
+.mem-item-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mem-item-text {
+  min-width: 0;
+}
+
+.mem-view-text {
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mem-view-text.is-empty {
+  color: var(--text-muted);
+  opacity: 0.75;
+}
+
+.mem-view-empty {
+  padding: 18px 0 6px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* ---------- 编辑模式：四段编辑器（临时态） ---------- */
+
+#mem-edit {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.mem-block {
+  margin-bottom: 12px;
+}
+
+.mem-block-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+/* 每段字数：只作参考，不抢视线 */
+.mem-count {
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.mem-block textarea,
+.mem-tool textarea,
+.mem-io-box textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  background: var(--surface-dialog, var(--surface-sunken));
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  resize: vertical;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.mem-block textarea:focus,
+.mem-tool textarea:focus,
+.mem-io-box textarea:focus {
+  outline: none;
+  background: var(--surface-dialog);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
+}
+
+.mem-block textarea::placeholder,
+.mem-tool textarea::placeholder {
+  color: var(--text-muted);
+}
+
+/* 字数总计：超限变红，保存按钮同步禁用，绝不静默截断 */
+.mem-usage {
+  margin: 2px 0 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.mem-usage.over {
+  color: var(--danger);
+}
+
+/* 模型整理区：下沉一层底色，与四段编辑区分开 */
+.mem-tool {
+  padding: 12px 14px 13px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+}
+
+.mem-tool-head {
+  margin-bottom: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.mem-tool-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.mem-tool-actions + .mem-tool-actions {
+  margin-top: 8px;
+}
+
+.mem-hint {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* 认不出归属的行：原样摆出来，不静默丢 */
+.mem-warn {
+  margin: 10px 0 0;
+  padding: 9px 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.10);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  border-radius: 9px;
+}
+
+.dark .mem-warn {
+  color: #fcd34d;
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.30);
+}
+
+.mem-io-box {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.mem-io-box textarea[readonly] {
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+}
+
+/* 底栏只在编辑模式出现：取消 + 保存，都靠右 */
+#modal-memory .modal-footer {
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/* 窄屏：按钮组换到标题下方，不再挤一行 */
+@media (max-width: 560px) {
+  .mem-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .mem-mgmt {
+    justify-content: flex-start;
+  }
+}

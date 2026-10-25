@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import html
 import zipfile
 import mimetypes
 import csv as csv_mod
@@ -20,6 +21,14 @@ def get_project_root():
 
 OUTPUT_ROOT = "document_output"
 
+# 允许「内联」（由浏览器直接渲染而非下载）的 MIME 白名单。
+# 只放图片与 PDF：.html/.js/.svg/.xml 都在上传白名单里，一旦以 text/html 在同源下
+# 渲染就是存储型 XSS（谁上传谁就能打管理员）。这些类型一律走 attachment 下载。
+_INLINE_MIME_ALLOWED = {
+    "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp",
+    "application/pdf",
+}
+
 
 def _get_user_display_name(public_id: str) -> str:
     from server.database import get_user_by_public_id
@@ -36,7 +45,9 @@ def _check_file_access(full_path: str, project_root: str, user: dict) -> bool:
     （仍受 project_root 与 document_output 边界约束，无法越出项目目录）。
     """
     full_path = os.path.realpath(full_path)
-    if not full_path.startswith(os.path.realpath(project_root)):
+    # 必须带 os.sep：否则 ".../项目_backup/x" 这类同级前缀目录也会被判定为在项目内
+    _root_real = os.path.realpath(project_root)
+    if full_path != _root_real and not full_path.startswith(_root_real + os.sep):
         return False
 
     out_root = os.path.realpath(os.path.join(project_root, OUTPUT_ROOT))
@@ -281,9 +292,13 @@ def download_file(path: str = Query(...), inline: bool = Query(False), request: 
     full_path = os.path.join(project_root, path)
 
     full_path = os.path.realpath(full_path)
-    if not full_path.startswith(os.path.realpath(project_root)):
+    _root_real = os.path.realpath(project_root)
+    if full_path != _root_real and not full_path.startswith(_root_real + os.sep):
         raise HTTPException(status_code=403, detail="禁止访问项目外的文件")
 
+    # request 存在却解析不出用户 = 令牌无效/用户已删除，必须 401，不能跳过归属校验
+    if request is not None and user is None:
+        raise HTTPException(status_code=401, detail="未登录")
     if user and not _check_file_access(full_path, project_root, user):
         raise HTTPException(status_code=403, detail="无权访问此文件")
 
@@ -294,8 +309,14 @@ def download_file(path: str = Query(...), inline: bool = Query(False), request: 
     if media_type is None:
         media_type = "application/octet-stream"
 
-    if inline:
-        return FileResponse(full_path, media_type=media_type)
+    # 内联（浏览器直接渲染）只对图片与 PDF 开放。
+    # 其余类型（.html/.js/.svg/.xml 都在上传白名单里）若以 text/html 同源渲染，
+    # 等同于存储型 XSS——普通用户上传一个文件，管理员点预览即被接管。
+    if inline and media_type in _INLINE_MIME_ALLOWED:
+        resp = FileResponse(full_path, media_type=media_type)
+        _safe_name = os.path.basename(full_path).replace('"', "").replace("\r", "").replace("\n", "")
+        resp.headers["Content-Disposition"] = f'inline; filename="{_safe_name}"'
+        return resp
 
     return FileResponse(
         full_path,
@@ -311,9 +332,12 @@ def delete_file(path: str = Query(...), request: Request = None):
     full_path = os.path.join(project_root, path)
 
     full_path = os.path.realpath(full_path)
-    if not full_path.startswith(os.path.realpath(project_root)):
+    _root_real = os.path.realpath(project_root)
+    if full_path != _root_real and not full_path.startswith(_root_real + os.sep):
         raise HTTPException(status_code=403, detail="禁止删除项目外的文件")
 
+    if request is not None and user is None:
+        raise HTTPException(status_code=401, detail="未登录")
     if user and not _check_file_access(full_path, project_root, user):
         raise HTTPException(status_code=403, detail="无权删除此文件")
 
@@ -363,10 +387,12 @@ def _render_csv_table(full_path: str, max_rows: int = 200) -> dict:
         headers = rows[0]
         data_rows = rows[1:max_rows+1]
         truncated = len(rows) - 1 > max_rows
-        th_html = ''.join('<th>{}</th>'.format(h) for h in headers)
+        # 单元格原样拼进 HTML 会造成存储型 XSS：CSV 里写一个
+        # <img src=x onerror=...> 单元格，管理员点预览即在应用源内执行。
+        th_html = ''.join('<th>{}</th>'.format(html.escape(str(h), quote=True)) for h in headers)
         trs = []
         for r in data_rows:
-            tds = ''.join('<td>{}</td>'.format(c) for c in r)
+            tds = ''.join('<td>{}</td>'.format(html.escape(str(c), quote=True)) for c in r)
             trs.append('<tr>{}</tr>'.format(tds))
         table_html = (
             "<table class='preview-csv-table' style='width:100%;border-collapse:collapse;font-size:13px;'>"
@@ -394,9 +420,12 @@ def preview_file(path: str = Query(...), request: Request = None):
     full_path = os.path.join(project_root, path)
 
     full_path = os.path.realpath(full_path)
-    if not full_path.startswith(os.path.realpath(project_root)):
+    _root_real = os.path.realpath(project_root)
+    if full_path != _root_real and not full_path.startswith(_root_real + os.sep):
         raise HTTPException(status_code=403, detail="禁止访问项目外的文件")
 
+    if request is not None and user is None:
+        raise HTTPException(status_code=401, detail="未登录")
     if user and not _check_file_access(full_path, project_root, user):
         raise HTTPException(status_code=403, detail="无权操作此文件")
 

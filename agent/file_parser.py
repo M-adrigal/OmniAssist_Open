@@ -30,11 +30,37 @@ TEXT_EXTENSIONS = {
     ".conf", ".env", ".properties",
 }
 
+# 图片：不能按文本解析，需以多模态内容块（image_url）送入模型。
+# 格式以实际文件内容判定为准，这里仅按扩展名做初筛。
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+# 图片 -> data URL 的 MIME 类型
+IMAGE_MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+}
+
+
+def is_image_file(file_path: str) -> bool:
+    """判断文件是否为受支持的图片（按扩展名初筛）"""
+    return os.path.splitext(file_path)[1].lower() in IMAGE_EXTENSIONS
+
+
+def image_mime_type(file_path: str) -> str:
+    """返回图片的 MIME 类型，未知扩展名兜底为 image/png"""
+    return IMAGE_MIME_TYPES.get(os.path.splitext(file_path)[1].lower(), "image/png")
+
 
 def get_file_type(file_path: str) -> str:
     ext = os.path.splitext(file_path)[1].lower()
     if ext in TEXT_EXTENSIONS:
         return "text"
+    if ext in IMAGE_EXTENSIONS:
+        return "image"
     if ext == ".pdf":
         return "pdf"
     if ext == ".docx":
@@ -78,6 +104,20 @@ def parse_file(file_path: str) -> dict:
         }
 
     file_size = os.path.getsize(file_path)
+
+    # 图片：绝不按文本读取（二进制当文本解码必然报错或产生乱码），
+    # 只登记元信息 + 磁盘路径，由上下文装配层决定如何以多模态块送入模型。
+    if file_type == "image":
+        placeholder = f"[图片文件: {filename}（{_format_size(file_size)}）]"
+        return {
+            "filename": filename,
+            "file_type": "image",
+            "file_size": file_size,
+            "is_large": False,
+            "content": placeholder,
+            "full_content": placeholder,
+            "path": file_path,
+        }
 
     try:
         if file_type in ("text", "csv"):
@@ -136,6 +176,11 @@ def build_context_prompt(parsed_files: list[dict], file_meta: dict = None) -> st
         return ""
 
     meta = file_meta or {}
+    # 图片不参与文本上下文：二进制内容无法以文本表达，强行注入只会得到占位/乱码。
+    # 图片由 build_context_parts 单独拆出，交给支持视觉的模型以多模态块送入。
+    parsed_files = [pf for pf in (parsed_files or []) if pf.get("file_type") != "image"]
+    if not parsed_files:
+        return ""
     # 按上传时间倒序，最新版本排在前面
     ordered = sorted(parsed_files, key=lambda pf: meta.get(pf.get("filename", ""), 0), reverse=True)
     # 同名文件只保留最新版本（mtime 最大者），其余标记为旧版本不再展示
@@ -178,11 +223,77 @@ def build_context_prompt(parsed_files: list[dict], file_meta: dict = None) -> st
     return "\n".join(parts)
 
 
+def build_context_parts(parsed_files: list, file_meta: dict = None,
+                        max_images: int = 5,
+                        max_total_bytes: int = 20 * 1024 * 1024) -> dict:
+    """把解析结果拆分为「文本上下文」与「图片元信息」两部分，供多模态装配使用。
+
+    图片绝不进文本：二进制按文本解码必然出错。这里只登记磁盘路径与 MIME，
+    由调用方（chat.py）在确认模型支持视觉后，再组装成 image_url 内容块。
+
+    Args:
+        parsed_files: parse_files 的结果
+        file_meta: {文件名: mtime(秒)}，用于版本标注与「最新优先」排序
+        max_images: 最多保留的图片张数（防止请求体过大被上游拒绝）
+        max_total_bytes: 图片原始字节总量上限。base64 后体积约 ×4/3，
+            需为上游请求体上限（如 DeepSeek 48MiB）留出余量
+
+    Returns:
+        {
+            "text": str,    # 非图片文件的文本上下文（无则空串）
+            "images": [     # 图片元信息，最新优先、同名去重
+                {"filename": str, "path": str, "size": int, "mime": str}, ...
+            ],
+            "skipped": int, # 因数量/体积超限被跳过的图片数（用于提示用户）
+        }
+    """
+    meta = file_meta or {}
+    all_files = list(parsed_files or [])
+    images = [pf for pf in all_files if pf.get("file_type") == "image"]
+
+    # 按上传时间倒序 + 同名去重（与 build_context_prompt 保持同一套版本语义）
+    ordered = sorted(images, key=lambda pf: meta.get(pf.get("filename", ""), 0), reverse=True)
+    seen = set()
+    deduped = []
+    for pf in ordered:
+        fn = pf.get("filename", "")
+        if fn in seen:
+            continue
+        seen.add(fn)
+        deduped.append(pf)
+
+    kept, total, skipped = [], 0, 0
+    for pf in deduped:
+        path = pf.get("path") or ""
+        size = int(pf.get("file_size") or 0)
+        # 超限或磁盘文件已不在（如被清理）的图片一律跳过，不静默报错
+        if len(kept) >= max_images or total + size > max_total_bytes or not os.path.isfile(path):
+            skipped += 1
+            continue
+        total += size
+        kept.append({
+            "filename": pf.get("filename", ""),
+            "path": path,
+            "size": size,
+            "mime": image_mime_type(path),
+        })
+
+    return {
+        "text": build_context_prompt(all_files, file_meta),
+        "images": kept,
+        "skipped": skipped,
+    }
+
+
 def generate_file_summary(full_content: str, filename: str) -> str:
     """为文件内容生成一个人类可读的摘要
 
     用于前端展示上传文件卡片时显示简要信息。
     """
+    # 图片没有可统计的行/字符数，单独给出可读摘要（否则会显示成 "(22B, 1行)"）
+    if is_image_file(filename):
+        return f"{filename} (图片文件)"
+
     lines = full_content.strip().split("\n")
     line_count = len(lines)
     char_count = len(full_content)

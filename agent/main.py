@@ -40,7 +40,8 @@ def create_simulated_executor(tool_name: str, execution_prompt: str,
         try:
             response = llm_client.chat(
                 [{"role": "user", "content": prompt}],
-                temperature=0.1
+                temperature=0.1,
+                source="skill",
             )
             return response.get("content", "")
         except Exception as e:
@@ -161,7 +162,8 @@ def create_http_executor(tool_name: str, http_config: dict,
         try:
             response = llm_client.chat(
                 [{"role": "user", "content": prompt}],
-                temperature=0.1
+                temperature=0.1,
+                source="skill",
             )
             return response.get("content", "")
         except Exception as e:

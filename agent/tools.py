@@ -12,7 +12,8 @@ class ToolRegistry:
 
     def register_tool(self, name, description, parameters, func,
                       risk_level: str = "safe", risk_description: str = None,
-                      require_approval: bool = None):
+                      require_approval: bool = None,
+                      block_during_stream: bool = False):
         """注册一个工具
 
         Args:
@@ -24,6 +25,10 @@ class ToolRegistry:
             risk_description (str): 人类可读的风险说明模板，可用 {arg} 占位填充参数
             require_approval (bool|None): 显式覆盖是否需审批；None 时按 risk_level 推断
                 （write/exec/admin 默认需审批，safe/read 不需）
+            block_during_stream (bool): 该工具会终止当前服务进程（如重启服务），
+                禁止在流式响应生成期间执行——否则服务会在自己输出到一半时被杀，
+                导致生成器损坏（generator already executing）且本轮上下文全部丢失。
+                典型事故：2026-10-23 Agent 在流式中调 diag_restart_service。
         """
         self.tools[name] = {
             "name": name,
@@ -33,6 +38,7 @@ class ToolRegistry:
             "risk_level": risk_level,
             "risk_description": risk_description,
             "require_approval": require_approval,
+            "block_during_stream": block_during_stream,
         }
 
     def get_all_openai_specs(self):
@@ -53,7 +59,8 @@ class ToolRegistry:
             })
         return specs
 
-    def execute(self, name, arguments: dict, user_id: int = None, public_id: str = None) -> str:
+    def execute(self, name, arguments: dict, user_id: int = None, public_id: str = None,
+                usage_sink=None) -> str:
         """根据工具名和参数执行对应的函数
 
         Args:
@@ -61,6 +68,10 @@ class ToolRegistry:
             arguments (dict): 参数字典
             user_id (int): 可选，当前用户内部整数 ID，用于权限判定 / DB 关联
             public_id (str): 可选，当前用户对外不透明 ID，用于文件输出隔离
+            usage_sink (callable): 可选，本次请求的 token 用量回传钩子。
+                工具内部若间接调用了模型（子 Agent 委派、技能模拟执行、HTTP 结果整理），
+                用的都是全局 LLM 客户端（没有 per-request 的 sink）。在此处把钩子
+                绑到当前线程，这些子调用就能正确归因，不会漏记。
 
         Returns:
             str: 执行结果的字符串形式，出错时返回错误信息
@@ -93,7 +104,12 @@ class ToolRegistry:
                 for k, v in injected.items():
                     if accepts_var_kw or k in params:
                         call_args[k] = v
-            result = func(**call_args)
+            if usage_sink is not None:
+                from agent.llm import usage_scope
+                with usage_scope(usage_sink):
+                    result = func(**call_args)
+            else:
+                result = func(**call_args)
             if isinstance(result, dict):
                 return json.dumps(result, ensure_ascii=False)
             return str(result)
@@ -162,6 +178,10 @@ class ToolRegistry:
 
     def get_risk_level(self, name: str) -> str:
         return self.tools.get(name, {}).get("risk_level", "safe")
+
+    def blocks_during_stream(self, name: str) -> bool:
+        """该工具是否禁止在流式响应生成期间执行（会终止服务进程的工具）。"""
+        return bool(self.tools.get(name, {}).get("block_during_stream", False))
 
     def describe_tool_risk(self, name: str, args: dict) -> str:
         """生成人类可读的风险说明（用参数填充模板，失败回退到工具描述）。"""

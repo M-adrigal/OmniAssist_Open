@@ -1,0 +1,371 @@
+/* 13-skills-approval.css
+ * 技能列表 Tab、敏感操作审批操作栏
+ *
+ * 由 static/style.css 拆分而来（原第 3645-3971 行，共 4669 行）。
+ * 拆分方式：按原顺序连续切分，加载顺序与原文件一致，层叠结果不变。
+ * 注意：各文件之间靠 <link> 的先后顺序决定层叠，插入新文件时请一并确认顺序。
+ */
+
+/* ===== 技能列表 Tab（与 .config-tab 共用一套分段控件外观） ===== */
+.skill-tab {
+  padding: 7px 14px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 0;
+  transition: color .18s, background .18s;
+}
+.skill-tab.active {
+  background: var(--surface-dialog);
+  color: var(--text-primary);
+  border-bottom-color: transparent;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.10);
+}
+.skill-tab:hover { color: var(--text-primary); }
+
+/* 技能列表项 */
+.skill-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: 10px;
+  gap: 14px;
+  transition: background .15s;
+}
+/* 技能名与说明之间留出真正的行距：只差 2px 会读成同一行 */
+.skill-desc {
+  margin-top: 5px !important;
+  font-size: 12.5px !important;
+  color: var(--text-secondary) !important;
+  opacity: .8 !important;
+}
+.skill-item:last-child { border-bottom: none; }
+.skill-item:hover { background: rgba(59, 130, 246, 0.04); }
+.dark .skill-item:hover { background: rgba(255, 255, 255, 0.03); }
+.skill-item .skill-info {
+  flex: 1;
+  min-width: 0;
+}
+.skill-item .skill-name {
+  font-weight: 500;
+  font-size: 13.5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+/* 技能名旁的小标签：脚本数 / 来源（文件/数据库） */
+.skill-meta {
+  font-weight: 400;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-muted);
+  background: var(--surface-sunken-strong);
+  border: none;
+  border-radius: 6px;
+  padding: 3px 7px;
+  white-space: nowrap;
+}
+/* 被禁用技能的视觉弱化 */
+.skill-item.disabled .skill-name { color: var(--text-muted); }
+.skill-item.disabled .skill-desc { opacity: .65; }
+.skill-item.disabled .skill-toggle { background: var(--border); }
+/* 操作进行中临时锁定按钮 */
+.skill-toggle:disabled,
+.btn-preview:disabled { cursor: not-allowed; opacity: .6; }
+.skill-item .skill-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.skill-item .skill-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 技能开关按钮 */
+.skill-toggle {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  background: var(--border);
+  border-radius: 11px;
+  cursor: pointer;
+  transition: background .2s;
+  border: none;
+  padding: 0;
+  flex-shrink: 0;
+}
+.skill-toggle.on { background: var(--accent); }
+.skill-toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform .2s;
+}
+.skill-toggle.on::after { transform: translateX(18px); }
+
+/* 预览按钮 */
+.btn-preview {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+  transition: border-color .2s, color .2s;
+}
+.btn-preview:hover { border-color: var(--accent); color: var(--accent); }
+
+/* 技能预览代码块 */
+.skill-preview-script {
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.skill-preview-script h4 {
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--bg-hover);
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.skill-preview-script pre {
+  margin: 0;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 300px;
+  overflow: auto;
+  background: var(--bg);
+  color: var(--text);
+}
+/* ===== 敏感操作审批底部操作栏 ===== */
+.approval-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  /* 审批条压在输入卡正上方，宽度跟着输入卡一起走 */
+  max-width: min(var(--chat-shell), 100%);
+  margin: 0 auto 8px;
+  width: calc(100% - 40px);
+  animation: approvalSlideUp 0.25s ease;
+}
+
+@keyframes approvalSlideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.approval-bar.hidden { display: none !important; }
+
+/* 审批卡片（在底部栏中使用） */
+.approval-bar .approval-card {
+  margin: 0;
+  border: 1px solid var(--danger, #e5484d);
+  border-radius: var(--radius-lg);
+  background: var(--bg-primary, #fff);
+  overflow: hidden;
+  box-shadow: 0 4px 20px rgba(229, 72, 77, 0.15), 0 0 0 1px rgba(229, 72, 77, 0.08);
+}
+
+/* 内嵌在消息中的旧审批卡片（兼容历史消息渲染） */
+.message-body > .approval-card,
+.session-messages > .approval-card {
+  margin: 12px 0;
+  border: 1px solid var(--danger, #e5484d);
+  border-radius: 10px;
+  background: var(--bg-hover, #fafafa);
+  overflow: hidden;
+  opacity: 0.7;
+  pointer-events: none;
+}
+.message-body > .approval-card.resolved,
+.session-messages > .approval-card.resolved {
+  opacity: 0.85;
+  border-color: var(--border, #ddd);
+}
+.approval-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  font-weight: 600;
+  font-size: 14px;
+  background: rgba(229, 72, 77, 0.08);
+  border-bottom: 1px solid var(--border, #eee);
+}
+.approval-icon { font-size: 16px; }
+.approval-items { padding: 10px 14px; display: flex; flex-direction: column; gap: 10px; }
+.approval-item {
+  border: 1px solid var(--border, #eee);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg, #fff);
+}
+.approval-item-head { display: flex; align-items: center; gap: 8px; }
+.approval-tool { font-weight: 600; font-size: 13px; }
+.risk-badge {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  color: #fff;
+}
+.risk-safe { background: #4caf50; }
+.risk-read { background: #2196f3; }
+.risk-write { background: #f5a623; }
+.risk-exec { background: #e5484d; }
+.risk-admin { background: #9c27b0; }
+.resolved-badge {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  margin-left: auto;
+}
+.resolved-badge.ok { background: #4caf50; color: #fff; }
+.resolved-badge.no { background: #9e9e9e; color: #fff; }
+.approval-desc { font-size: 12px; color: var(--text-dim, #666); margin: 6px 0; }
+
+/* 参数折叠区：入口要一眼能看见（11px 灰字会淹没在按钮堆里），
+   展开后的代码块要有明确边界，否则参数读起来像"飘"在卡片上。 */
+.approval-args { font-size: 12px; color: var(--text-secondary); margin: 2px 0 0; }
+.approval-args summary {
+  cursor: pointer;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px 3px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: var(--surface-sunken);
+  color: var(--text-secondary);
+  transition: border-color .15s, color .15s;
+  list-style: none;
+}
+.approval-args summary::-webkit-details-marker { display: none; }
+/* 三角箭头：details 展开时旋转 */
+.approval-args summary::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-left: 4px solid currentColor;
+  border-top: 3.5px solid transparent;
+  border-bottom: 3.5px solid transparent;
+  transition: transform .15s;
+}
+.approval-args[open] summary::before { transform: rotate(90deg); }
+.approval-args summary:hover {
+  border-color: var(--line-strong, rgba(16, 24, 40, 0.16));
+  color: var(--text-primary);
+}
+.approval-args pre {
+  margin: 6px 0 0;
+  padding: 9px 10px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+.approval-actions { display: flex; gap: 8px; margin-top: 8px; }
+.approval-actions button {
+  flex: 1;
+  padding: 6px 0;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.approval-actions button:hover:not(:disabled) { background: var(--bg-hover, #f0f0f0); }
+.approval-actions .btn-skip { color: #777; }
+.approval-actions .btn-approve { color: #2e7d32; border-color: #a5d6a7; }
+.approval-actions .btn-reject { color: #c62828; border-color: #ef9a9a; }
+/* 点击后选中的按钮：颜色固化，明确区分跳过/允许/拒绝 */
+.approval-actions .btn-skip.chosen { background: #757575; color: #fff; border-color: #757575; }
+.approval-actions .btn-approve.chosen { background: #4caf50; color: #fff; border-color: #4caf50; }
+.approval-actions .btn-reject.chosen { background: #e5484d; color: #fff; border-color: #e5484d; }
+.approval-actions button:disabled { opacity: 0.55; cursor: default; }
+
+.approval-status {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-dim, #888);
+  min-height: 16px;
+}
+.approval-status.dec-skip { color: #757575; }
+.approval-status.dec-approve { color: #2e7d32; }
+.approval-status.dec-reject { color: #c62828; }
+.approval-item.dec-skip { border-color: #bdbdbd; }
+.approval-item.dec-approve { border-color: #a5d6a7; }
+.approval-item.dec-reject { border-color: #ef9a9a; }
+
+/* 审批栏暗色模式 */
+.dark .approval-bar .approval-card {
+  background: #1a1a1a;
+  border-color: rgba(239, 68, 68, 0.5);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(239, 68, 68, 0.15);
+}
+.dark .approval-bar .approval-card-header {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: #333;
+}
+.dark .approval-bar .approval-item {
+  background: #222;
+  border-color: #333;
+}
+.dark .approval-bar .approval-actions button {
+  background: #2a2a2a;
+  border-color: #444;
+  color: #ccc;
+}
+/* 暗色模式下保留「跳过/允许/拒绝」的清晰区分 */
+.dark .approval-bar .approval-actions .btn-skip { color: #bdbdbd; border-color: #555; }
+.dark .approval-bar .approval-actions .btn-approve { color: #81c784; border-color: #2e7d32; }
+.dark .approval-bar .approval-actions .btn-reject { color: #ef9a9a; border-color: #c62828; }
+.dark .approval-bar .approval-actions .btn-skip.chosen {
+  background: #616161;
+  border-color: #616161;
+  color: #fff;
+}
+.dark .approval-bar .approval-actions .btn-approve.chosen {
+  background: #2e7d32;
+  border-color: #2e7d32;
+  color: #fff;
+}
+.dark .approval-bar .approval-actions .btn-reject.chosen {
+  background: #c62828;
+  border-color: #c62828;
+  color: #fff;
+}
+.dark .approval-bar .approval-actions button:hover:not(:disabled) {
+  background: #333;
+  border-color: #555;
+}
+

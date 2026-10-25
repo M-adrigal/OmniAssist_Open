@@ -26,6 +26,11 @@ def _get_connection() -> sqlite3.Connection:
             _local.conn.row_factory = sqlite3.Row
             _local.conn.execute("PRAGMA journal_mode=WAL")
             _local.conn.execute("PRAGMA foreign_keys=ON")
+            # 并发写等待：缺失时多线程同时写入会直接抛 "database is locked"，
+            # 在 token 用量这类高频追加表上尤其容易触发。
+            _local.conn.execute("PRAGMA busy_timeout=5000")
+            # WAL 模式下 synchronous=NORMAL 仍保证崩溃一致性，写入快数倍
+            _local.conn.execute("PRAGMA synchronous=NORMAL")
         except sqlite3.Error as e:
             logger.error(f"数据库连接失败: {e}")
             raise
@@ -40,6 +45,7 @@ def init_db() -> str:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -180,6 +186,9 @@ def init_db() -> str:
             skill_content TEXT NOT NULL DEFAULT '',
             skill_scripts TEXT NOT NULL DEFAULT '[]',
             enabled INTEGER DEFAULT 1,
+            source TEXT DEFAULT 'editor',
+            risk_level TEXT DEFAULT 'low',
+            confirmed_at TIMESTAMP DEFAULT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -189,10 +198,17 @@ def init_db() -> str:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_skills_user_id ON user_skills(user_id)")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_user_skills_name ON user_skills(user_id, skill_name)")
 
-    try:
-        conn.execute("ALTER TABLE user_skills ADD COLUMN enabled INTEGER DEFAULT 1")
-    except sqlite3.OperationalError:
-        pass
+    # 幂等补列（老库迁移）：来源 / 风险等级 / 用户确认时间。
+    # source: editor=设置里手工创建, uploaded=上传安装
+    for _col, _ddl in (
+        ("source", "ALTER TABLE user_skills ADD COLUMN source TEXT DEFAULT 'editor'"),
+        ("risk_level", "ALTER TABLE user_skills ADD COLUMN risk_level TEXT DEFAULT 'low'"),
+        ("confirmed_at", "ALTER TABLE user_skills ADD COLUMN confirmed_at TIMESTAMP DEFAULT NULL"),
+    ):
+        try:
+            conn.execute(_ddl)
+        except sqlite3.OperationalError:
+            pass
 
     # 按用户隔离的加密密钥（用于用户自带 API Key / 私有 host 的技能）
     conn.execute("""
@@ -209,6 +225,10 @@ def init_db() -> str:
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_secrets_user_id ON user_secrets(user_id)")
 
+    # Token 用量明细（每次模型调用一行，用于成本看板与后续 AI 数据分析）
+    from server.usage_store import ensure_table as _ensure_usage_table
+    _ensure_usage_table(conn)
+
     _seed_default_permissions(conn)
 
     conn.execute(
@@ -220,7 +240,10 @@ def init_db() -> str:
     admin_password = None
 
     if not existing:
-        admin_password = "admin123"
+        # 初始口令随机生成：固定常量（历史上是 admin123，还被写进文档和日志）意味着
+        # 任何看过文档或日志文件的人都能抢在管理员首次登录前永久接管账号。
+        # 生成后只输出到启动控制台，不落盘、不写日志。
+        admin_password = secrets.token_urlsafe(12)
         password_hash = _hash_password(admin_password)
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute(
@@ -229,6 +252,25 @@ def init_db() -> str:
             ("admin", password_hash, now, now)
         )
         conn.commit()
+
+    # 模型配置两层结构（凭据 / 模型）+ 存量迁移。幂等，可反复执行。
+    # 放在 close 之前用同一个连接做，避免启动瞬间多连接抢写锁。
+    try:
+        from server import model_store
+        model_store.ensure_tables(conn)
+        model_store.seed_builtin_providers(conn)
+        model_store.migrate_from_model_configs(conn)
+    except Exception as e:
+        logger.error(f"模型两层结构初始化失败（不影响启动，但模型配置可能不可用）: {e}")
+
+    # 每个用户的长期记忆（四段）。同理用同一个连接，且必须在这里建好 ——
+    # 晚建一次，用户首次打开记忆面板会拿到「表不存在」，那种错误在界面上
+    # 只会显示成一句「加载失败」，没人知道是表没建。
+    try:
+        from server import memory_store
+        memory_store.ensure_table(conn)
+    except Exception as e:
+        logger.error(f"记忆表初始化失败（不影响启动，但记忆功能不可用）: {e}")
 
     conn.close()
 
@@ -629,7 +671,7 @@ def update_session_messages(session_id: str, messages: list, title: str = None, 
     messages_json = json.dumps(messages, ensure_ascii=False)
 
     # 检查 session 是否存在，不存在则先创建
-    existing = conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    existing = conn.execute("SELECT id, user_id FROM sessions WHERE id = ?", (session_id,)).fetchone()
     if not existing:
         if user_id is None:
             logger.warning(f"会话 {session_id} 不存在且 user_id 为空，兜底使用 admin")
@@ -643,6 +685,15 @@ def update_session_messages(session_id: str, messages: list, title: str = None, 
         )
         conn.commit()
         return get_session(_sid)
+
+    # 纵深防御：明确指定了归属用户却与会话实际拥有者不符时，拒绝写入。
+    # 上游（chat.py / sessions.py）应已做归属校验；这里兜住「上游漏校验」的情况，
+    # 避免把消息写进他人会话造成跨租户污染。
+    if user_id is not None and existing["user_id"] != user_id:
+        logger.warning(
+            f"拒绝写入他人会话 session={session_id} (owner={existing['user_id']}, 请求={user_id})"
+        )
+        return None
 
     if title:
         conn.execute(
@@ -773,52 +824,98 @@ def get_model_config(user_id: int = None) -> Optional[dict]:
     return d
 
 
-def resolve_model_config(user_id: int) -> dict:
-    """解析用户实际生效的模型配置（个人优先、全局兜底合并）。
+def resolve_model_config(user_id: int, entry_id: int = None, session_id: str = None,
+                        include_hidden: bool = False) -> dict:
+    """解析本次请求真正生效的模型配置。
 
-    策略：以全局配置为基底；若用户存在个人配置，则模型名 / BaseURL /
-    上下文限制 / 思考开关 / 最大迭代次数等非凭据字段「非空即覆盖」个人值，
-    API Key 缺省时回落全局。这样用户在「个人」 tab 调整模型或迭代次数，
-    即使未单独填写 API Key 也能生效（旧逻辑要求必须填个人 Key 才生效）。
+    职责分两块，不要混：
+    - **模型与凭据**（用哪个模型、走哪家地址、拿哪把 key）交给 `model_store.resolve_active_model`，
+      它按「请求指定 → 会话记录 → 用户默认 → 平台默认」四级取值，每级都校验归属。
+    - **用户偏好**（思考强度 / 温度策略 / 迭代次数）仍存在 `model_configs`，这里合并。
+
+    旧字段名（model_name / base_url / api_key / api_key_masked / config_type）全部保留，
+    因此所有历史调用方无需改动。新结构查不到时才回落旧的单模型字段（未迁移环境的兜底）。
     """
     base = {
         "api_key": "", "base_url": "", "model_name": "",
-        "context_limit": "",
-        "api_key_masked": "(未设置)",
-        "config_type": "global",
-        "thinking_mode": "low",
-        "max_iterations": 10,
-        "temperature_mode": "auto",
-        "temperature": 0.7,
+        "context_limit": "", "api_key_masked": "(未设置)",
+        "config_type": "none", "entry_owner": "",
+        "entry_id": None, "provider_id": None, "provider_name": "",
+        "model_id": "", "display_name": "", "resolved_from": "",
+        "thinking_mode": "low", "max_iterations": 10,
+        "temperature_mode": "auto", "temperature": 0.7,
     }
     global_cfg = get_model_config(None) or {}
     personal = get_model_config(user_id) or {}
 
     merged = dict(base)
-    merged.update({k: v for k, v in global_cfg.items() if v not in (None, "")})
-    merged["config_type"] = "global"
 
-    if personal:
-        for key in ("model_name", "base_url", "context_limit", "thinking_mode",
-                    "max_iterations", "temperature_mode", "temperature"):
-            val = personal.get(key)
-            if key in ("max_iterations", "temperature"):
-                if val is not None:
-                    merged[key] = val
-            elif val not in (None, ""):
+    # 偏好：平台默认值打底，个人非空覆盖
+    for key in ("thinking_mode", "max_iterations", "temperature_mode", "temperature"):
+        val = global_cfg.get(key)
+        if val is not None and val != "":
+            merged[key] = val
+    for key in ("thinking_mode", "max_iterations", "temperature_mode", "temperature"):
+        val = personal.get(key)
+        if key in ("max_iterations", "temperature"):
+            if val is not None:
                 merged[key] = val
-        if personal.get("api_key"):
-            merged["api_key"] = personal["api_key"]
-            merged["api_key_masked"] = personal.get("api_key_masked", "(未设置)")
-        else:
-            merged["api_key"] = global_cfg.get("api_key")
-            merged["api_key_masked"] = global_cfg.get("api_key_masked")
-        merged["config_type"] = "personal"
+        elif val not in (None, ""):
+            merged[key] = val
 
-    # 思考模式默认值：未显式配置时给 low（轻量思考、不展示），降低 token 消耗
+    # 模型与凭据：新两层结构
+    active = None
+    try:
+        from server import model_store
+        active = model_store.resolve_active_model(
+            user_id, entry_id=entry_id, session_id=session_id,
+            include_hidden=include_hidden,
+        )
+    except Exception as e:
+        logger.warning(f"两层结构解析模型失败，回退旧逻辑: {e}")
+
+    if active:
+        merged.update({
+            "api_key": active.get("api_key", ""),
+            "api_key_masked": active.get("api_key_masked", "(未设置)"),
+            "base_url": active.get("base_url", ""),
+            "model_name": active.get("model_id", ""),
+            "model_id": active.get("model_id", ""),
+            "display_name": active.get("display_name", ""),
+            "context_limit": active.get("context_limit", "") or "",
+            "config_type": active.get("config_type", "platform"),
+            "entry_id": active.get("entry_id"),
+            "entry_owner": active.get("entry_owner", ""),
+            "provider_id": active.get("provider_id"),
+            "provider_name": active.get("provider_name", ""),
+            "resolved_from": active.get("resolved_from", ""),
+        })
+    else:
+        # ===== 兜底：旧单模型字段（仅在两层结构里一个可用模型都没有时才会走到）=====
+        merged.update({k: v for k, v in global_cfg.items() if v not in (None, "")})
+        merged["config_type"] = "global"
+        if personal:
+            p_api_key = personal.get("api_key")
+            p_model = personal.get("model_name")
+            p_base = personal.get("base_url")
+            has_endpoint = bool(p_model not in (None, "")) or bool(p_base not in (None, ""))
+            for key in ("model_name", "base_url", "context_limit"):
+                val = personal.get(key)
+                if val not in (None, ""):
+                    merged[key] = val
+            if has_endpoint and p_api_key:
+                merged["api_key"] = p_api_key
+                merged["api_key_masked"] = personal.get("api_key_masked", "(未设置)")
+            else:
+                merged["api_key"] = global_cfg.get("api_key")
+                merged["api_key_masked"] = global_cfg.get("api_key_masked")
+            merged["config_type"] = "personal" if has_endpoint else "global"
+        merged["model_id"] = merged.get("model_name", "")
+        merged["display_name"] = merged.get("model_name", "")
+        merged["resolved_from"] = "legacy"
+
     if merged.get("thinking_mode") not in ("off", "low", "high"):
         merged["thinking_mode"] = "low"
-    # 温度策略默认值：未显式配置时给 auto（自动：首轮发散、后续收敛）
     if merged.get("temperature_mode") not in ("static", "auto"):
         merged["temperature_mode"] = "auto"
     try:
@@ -828,13 +925,17 @@ def resolve_model_config(user_id: int) -> dict:
     return merged
 
 
-def save_model_config(user_id: int = None, **kwargs) -> dict:
+def save_model_config(user_id: int = None, clear_api_key: bool = False, **kwargs) -> dict:
     conn = _get_connection()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     updates = {}
     if "api_key" in kwargs:
         updates["api_key_encrypted"] = _encrypt_db(kwargs["api_key"] or "")
+    elif clear_api_key:
+        # 保存时未提供 key（前端密码框留空）：清空个人 key，使其回落全局。
+        # 否则旧 key 会被一直保留，造成「全局模型 + 旧个人 key」的 401。
+        updates["api_key_encrypted"] = _encrypt_db("")
     if "base_url" in kwargs:
         updates["base_url"] = kwargs["base_url"] or ""
     if "model_name" in kwargs:
@@ -986,7 +1087,8 @@ def get_user_skills(user_id: int, enabled_only: bool = False, skill_name: str = 
     where = " AND ".join(conditions)
     rows = conn.execute(
         f"SELECT id, user_id, skill_name, skill_content, skill_scripts, enabled, "
-        f"created_at, updated_at FROM user_skills WHERE {where} ORDER BY skill_name",
+        f"source, risk_level, confirmed_at, created_at, updated_at "
+        f"FROM user_skills WHERE {where} ORDER BY skill_name",
         params
     ).fetchall()
     return [dict(r) for r in rows]
@@ -1019,7 +1121,9 @@ def get_disabled_system_skills(user_id: int = None) -> set:
 
 
 def save_user_skill(user_id: int, skill_name: str, skill_content: str,
-                    skill_scripts: str = "[]", enabled: int = 1) -> dict:
+                    skill_scripts: str = "[]", enabled: int = 1,
+                    source: str = None, risk_level: str = None,
+                    confirmed_at: str = None) -> dict:
     """创建或更新用户技能
 
     Args:
@@ -1028,6 +1132,9 @@ def save_user_skill(user_id: int, skill_name: str, skill_content: str,
         skill_content: SKILL.md 内容
         skill_scripts: 脚本 JSON 数组
         enabled: 是否启用（1=启用, 0=禁用）
+        source: 来源（editor=手工创建 / uploaded=上传安装）。**仅 INSERT 时生效**，
+                显式传值才会在 UPDATE 时改写 —— 防止同步类调用顺手把来源冲掉。
+        risk_level / confirmed_at: 上传安装时的风险等级与用户确认时间（同上，仅显式传值才改写）
 
     Returns:
         dict: 保存后的技能记录
@@ -1041,10 +1148,21 @@ def save_user_skill(user_id: int, skill_name: str, skill_content: str,
     ).fetchone()
 
     if existing:
+        fields = ["skill_content = ?", "skill_scripts = ?", "enabled = ?", "updated_at = ?"]
+        params = [skill_content, skill_scripts, enabled, now]
+        if source is not None:
+            fields.append("source = ?")
+            params.append(source)
+        if risk_level is not None:
+            fields.append("risk_level = ?")
+            params.append(risk_level)
+        if confirmed_at is not None:
+            fields.append("confirmed_at = ?")
+            params.append(confirmed_at)
+        params.append(existing["id"])
         conn.execute(
-            "UPDATE user_skills SET skill_content = ?, skill_scripts = ?, enabled = ?, "
-            "updated_at = ? WHERE id = ?",
-            (skill_content, skill_scripts, enabled, now, existing["id"])
+            f"UPDATE user_skills SET {', '.join(fields)} WHERE id = ?",
+            params
         )
         conn.commit()
         return dict(conn.execute(
@@ -1053,8 +1171,10 @@ def save_user_skill(user_id: int, skill_name: str, skill_content: str,
     else:
         conn.execute(
             "INSERT INTO user_skills (user_id, skill_name, skill_content, skill_scripts, "
-            "enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (user_id, skill_name, skill_content, skill_scripts, enabled, now, now)
+            "enabled, source, risk_level, confirmed_at, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, skill_name, skill_content, skill_scripts, enabled,
+             source or "editor", risk_level or "low", confirmed_at, now, now)
         )
         conn.commit()
         return dict(conn.execute(

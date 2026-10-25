@@ -5,7 +5,25 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OmniAssist</title>
 <link rel="icon" href="/favicon.ico">
-<link rel="stylesheet" href="/static/style.css">
+<!-- 样式按职责拆分，顺序即层叠顺序；新增样式请插到对应职责文件末尾，别调换这里的顺序 -->
+<link rel="stylesheet" href="/static/css/01-variables.css">
+<link rel="stylesheet" href="/static/css/02-base.css">
+<link rel="stylesheet" href="/static/css/03-sidebar.css">
+<link rel="stylesheet" href="/static/css/04-chat-area.css">
+<link rel="stylesheet" href="/static/css/05-buttons.css">
+<link rel="stylesheet" href="/static/css/06-modals.css">
+<link rel="stylesheet" href="/static/css/07-dialog-controls.css">
+<link rel="stylesheet" href="/static/css/08-tables.css">
+<link rel="stylesheet" href="/static/css/09-form-controls.css">
+<link rel="stylesheet" href="/static/css/10-message.css">
+<link rel="stylesheet" href="/static/css/11-attachments.css">
+<link rel="stylesheet" href="/static/css/12-file-picker.css">
+<link rel="stylesheet" href="/static/css/13-skills-approval.css">
+<link rel="stylesheet" href="/static/css/14-overlays.css">
+<link rel="stylesheet" href="/static/css/15-model-switcher.css">
+<link rel="stylesheet" href="/static/css/16-model-config.css">
+<link rel="stylesheet" href="/static/css/17-skill-panel.css">
+<link rel="stylesheet" href="/static/css/18-memory.css">
 </head>
 <body>
 
@@ -15,23 +33,35 @@
     <div class="sidebar-header">
       <div class="sidebar-brand">
         <div class="brand-logo">
-          <svg width="28" height="28" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect width="48" height="48" rx="12" fill="url(#brand-grad)"/>
+          <!-- 与登录页同一枚标记：渐变底 + 内外两道缺口相背的弧 -->
+          <svg width="28" height="28" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="OmniAssist">
             <defs>
-              <linearGradient id="brand-grad" x1="0" y1="0" x2="48" y2="48">
+              <linearGradient id="brand-grad" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
                 <stop offset="0%" stop-color="#3B82F6"/>
+                <stop offset="52%" stop-color="#6366F1"/>
                 <stop offset="100%" stop-color="#8B5CF6"/>
               </linearGradient>
             </defs>
-            <text x="24" y="33" text-anchor="middle" fill="white" font-size="20" font-weight="800" font-family="sans-serif">OA</text>
+            <rect width="48" height="48" rx="13" fill="url(#brand-grad)"/>
+            <path d="M24 36 A 12 12 0 1 1 36 24" stroke="#FFFFFF" stroke-width="3.2" stroke-linecap="round"/>
+            <path d="M24 18 A 6 6 0 1 1 18 24" stroke="#FFFFFF" stroke-width="3.2" stroke-linecap="round"/>
           </svg>
         </div>
         <span class="brand-name">OmniAssist</span>
-        <button id="btn-search-dialog" class="btn-search-icon" title="搜索对话">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        </button>
+        <div class="brand-actions">
+          <button id="btn-search-dialog" class="btn-search-icon" title="搜索对话" aria-label="搜索对话">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="7.5"/><path d="M16.6 16.6 21 21"/></svg>
+          </button>
+          <button id="btn-collapse-sidebar" class="btn-collapse" title="收起边栏" aria-label="收起边栏" aria-expanded="true" aria-controls="sidebar">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4.5" width="18" height="15" rx="3.5"/><path d="M9.5 4.9v14.2"/></svg>
+          </button>
+        </div>
       </div>
       <button id="btn-new-session" class="btn-primary full-width">+ 新建对话</button>
+    </div>
+    <!-- 本地过滤：只筛当前列表的标题；跨全部对话的全文搜索走右上角那个按钮 -->
+    <div class="sidebar-search-wrap">
+      <input id="session-filter" class="sidebar-search" type="text" placeholder="过滤对话" autocomplete="off">
     </div>
     <div id="session-list" class="session-list"></div>
     <div class="sidebar-footer">
@@ -61,6 +91,14 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
         <span>技能列表</span>
       </button>
+      <button class="drawer-item" data-action="memory">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5a4 4 0 0 0-4 4v1a3 3 0 0 0 0 6v1a4 4 0 0 0 8 0v-1a3 3 0 0 0 0-6V9a4 4 0 0 0-4-4z"/><path d="M9 10h6M9 14h6"/></svg>
+        <span>记忆</span>
+      </button>
+      <button class="drawer-item" data-action="usage">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+        <span>Token 消耗</span>
+      </button>
       <div style="border-top: 1px solid var(--border); margin: 4px 0;"></div>
       <button class="drawer-item" data-action="change-password">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
@@ -82,14 +120,79 @@
   <main id="chat-area">
     <!-- 顶部会话标题栏（仅显示当前会话标题，不遮挡右上角主题按钮） -->
     <header id="chat-header" class="chat-header">
+      <!-- 侧栏收起后：左上角先是品牌标记，右边跟一枚胶囊（展开 / 搜索 / 新建）。
+           侧栏藏起来不能把"这是哪个产品"也一起藏掉 -->
+      <div class="header-brand" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="oa-brand-mark-header" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stop-color="#3B82F6"/>
+              <stop offset="52%" stop-color="#6366F1"/>
+              <stop offset="100%" stop-color="#8B5CF6"/>
+            </linearGradient>
+          </defs>
+          <rect width="48" height="48" rx="13" fill="url(#oa-brand-mark-header)"/>
+          <path d="M24 36 A 12 12 0 1 1 36 24" stroke="#FFFFFF" stroke-width="3.2" stroke-linecap="round"/>
+          <path d="M24 18 A 6 6 0 1 1 18 24" stroke="#FFFFFF" stroke-width="3.2" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <!-- 侧栏收起后才出现：展开 / 搜索 / 新建。侧栏藏起来不能把这三个入口一起藏掉 -->
+      <div class="header-rail" id="header-rail" role="toolbar" aria-label="侧栏与对话操作">
+        <button id="btn-expand-sidebar" title="展开边栏" aria-label="展开边栏" aria-expanded="false" aria-controls="sidebar">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4.5" width="18" height="15" rx="3.5"/><path d="M9.5 4.9v14.2"/></svg>
+        </button>
+        <button id="btn-rail-search" title="搜索对话" aria-label="搜索对话">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="7.5"/><path d="M16.6 16.6 21 21"/></svg>
+        </button>
+        <button id="btn-rail-new" title="新建对话" aria-label="新建对话">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 11.6a8.5 8.5 0 0 1-11.9 7.7L3.5 20.5l1.2-5.1A8.5 8.5 0 1 1 20.5 11.6z"/><path d="M12 8.4v6.4M8.8 11.6h6.4"/></svg>
+        </button>
+      </div>
       <div id="chat-title" class="chat-title">新对话</div>
-      <button id="theme-toggle" class="theme-toggle" title="切换主题">🌙</button>
+      <button id="theme-toggle" class="theme-toggle" data-mode="light" title="切换主题">
+        <svg class="ico-theme ico-sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4 1.4"/></svg>
+        <svg class="ico-theme ico-moon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.6 6.6 0 0 0 9.8 9.8z"/></svg>
+        <svg class="ico-theme ico-auto" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"/></svg>
+      </button>
     </header>
     <div id="chat-messages" class="chat-messages">
       <div class="welcome-message">
+        <div class="welcome-brand">
+          <span class="welcome-logo">
+            <svg width="38" height="38" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="OmniAssist">
+              <defs>
+                <linearGradient id="oa-brand-mark" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stop-color="#3B82F6"/>
+                  <stop offset="52%" stop-color="#6366F1"/>
+                  <stop offset="100%" stop-color="#8B5CF6"/>
+                </linearGradient>
+              </defs>
+              <rect width="48" height="48" rx="13" fill="url(#oa-brand-mark)"/>
+              <path d="M24 36 A 12 12 0 1 1 36 24" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"/>
+              <path d="M24 18 A 6 6 0 1 1 18 24" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"/>
+            </svg>
+          </span>
+        </div>
         <h1>OmniAssist</h1>
         <p>智能对话 · 沙箱执行 · 审批管控</p>
-        <p style="margin-top:8px;font-size:13px;">输入消息开始对话，支持多模型切换与工具调用</p>
+        <div class="cap-grid">
+          <button type="button" class="cap-card" data-prompt="我想咨询一个问题：">
+            <span class="cap-ico blue"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.4 9 9 0 0 1-3.9-.9L3 21l1.9-5.1a8.3 8.3 0 0 1-.9-3.8 8.4 8.4 0 0 1 8.5-8.4A8.4 8.4 0 0 1 21 11.5z"/></svg></span>
+            <span class="cap-body"><span class="cap-title">对话问答</span><span class="cap-desc">直接提问，可切换模型与思考强度</span></span>
+          </button>
+          <button type="button" class="cap-card" data-prompt="帮我分析这份文件，提炼要点和结论。">
+            <span class="cap-ico violet"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg></span>
+            <span class="cap-body"><span class="cap-title">文档分析</span><span class="cap-desc">上传文件，提取、整理与改写内容</span></span>
+          </button>
+          <button type="button" class="cap-card" data-prompt="请用可用技能帮我完成：">
+            <span class="cap-ico green"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2 5.5 5.5 2-5.5 2L12 18l-2-5.5L4.5 10.5 10 8.5z"/></svg></span>
+            <span class="cap-body"><span class="cap-title">技能执行</span><span class="cap-desc">调用已装技能，沙箱内运行并产出文件</span></span>
+          </button>
+          <button type="button" class="cap-card" data-prompt="查一下最近七天的 Token 消耗，按天汇总并画一张趋势图。">
+            <span class="cap-ico amber"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></span>
+            <span class="cap-body"><span class="cap-title">数据查询</span><span class="cap-desc">查用量、跑脚本、出一张统计图</span></span>
+          </button>
+        </div>
       </div>
     </div>
 
@@ -99,34 +202,91 @@
     <div class="chat-input-container" id="chat-input-container">
       <div id="command-suggestions" class="command-suggestions hidden"></div>
       <div id="file-chips" class="file-chips hidden"></div>
+      <div class="chat-composer">
       <div class="chat-input-wrapper">
-        <button id="btn-attach" class="btn-attach" title="上传文件">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-        </button>
         <textarea id="chat-input" rows="1" placeholder="输入消息..."></textarea>
-        <button id="btn-send" class="btn-send" title="发送">
-          <svg class="icon-send" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-          <svg class="icon-stop" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
-        </button>
       </div>
       <!-- 模式切换按钮（位于输入框下方） -->
       <div class="chat-input-toolbar">
+        <button id="btn-attach" class="btn-attach" title="上传文件">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        </button>
         <button id="btn-web-search" class="btn-web-search" data-mode="off">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
           <span>联网搜索</span>
-        </button>
-        <button id="btn-thought" class="btn-thought" data-mode="off">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/><path d="M12 6v.01M12 10v4M12 17v.01"/></svg>
-          <span>思考过程</span>
         </button>
         <button id="btn-perm" class="btn-perm" data-mode="request" title="点击在『请求批准』与『完全访问权限』之间切换（范围说明见弹窗）">
           <svg class="perm-icon perm-icon-request" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
           <svg class="perm-icon perm-icon-full hidden" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
           <span id="perm-label">请求批准</span>
         </button>
+        <button id="btn-model" class="btn-model" title="切换本会话使用的模型">
+          <svg class="mm-btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></svg>
+          <span id="model-label">模型</span>
+          <svg class="mm-btn-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>
+        </button>
+        <button id="btn-send" class="btn-send" title="发送">
+          <svg class="icon-send" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+          <svg class="icon-stop" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+        </button>
+        <div id="model-menu" class="model-menu hidden">
+          <div id="model-menu-list" class="mm-list"></div>
+          <div class="mm-think">
+            <span class="mm-think-label">深度思考</span>
+            <div class="mm-seg" id="mm-think-seg">
+              <button type="button" data-think="off">关闭</button>
+              <button type="button" data-think="low">低</button>
+              <button type="button" data-think="high">高</button>
+            </div>
+          </div>
+          <button type="button" id="mm-configure" class="mm-footer">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+            <span>配置自定义模型</span>
+          </button>
+        </div>
       </div>
+      </div>
+      <!-- AI 免责声明：紧贴在输入框下方，不参与输入卡内部布局 -->
+      <p class="ai-disclaimer">内容由 AI 生成，请核实重要信息</p>
     </div>
   </main>
+</div>
+
+<!-- 模态框: 切换模型确认 -->
+<div id="modal-switch-model" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>切换模型</h3>
+      <button class="btn-icon modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="switch-model-flow">
+        <div class="switch-model-side">
+          <div class="switch-model-side-label">当前</div>
+          <div class="switch-model-side-name" id="switch-from-name">—</div>
+        </div>
+        <div class="switch-model-arrow">→</div>
+        <div class="switch-model-side">
+          <div class="switch-model-side-label">切换为</div>
+          <div class="switch-model-side-name" id="switch-to-name">—</div>
+        </div>
+      </div>
+      <p class="switch-model-meta" id="switch-to-meta"></p>
+      <div class="switch-model-warn">
+        <p>切换后可能出现两个问题：</p>
+        <ul>
+          <li><strong>成本增加</strong>：前缀缓存失效，本轮按全价计费。</li>
+          <li><strong>效果下降</strong>：不同模型的工具调用与长文能力有差异。</li>
+        </ul>
+        <p id="switch-privacy-note" class="hidden"></p>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel modal-close">取消</button>
+      <button id="btn-confirm-switch-model" class="btn-primary">确认切换</button>
+    </div>
+  </div>
 </div>
 
 <!-- 模态框: 模型配置 -->
@@ -144,79 +304,161 @@
         <button class="config-tab" data-tab="search">联网搜索</button>
       </div>
       <div id="config-tab-personal" class="config-tab-content">
-        <div class="form-group">
-          <label>API Key</label>
-          <input type="password" id="cfg-api-key" placeholder="输入 API Key">
-        </div>
-        <div class="form-group">
-          <label>Base URL</label>
-          <input type="text" id="cfg-base-url" placeholder="https://api.openai.com/v1">
-        </div>
-        <div class="form-group">
-          <label>模型名称</label>
-          <input type="text" id="cfg-model-name" placeholder="gpt-4">
-        </div>
-        <div class="form-group">
-          <label>上下文限制</label>
-          <input type="text" id="cfg-context-limit" placeholder="如 32k、64k、128k，留空则使用模型最大上下文">
-        </div>
-        <div class="form-group">
-          <label>最大迭代次数</label>
-          <input type="number" id="cfg-max-iterations" min="1" max="100" placeholder="默认 10，复杂排障任务可上调（如 15~30）">
-        </div>
-        <div class="form-group">
-          <label>温度策略</label>
-          <select id="cfg-temperature-mode">
-            <option value="auto">自动（按任务类型动态调节）</option>
-            <option value="static">固定（使用下方温度值）</option>
-          </select>
-          <p class="form-hint">自动模式会按任务类型与迭代轮次动态调整温度：创作/脑暴更发散，代码/分析更严谨，长链路后期自动收敛。</p>
-        </div>
-        <div class="form-group">
-          <label>温度值（仅固定模式生效，0–2）</label>
-          <input type="number" id="cfg-temperature" min="0" max="2" step="0.1" placeholder="默认 0.7">
-        </div>
+        <section class="cfg-card">
+          <div class="cfg-card-head">
+            <span class="cfg-card-title">当前模型</span>
+          </div>
+          <div class="cfg-current-main" id="cfg-current-name">加载中...</div>
+          <div class="cfg-current-meta" id="cfg-current-meta"></div>
+          <div class="cfg-divider"></div>
+          <label class="cfg-label">新会话默认使用</label>
+          <div class="cfg-row">
+            <select id="cfg-default-model"><option value="">加载中...</option></select>
+            <button class="btn-sm" id="btn-set-default-model">设为默认</button>
+          </div>
+        </section>
+
+        <section class="cfg-card">
+          <div class="cfg-card-head">
+            <span class="cfg-card-title">自配模型</span>
+            <span class="cfg-badge hidden" id="my-model-count">0</span>
+          </div>
+          <div id="my-model-list" class="cfg-list"><p class="cfg-empty">暂无自配模型</p></div>
+          <button type="button" class="cfg-toggle" id="btn-toggle-my-model">＋ 添加自配模型</button>
+          <div class="cfg-add hidden" id="my-model-form">
+            <div class="cfg-grid">
+              <label>供应商<select id="my-provider"><option value="">加载中...</option></select></label>
+              <label>API Key<input type="password" id="my-api-key" placeholder="该供应商的 API Key" autocomplete="off"></label>
+              <label>模型 ID<input type="text" id="my-model-id" placeholder="如 deepseek-v4-pro-ga-260731"></label>
+              <label>显示名称<input type="text" id="my-display-name" placeholder="如 DeepSeek 4.1 Pro"></label>
+              <label>上下文长度<input type="text" id="my-context-limit" placeholder="如 128000，可留空"></label>
+            </div>
+            <div class="cfg-grid hidden" id="my-custom-provider">
+              <label>供应商名称<input type="text" id="my-custom-name" placeholder="如 公司代理"></label>
+              <label>供应商地址<input type="text" id="my-custom-url" placeholder="https://..."></label>
+            </div>
+            <button class="btn-sm btn-accent" id="btn-add-my-model">添加模型</button>
+          </div>
+          <div class="cfg-add hidden" id="my-model-edit-form">
+            <div class="cfg-grid">
+              <label>模型 ID<input type="text" id="edit-my-model-id"></label>
+              <label>显示名称<input type="text" id="edit-my-display-name"></label>
+              <label>上下文长度<input type="text" id="edit-my-context-limit"></label>
+              <label>API Key<input type="password" id="edit-my-api-key" placeholder="留空表示不变" autocomplete="off"></label>
+            </div>
+            <div class="cfg-row">
+              <button class="btn-sm btn-accent" id="btn-save-my-model">保存</button>
+              <button class="btn-sm" id="btn-cancel-my-model">取消</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="cfg-card">
+          <div class="cfg-card-head">
+            <span class="cfg-card-title">我的供应商</span>
+            <span class="cfg-badge hidden" id="my-provider-count">0</span>
+          </div>
+          <div id="my-provider-list" class="cfg-list"><p class="cfg-empty">暂无自定义供应商</p></div>
+          <div class="cfg-add hidden" id="my-provider-edit-form">
+            <div class="cfg-grid">
+              <label>供应商名称<input type="text" id="edit-my-provider-name"></label>
+              <label>供应商地址<input type="text" id="edit-my-provider-url" placeholder="https://..."></label>
+              <label>API Key<input type="password" id="edit-my-provider-key" placeholder="留空表示不变" autocomplete="off"></label>
+            </div>
+            <div class="cfg-row">
+              <button class="btn-sm btn-accent" id="btn-save-my-provider">保存</button>
+              <button class="btn-sm" id="btn-cancel-my-provider">取消</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="cfg-card">
+          <div class="cfg-card-head">
+            <span class="cfg-card-title">对话偏好</span>
+          </div>
+          <div class="cfg-grid cols-3">
+            <label>最大迭代次数<input type="number" id="cfg-max-iterations" min="1" max="100" placeholder="默认 10"></label>
+            <label>温度策略
+              <select id="cfg-temperature-mode">
+                <option value="auto">自动</option>
+                <option value="static">固定</option>
+              </select>
+            </label>
+            <label>温度值<input type="number" id="cfg-temperature" min="0" max="2" step="0.1" placeholder="默认 0.7"></label>
+          </div>
+        </section>
       </div>
       <div id="config-tab-global" class="config-tab-content hidden">
-        <div class="form-group">
-          <label>API Key</label>
-          <input type="password" id="cfg-global-api-key" placeholder="输入全局 API Key">
-        </div>
-        <div class="form-group">
-          <label>Base URL</label>
-          <input type="text" id="cfg-global-base-url" placeholder="https://api.openai.com/v1">
-        </div>
-        <div class="form-group">
-          <label>模型名称</label>
-          <input type="text" id="cfg-global-model-name" placeholder="gpt-4">
-        </div>
-        <div class="form-group">
-          <label>上下文限制</label>
-          <input type="text" id="cfg-global-context-limit" placeholder="如 32k、64k、128k，留空则使用模型最大上下文">
-        </div>
-        <div class="form-group">
-          <label>最大迭代次数</label>
-          <input type="number" id="cfg-global-max-iterations" min="1" max="100" placeholder="默认 10，复杂排障任务可上调（如 15~30）">
-        </div>
-        <div class="form-group">
-          <label>温度策略</label>
-          <select id="cfg-global-temperature-mode">
-            <option value="auto">自动（按任务类型动态调节）</option>
-            <option value="static">固定（使用下方温度值）</option>
-          </select>
-          <p class="form-hint">自动模式会按任务类型与迭代轮次动态调整温度：创作/脑暴更发散，代码/分析更严谨，长链路后期自动收敛。</p>
-        </div>
-        <div class="form-group">
-          <label>温度值（仅固定模式生效，0–2）</label>
-          <input type="number" id="cfg-global-temperature" min="0" max="2" step="0.1" placeholder="默认 0.7">
-        </div>
+        <section class="cfg-card">
+          <div class="cfg-card-head">
+            <span class="cfg-card-title">供应商</span>
+          </div>
+          <div id="provider-list" class="cfg-list"><p class="cfg-empty">加载中...</p></div>
+          <button type="button" class="cfg-toggle" id="btn-toggle-provider">＋ 添加供应商</button>
+          <div class="cfg-add hidden" id="provider-form">
+            <div class="cfg-grid">
+              <label>内置供应商<select id="new-provider-builtin"><option value="">手动填写地址</option></select></label>
+              <label>自定义地址<input type="text" id="new-provider-url" placeholder="https://..."></label>
+              <label>显示名称<input type="text" id="new-provider-name" placeholder="如 公司代理"></label>
+              <label>API Key<input type="password" id="new-provider-key" placeholder="平台统一使用的 Key" autocomplete="off"></label>
+            </div>
+            <button class="btn-sm btn-accent" id="btn-add-provider">添加 / 开通</button>
+          </div>
+          <div class="cfg-add hidden" id="provider-edit-form">
+            <div class="cfg-grid">
+              <label>显示名称<input type="text" id="edit-provider-name"></label>
+              <label>供应商地址<input type="text" id="edit-provider-url" placeholder="https://..."></label>
+              <label>API Key<input type="password" id="edit-provider-key" placeholder="留空表示不变" autocomplete="off"></label>
+            </div>
+            <label class="cfg-check"><input type="checkbox" id="edit-provider-enabled" checked> 启用（停用后用户不可选）</label>
+            <div class="cfg-row">
+              <button class="btn-sm btn-accent" id="btn-save-provider">保存</button>
+              <button class="btn-sm" id="btn-cancel-provider">取消</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="cfg-card">
+          <div class="cfg-card-head">
+            <span class="cfg-card-title">模型池</span>
+          </div>
+          <div id="pool-list" class="cfg-list"><p class="cfg-empty">加载中...</p></div>
+          <button type="button" class="cfg-toggle" id="btn-toggle-entry">＋ 添加模型</button>
+          <div class="cfg-add hidden" id="entry-form">
+            <div class="cfg-grid">
+              <label>所属供应商<select id="new-entry-provider"><option value="">加载中...</option></select></label>
+              <label>模型 ID<input type="text" id="new-entry-model-id" placeholder="如 deepseek-v4-pro-ga-260731"></label>
+              <label>显示名称<input type="text" id="new-entry-display-name" placeholder="如 DeepSeek 4.1 Pro"></label>
+              <label>上下文长度<input type="text" id="new-entry-context" placeholder="如 128000，可留空"></label>
+            </div>
+            <label class="cfg-check"><input type="checkbox" id="new-entry-visible" checked> 允许用户选择</label>
+            <button class="btn-sm btn-accent" id="btn-add-entry">添加模型</button>
+          </div>
+          <div class="cfg-add hidden" id="entry-edit-form">
+            <div class="cfg-grid">
+              <label>模型 ID<input type="text" id="edit-entry-model-id"></label>
+              <label>显示名称<input type="text" id="edit-entry-display-name"></label>
+              <label>上下文长度<input type="text" id="edit-entry-context"></label>
+            </div>
+            <label class="cfg-check"><input type="checkbox" id="edit-entry-visible" checked> 允许用户选择</label>
+            <div class="cfg-row">
+              <button class="btn-sm btn-accent" id="btn-save-entry">保存</button>
+              <button class="btn-sm" id="btn-cancel-entry">取消</button>
+            </div>
+          </div>
+        </section>
       </div>
       <div id="config-tab-search" class="config-tab-content hidden">
-        <div class="form-group">
-          <label>Tavily API Key（联网搜索）</label>
-          <input type="password" id="cfg-search-tavily-key" placeholder="输入 Tavily API Key 以启用联网搜索">
-          <p class="form-hint">获取 API Key：<a href="https://app.tavily.com/home" target="_blank">https://app.tavily.com/home</a></p>
-        </div>
+        <section class="cfg-card">
+          <div class="cfg-card-head">
+            <span class="cfg-card-title">联网搜索</span>
+          </div>
+          <div class="cfg-field">
+            <label class="cfg-label">Tavily API Key</label>
+            <input type="password" id="cfg-search-tavily-key" placeholder="输入 Tavily API Key 以启用联网搜索">
+            <p class="form-hint">获取 API Key：<a href="https://app.tavily.com/home" target="_blank">https://app.tavily.com/home</a></p>
+          </div>
+        </section>
       </div>
     </div>
     <div class="modal-footer">
@@ -295,11 +537,12 @@
               <th>用户名</th>
               <th>用户类型</th>
               <th>描述</th>
+              <th>创建时间</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody id="user-table-body">
-            <tr><td colspan="5" class="loading-text">加载中...</td></tr>
+            <tr><td colspan="6" class="loading-text">加载中...</td></tr>
           </tbody>
         </table>
       </div>
@@ -453,6 +696,7 @@
           <thead>
             <tr>
               <th>文件名</th>
+              <th>所有者</th>
               <th>来源</th>
               <th>类型</th>
               <th>大小</th>
@@ -461,7 +705,7 @@
             </tr>
           </thead>
           <tbody id="cloud-table-body">
-            <tr><td colspan="6" class="loading-text">加载中...</td></tr>
+            <tr><td colspan="7" class="loading-text">加载中...</td></tr>
           </tbody>
         </table>
       </div>
@@ -478,15 +722,35 @@
       <button class="btn-icon modal-close">&times;</button>
     </div>
     <div class="modal-body">
-      <div style="margin-bottom:12px;">
-        <input type="text" id="skill-search" placeholder="搜索技能..." style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:14px;" oninput="filterSkills()">
+      <div class="skill-mg-search">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+        <input type="text" id="skill-search" class="skill-mg-input" placeholder="搜索技能..." oninput="filterSkills()">
       </div>
-      <div id="skills-tabs" style="display:flex;gap:0;margin-bottom:12px;border-bottom:2px solid var(--border);">
+      <div id="skills-tabs" class="config-tabs">
         <button class="skill-tab active" data-tab="system" onclick="switchSkillTab('system')">系统技能</button>
         <button class="skill-tab" data-tab="user" onclick="switchSkillTab('user')">用户技能</button>
       </div>
-      <div id="skills-container" style="max-height:50vh;overflow-y:auto;">
+      <!-- 用户技能筛选行：只在用户 tab 显示 -->
+      <div class="skill-mg-filterbar" id="skill-user-filterbar" style="display:none;">
+        <select id="skill-user-filter" class="skill-mg-select" onchange="filterSkills()">
+          <option value="all">全部</option>
+          <option value="enabled">已启用</option>
+          <option value="disabled">已禁用</option>
+          <option value="uploaded">上传安装</option>
+          <option value="editor">手动创建</option>
+          <option value="filesystem">文件放置</option>
+        </select>
+        <button class="skill-mg-ghostbtn" id="btn-skill-trash" onclick="toggleSkillTrash()">回收站</button>
+      </div>
+      <div id="skills-container" class="ui-list skill-mg-list">
         <p class="loading-text">加载中...</p>
+      </div>
+      <!-- 回收站：卸载备份（30 天保留，可恢复） -->
+      <div id="skill-trash-panel" class="hidden" style="margin-top:12px;">
+        <h4 style="margin:0 0 8px;font-size:13px;color:var(--text-muted);">回收站（备份保留 30 天）</h4>
+        <div id="skill-trash-list" class="ui-list">
+          <p class="loading-text">加载中...</p>
+        </div>
       </div>
     </div>
   </div>
@@ -524,7 +788,7 @@
       <div class="picker-footer">
         <span id="picker-count">已选 0 个文件</span>
         <div class="picker-actions">
-          <button id="btn-picker-cancel" class="btn-secondary btn-sm-height">取消</button>
+          <button id="btn-picker-cancel" class="btn-cancel btn-sm-height">取消</button>
           <button id="btn-picker-confirm" class="btn-primary btn-sm-height">确认添加</button>
         </div>
       </div>
@@ -565,6 +829,10 @@
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
     <span>上传本地文件</span>
   </div>
+  <div class="attach-menu-item" data-action="skill">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 4.9 5.4.8-3.9 3.8.9 5.4-4.8-2.5-4.8 2.5.9-5.4L4.2 7.7l5.4-.8z"/></svg>
+    <span>技能</span>
+  </div>
   <div class="attach-menu-item" data-action="cloud">
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
     <span>从云文件选择</span>
@@ -580,6 +848,184 @@
   </div>
 </div>
 
-<script src="/static/app.js"></script>
+<!-- Token 消耗看板浮层：iframe 内嵌，不新增标签、不离开当前对话 -->
+<div id="usage-overlay" class="usage-overlay hidden">
+  <iframe id="usage-frame" title="Token 消耗统计" src="about:blank"></iframe>
+</div>
+
+<!-- 技能二级面板：贴在「+」菜单右缘联动展开（搜索 + 徽章列表 + 底部操作） -->
+<div id="skill-panel-mask" class="skill-panel-mask hidden"></div>
+<aside id="skill-panel" class="skill-panel hidden" aria-label="技能面板">
+  <div class="skill-panel-search">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+    <input type="search" id="skill-panel-q" class="skill-panel-input" placeholder="搜索技能" autocomplete="off">
+  </div>
+  <div id="skill-panel-list" class="skill-panel-list">
+    <p class="loading-text">加载中...</p>
+  </div>
+  <div class="skill-panel-foot">
+    <button class="skill-panel-action" id="btn-skill-upload">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      <span>从本地添加技能</span>
+    </button>
+    <button class="skill-panel-action" id="btn-skill-manage">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      <span>管理技能</span>
+    </button>
+  </div>
+  <div class="skill-panel-hint">点选的技能在下一条消息生效；不选则按描述自动匹配</div>
+</aside>
+
+<!-- 模态框: 记忆（每位用户一份，四段）。
+     版式参照设置类页面：开关卡片 + 管理卡片，默认渲染成可读文本，编辑是临时态 -->
+<div id="modal-memory" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-content modal-lg">
+    <div class="modal-header">
+      <h3>记忆</h3>
+      <button class="btn-icon modal-close">&times;</button>
+    </div>
+    <div class="modal-body mem-body">
+
+      <div class="mem-card">
+        <div class="mem-row">
+          <div class="mem-row-text">
+            <div class="mem-row-title">对话记忆</div>
+            <div class="mem-row-desc" id="mem-state-desc">对话时使用这份记忆，让回答贴合你的背景与偏好。</div>
+          </div>
+          <label class="mem-pill">
+            <input type="checkbox" id="mem-enabled" checked aria-label="对话记忆">
+            <span class="mem-pill-track" aria-hidden="true"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="mem-card">
+        <div class="mem-row">
+          <div class="mem-row-text">
+            <div class="mem-row-title">记忆内容</div>
+            <div class="mem-row-desc" id="mem-usage">共 0 字 / 上限 4000 字</div>
+          </div>
+          <div class="mem-mgmt">
+            <button type="button" class="btn-sm mem-btn-accent" id="btn-mem-evolve">从对话提炼</button>
+            <button type="button" class="btn-sm" id="btn-mem-edit">写一段</button>
+            <button type="button" class="btn-sm" id="btn-mem-more" aria-label="更多操作">⋯</button>
+          </div>
+        </div>
+
+        <!-- 更多菜单：导入 / 导出 / 历史 / 清空（破坏性操作不放在一级按钮里） -->
+        <div class="mem-menu hidden" id="mem-menu">
+          <button type="button" class="mem-menu-item" data-act="import">导入</button>
+          <button type="button" class="mem-menu-item" data-act="export">导出</button>
+          <button type="button" class="mem-menu-item" data-act="history">历史版本</button>
+          <button type="button" class="mem-menu-item danger" data-act="reset">清空记忆</button>
+        </div>
+
+        <!-- 查看态：按段渲染（段定义来自接口，加新段不用改这里） -->
+        <div id="mem-view" class="mem-view"></div>
+
+        <!-- 编辑态：一次只编辑一段 -->
+        <div id="mem-edit" class="hidden">
+          <div class="mem-block">
+            <div class="mem-block-head">
+              <span id="mem-edit-title">编辑</span>
+              <span class="mem-count" id="mem-edit-count">0</span>
+            </div>
+            <textarea id="mem-work" rows="5"></textarea>
+            <textarea id="mem-personal" rows="5" class="hidden"></textarea>
+            <textarea id="mem-focus" rows="5" class="hidden"></textarea>
+            <textarea id="mem-recent" rows="6" class="hidden"></textarea>
+            <div class="mem-hint" id="mem-edit-hint"></div>
+          </div>
+
+          <div class="mem-tool">
+            <div class="mem-tool-head">用模型整理一段自述</div>
+            <textarea id="mem-raw" rows="3" placeholder="一段自述或工作总结"></textarea>
+            <div class="mem-tool-actions">
+              <button type="button" class="btn-sm" id="btn-mem-extract">整理成这一段</button>
+              <span class="mem-hint">整理结果会填进上面，你确认后才保存</span>
+            </div>
+          </div>
+          <pre class="mem-warn hidden" id="mem-warn"></pre>
+        </div>
+
+        <!-- 进化：模型从对话里提炼出的提议，勾选后才入库 -->
+        <div id="mem-proposals" class="hidden">
+          <div class="mem-subhead">
+            <span>模型从对话里发现这些值得记住</span>
+            <span class="mem-count" id="mem-proposals-src"></span>
+          </div>
+          <div id="mem-proposals-list"></div>
+          <div class="mem-tool-actions">
+            <button type="button" class="btn-primary btn-sm" id="btn-mem-apply">加入记忆</button>
+            <button type="button" class="btn-sm" id="btn-mem-proposals-close">不用了</button>
+          </div>
+        </div>
+
+        <!-- 历史版本：每次改动都留了档，可恢复 -->
+        <div id="mem-versions" class="hidden">
+          <div class="mem-subhead"><span>历史版本</span><span class="mem-count">每次改动前自动留档</span></div>
+          <div id="mem-versions-list"></div>
+          <div class="mem-tool-actions">
+            <button type="button" class="btn-sm" id="btn-mem-versions-close">收起</button>
+          </div>
+        </div>
+
+        <!-- 导入 / 导出共用一个文本框 -->
+        <div class="mem-io-box hidden" id="mem-io-box">
+          <textarea id="mem-io-text" rows="8" readonly></textarea>
+          <div class="mem-tool-actions">
+            <button type="button" class="btn-sm" id="btn-mem-copy">复制</button>
+            <button type="button" class="btn-sm hidden" id="btn-mem-parse">解析并填入</button>
+            <button type="button" class="btn-sm" id="btn-mem-io-close">收起</button>
+          </div>
+        </div>
+        <div id="mem-import-preview" class="mem-preview hidden"></div>
+      </div>
+
+    </div>
+    <div class="modal-footer hidden" id="mem-footer">
+      <button type="button" class="btn-sm" id="btn-mem-cancel">取消</button>
+      <button type="button" class="btn-primary" id="btn-mem-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 上传技能弹窗：安装结果三态（已安装 / 待确认 / 已拦截） -->
+<div id="modal-skill-upload" class="modal hidden">
+  <div class="modal-overlay"></div>
+  <div class="modal-content" style="width:560px;">
+    <div class="modal-header">
+      <h3 id="skill-upload-title">上传本地技能</h3>
+      <button class="btn-icon modal-close">&times;</button>
+    </div>
+    <div class="modal-body" id="skill-upload-body">
+      <p style="color:var(--text-muted);font-size:13px;margin:0 0 12px;">
+        支持 zip 压缩包（Anthropic 技能规范：内含 SKILL.md 的文件夹）或单个 SKILL.md 文件。
+        安装前会自动扫描风险：涉及敏感操作需确认，高风险直接拦截。
+      </p>
+      <button class="btn-sm btn-accent" id="btn-skill-pick-file">选择文件</button>
+      <span id="skill-upload-file" style="margin-left:8px;font-size:12px;color:var(--text-muted);"></span>
+    </div>
+  </div>
+</div>
+
+<!-- 脚本按职责拆分，加载顺序即原 app.js 的行序（连续切分，行为等价）。
+     12-theme-init.js 必须最后加载（含 DOMContentLoaded 初始化入口）。
+     这些文件共享全局作用域、无模块系统：新增顶层符号前先跑 scripts/check_static.py 查重名。 -->
+<script src="/static/js/01-core.js"></script>
+<script src="/static/js/02-sessions.js"></script>
+<script src="/static/js/03-messages.js"></script>
+<script src="/static/js/04-stream.js"></script>
+<script src="/static/js/05-chat-actions.js"></script>
+<script src="/static/js/06-attachments-files.js"></script>
+<script src="/static/js/07-skills.js"></script>
+<script src="/static/js/08-picker-ui.js"></script>
+<script src="/static/js/09-config.js"></script>
+<script src="/static/js/10-model-switch.js"></script>
+<script src="/static/js/11-users-files.js"></script>
+<script src="/static/js/11b-memory.js"></script>
+<script src="/static/js/13-skill-panel.js"></script>
+<script src="/static/js/12-theme-init.js"></script>
 </body>
 </html>

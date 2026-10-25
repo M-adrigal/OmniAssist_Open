@@ -1,0 +1,32 @@
+{
+  "rows": [
+    {
+      "id": "calc-01",
+      "category": "计算",
+      "l1": true,
+      "detail": "应包含「5888」",
+      "answer": "128 乘以 46 等于 **5888**。",
+      "tools": [
+        "calculate"
+      ],
+      "files": [],
+      "error": "",
+      "elapsed_s": 2.7
+    },
+    {
+      "id": "multi-02",
+      "category": "多轮上下文",
+      "l1": true,
+      "detail": "应匹配 /[Aa]pple/",
+      "answer": "\"I like apples.\"",
+      "tools": [],
+      "files": [],
+      "error": "",
+      "elapsed_s": 2.5
+    }
+  ],
+  "judge": {},
+  "avg": null,
+  "l1_pass": 2,
+  "l1_fail": 0
+}

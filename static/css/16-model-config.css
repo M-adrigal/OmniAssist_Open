@@ -1,0 +1,322 @@
+/* 16-model-config.css
+ * 模型配置弹窗、切换模型确认弹窗
+ *
+ * 由 static/style.css 拆分而来（原第 4356-4669 行，共 4669 行）。
+ * 拆分方式：按原顺序连续切分，加载顺序与原文件一致，层叠结果不变。
+ * 注意：各文件之间靠 <link> 的先后顺序决定层叠，插入新文件时请一并确认顺序。
+ */
+
+/* ===== 模型配置弹窗：卡片分区 + 行式列表 ===== */
+#modal-config .modal-content { width: 800px; max-width: 94vw; }
+#modal-config .modal-body {
+  max-height: 74vh;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding: 20px 24px 24px;
+}
+#modal-config .modal-footer { padding: 12px 24px; }
+
+/* 弹窗内控件统一为紧凑规格，避免与全局 14px 大输入框风格割裂 */
+#modal-config input[type="text"],
+#modal-config input[type="password"],
+#modal-config input[type="number"],
+#modal-config select {
+  padding: 8px 10px;
+  font-size: 13px;
+  border-radius: 7px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+#modal-config input[type="text"]:focus,
+#modal-config input[type="password"]:focus,
+#modal-config input[type="number"]:focus,
+#modal-config select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+}
+#modal-config input:disabled {
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+/* 每个分区是一张独立卡片，靠卡片边界分组，不再靠通栏分隔线 */
+.cfg-card {
+  padding: 18px;
+  margin-bottom: 12px;
+  background: var(--surface-sunken);
+  border: none;
+  border-radius: 12px;
+}
+/* 深色下不用另写：--surface-sunken 已比弹窗底亮一档 */
+.cfg-card:last-child { margin-bottom: 4px; }
+.cfg-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.cfg-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.cfg-divider {
+  height: 1px;
+  margin: 16px 0 14px;
+  background: var(--line-soft);
+}
+.cfg-label {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.cfg-field { margin-bottom: 4px; }
+.cfg-field input { width: 100%; }
+
+.cfg-current-main {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.cfg-current-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.cfg-badge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+
+.cfg-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.cfg-row select { flex: 1; min-width: 0; }
+
+/* 行式列表：条目之间只用细线分隔，减少一堆方框造成的碎裂感 */
+.cfg-list {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 12px;
+}
+.cfg-list:empty { display: none; }
+.cfg-empty {
+  padding: 12px 2px;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+}
+.cfg-group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 2px 6px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+}
+/* 组标题里的展开/收起要看得出来能点 */
+.cfg-group-title .cfg-op {
+  color: var(--accent);
+  font-size: 11.5px;
+  padding: 2px 6px;
+}
+.dark .cfg-group-title .cfg-op { color: #64b5f6; }
+.cfg-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+/* 最后一条不画线，避免与卡片内边距叠出一条"多余的分隔" */
+.cfg-item:last-child { border-bottom: none; }
+.cfg-item:hover { background: rgba(59, 130, 246, 0.04); }
+.dark .cfg-item:hover { background: rgba(255, 255, 255, 0.03); }
+.cfg-item-main { min-width: 0; flex: 1; }
+.cfg-item-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.cfg-item-sub {
+  margin-top: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+.cfg-item-ops {
+  display: flex;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+/* 行内操作：默认是纯文字，hover 才给底色——比常驻描边按钮安静得多 */
+.cfg-op {
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition), color var(--transition);
+}
+.cfg-op:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.cfg-op.danger:hover { background: rgba(239, 83, 80, 0.12); color: #c62828; }
+.dark .cfg-op.danger:hover { color: #ef9a9a; }
+
+.cfg-tag {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+.cfg-tag.ok { background: rgba(102, 187, 106, 0.16); color: #2e7d32; }
+.cfg-tag.warn { background: rgba(239, 83, 80, 0.14); color: #c62828; }
+.cfg-tag.accent { background: rgba(25, 118, 210, 0.14); color: #1565c0; }
+.dark .cfg-tag.ok { color: #81c784; }
+.dark .cfg-tag.warn { color: #ef9a9a; }
+.dark .cfg-tag.accent { color: #64b5f6; }
+
+/* 「＋ 添加…」：默认收起表单，点开才占空间 */
+.cfg-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: color var(--transition);
+}
+.cfg-toggle:hover { color: var(--accent); }
+.dark .cfg-toggle:hover { color: #64b5f6; }
+.cfg-toggle.open { color: var(--text-muted); }
+
+.cfg-add {
+  margin-top: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+}
+.cfg-add.hidden { display: none; }
+.cfg-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  margin-bottom: 12px;
+}
+.cfg-grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.cfg-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.cfg-grid input,
+.cfg-grid select { width: 100%; }
+.cfg-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.cfg-check input { width: auto; }
+
+.btn-accent {
+  background: var(--accent);
+  color: #fff;
+  border-color: transparent;
+}
+.btn-accent:hover { background: var(--accent-hover); }
+
+/* ===== 切换模型确认弹窗 ===== */
+.switch-model-flow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  margin-bottom: 10px;
+  border-radius: var(--radius);
+  background: var(--bg-secondary);
+}
+.switch-model-side { flex: 1; min-width: 0; }
+.switch-model-side-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 3px;
+}
+.switch-model-side-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+.switch-model-arrow {
+  flex: 0 0 auto;
+  font-size: 16px;
+  color: var(--text-muted);
+}
+.switch-model-meta {
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.switch-model-warn {
+  padding: 12px 14px;
+  border-left: 3px solid #ef9f27;
+  border-radius: 6px;
+  background: rgba(250, 238, 218, 0.5);
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+}
+.switch-model-warn p { margin: 0 0 6px; }
+.switch-model-warn p:last-child { margin-bottom: 0; }
+.switch-model-warn ul {
+  margin: 0 0 8px;
+  padding-left: 18px;
+}
+.switch-model-warn li { margin-bottom: 4px; }
+.switch-model-warn strong { color: var(--text-primary); font-weight: 500; }
+.dark .switch-model-warn {
+  background: rgba(186, 117, 23, 0.14);
+}
+
+/* 技能列表：列表项是两行文本，默认宽度会把说明截断成半句 */
+#modal-skills .modal-content { width: 720px; }
+#modal-skills .modal-body { padding-bottom: 20px; }
+#modal-file-picker .modal-content { width: 620px; }
+
