@@ -232,7 +232,6 @@ scripts/                # 运维脚本 + 回归测试（2026-10-24 清理后只�
   sync_skills_db.py     # 用户技能磁盘↔表对账 CLI
   audit_query.py        # 任务执行审计查询 CLI
   calibrate_tokens.py   # 用量自校准系数
-  security_audit_admin.py # 权限溢出安全审计
   eval/                 # 质量评估集（cases.json + eval_runner.py）
   test_*.py             # 17 套回归测试（清单与依赖要求见第 7 节）
 ```
@@ -335,7 +334,6 @@ python3 scripts/run_tests.py --only 技能,循环   # 名字子串筛
 | `test_sandbox_compat` | 沙箱兼容性 × 安全性（openpyxl/tempfile 可用 + 越权仍被拒） |
 | `test_send_body` | 前端发送请求体（真实 JS + stub fetch，抓作用域错） |
 | `test_frontend_flows` | 前端主流程运行时探针（会话 / 技能面板 / 流事件 / 审批 / 记忆面板 28 项） |
-| `security_audit_admin` | 权限溢出审计（篡改 token / 伪造签名 / 过期 token） |
 | `test_ctx_reset_and_model_gate` | `/reset` 上下文边界裁剪 + 模型可见性门禁 22 项 |
 | `test_memory` | 记忆 102 项（四段读写 / 两层上限 / 导入导出 / 注入 / 条目 / 留档恢复 / 迁移 / 进化通道） |
 | `test_memory_routes` | 记忆接口 41 项（归属隔离 / 两层超限 400 / 关≠删 / 整理与提炼的结局） |
