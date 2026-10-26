@@ -297,7 +297,7 @@ scripts/                # 运维脚本 + 回归测试（2026-10-24 清理后只�
 
 ## 7. 测试
 
-测试脚本在 `scripts/` 下，21 个（20 个 `test_*.py` + `security_audit_admin.py`）。
+测试脚本在 `scripts/` 下，20 个 `test_*.py`。
 **解释器选错会误报"依赖缺失"**，按下表用对：
 
 | 依赖 | 脚本 |
@@ -306,7 +306,7 @@ scripts/                # 运维脚本 + 回归测试（2026-10-24 清理后只�
 | 需 `openai` | `test_usage_calibration` |
 | 需本机 Chrome（无头） | `test_frontend_flows`、`test_send_body` |
 | 需真实沙箱子进程 | `test_sandbox_compat` |
-| 零依赖，任何解释器 | `test_loop_guard`、`test_skill_delete`、`test_trash_cleanup`、`test_skill_sync`、`test_agent_audit`、`test_fixes_integration`、`test_security_fixes`、`test_image_support`、`test_ctx_reset_and_model_gate`、`test_memory`、`security_audit_admin` |
+| 零依赖，任何解释器 | `test_loop_guard`、`test_skill_delete`、`test_trash_cleanup`、`test_skill_sync`、`test_agent_audit`、`test_fixes_integration`、`test_security_fixes`、`test_image_support`、`test_ctx_reset_and_model_gate`、`test_memory` |
 
 ```bash
 # 全量：一条命令。总入口会自己挑解释器（fastapi 们用系统 python3）、判 Chrome、汇总
