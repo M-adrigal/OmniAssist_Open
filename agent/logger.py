@@ -146,6 +146,29 @@ def _init_logging(log_dir: str, level: int = logging.DEBUG):
         _initialized = True
 
 
+def _resolve_log_dir(log_dir: str = None) -> str:
+    """决定日志目录。
+
+    优先级：OMNIASSIST_LOG_DIR（显式覆盖）> 传入值 > 项目 logs/。
+
+    测试进程必须隔离：断言"某操作必须报错"的用例会把**故意制造的**错误写进
+    真实 error.log，运维照着它排查就会看到一批线上根本不存在的"故障"。
+    2026-10-28 实例：error.log 仅 5 条，全部来自 test_shared_state 的 s-bad 用例，
+    被人当成真实缺陷去查。run_tests.py 会给子进程设 OMNIASSIST_TEST_LOG=1。
+    """
+    env_dir = os.environ.get("OMNIASSIST_LOG_DIR")
+    if env_dir:
+        return os.path.abspath(env_dir)
+
+    if log_dir is None:
+        log_dir = os.path.abspath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "logs"))
+
+    if os.environ.get("OMNIASSIST_TEST_LOG"):
+        return os.path.join(log_dir, "test")
+    return log_dir
+
+
 def get_logger(name: str, log_dir: str = None) -> logging.Logger:
     """获取模块日志器。
 
@@ -156,9 +179,7 @@ def get_logger(name: str, log_dir: str = None) -> logging.Logger:
     Returns:
         logging.Logger 实例
     """
-    if log_dir is None:
-        log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "logs")
-        log_dir = os.path.abspath(log_dir)
+    log_dir = _resolve_log_dir(log_dir)
 
     _init_logging(log_dir)
 

@@ -24,6 +24,7 @@
 <link rel="stylesheet" href="/static/css/16-model-config.css">
 <link rel="stylesheet" href="/static/css/17-skill-panel.css">
 <link rel="stylesheet" href="/static/css/18-memory.css">
+<link rel="stylesheet" href="/static/css/19-msg-nav.css">
 </head>
 <body>
 
@@ -196,6 +197,15 @@
       </div>
     </div>
 
+    <!-- 消息导航·上半：右侧问题刻度条。
+         挂在 #chat-area 这一层（不是滚动容器里），所以不随内容滚走。
+         内容由 14-msg-nav.js 按当前会话的用户消息重建。
+         内层 .msg-nav-track 是"翻页层"：静止态只显示 11 行窗口，
+         超出窗口的条目靠整层平移来露出（见 19-msg-nav.css 的注释）。 -->
+    <nav id="msg-nav" class="msg-nav" aria-label="问题导航">
+      <div class="msg-nav-track"></div>
+    </nav>
+
     <!-- 敏感操作审批栏（固定在输入框上方） -->
     <div id="approval-bar" class="approval-bar hidden"></div>
 
@@ -203,6 +213,15 @@
       <div id="command-suggestions" class="command-suggestions hidden"></div>
       <div id="file-chips" class="file-chips hidden"></div>
       <div class="chat-composer">
+      <!-- 回到底部浮标。
+           挂在 .chat-composer **里面**（绝对定位、bottom:100%），
+           所以它的右边线与输入卡右边线是同一个盒子的同一条边，
+           不靠任何 calc 猜差值。
+           中间曾把它挂到 #chat-area 上，只为和右侧刻度条共用一根竖线 ——
+           结果右边距算了 1270，而输入卡右缘在 1177，浮标整个落在
+           卡片外侧 93px 的空白里，看着跟输入框没关系。
+           两个控件语义不同：刻度条是贴屏幕边缘的抽屉，浮标属于输入区。 -->
+      <button id="scroll-bottom-fab" type="button" class="scroll-bottom-fab" title="回到最新" aria-label="回到最新"></button>
       <div class="chat-input-wrapper">
         <textarea id="chat-input" rows="1" placeholder="输入消息..."></textarea>
       </div>
@@ -211,9 +230,9 @@
         <button id="btn-attach" class="btn-attach" title="上传文件">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
         </button>
-        <button id="btn-web-search" class="btn-web-search" data-mode="off">
+        <button id="btn-web-search" class="btn-web-search" data-mode="off" title="联网搜索·关">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-          <span>联网搜索</span>
+          <span>联网搜索·关</span>
         </button>
         <button id="btn-perm" class="btn-perm" data-mode="request" title="点击在『请求批准』与『完全访问权限』之间切换（范围说明见弹窗）">
           <svg class="perm-icon perm-icon-request" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
@@ -454,9 +473,22 @@
             <span class="cfg-card-title">联网搜索</span>
           </div>
           <div class="cfg-field">
+            <label class="cfg-label">搜索供应商</label>
+            <select id="cfg-search-provider" aria-label="搜索供应商">
+              <option value="tavily">Tavily</option>
+              <option value="deepseek">DeepSeek</option>
+            </select>
+            <p class="form-hint" id="cfg-search-usage"></p>
+          </div>
+          <div class="cfg-field">
             <label class="cfg-label">Tavily API Key</label>
             <input type="password" id="cfg-search-tavily-key" placeholder="输入 Tavily API Key 以启用联网搜索">
             <p class="form-hint">获取 API Key：<a href="https://app.tavily.com/home" target="_blank">https://app.tavily.com/home</a></p>
+          </div>
+          <div class="cfg-field">
+            <label class="cfg-label">DeepSeek API Key</label>
+            <input type="password" id="cfg-search-deepseek-key" placeholder="输入 DeepSeek API Key">
+            <p class="form-hint">可留空：留空则复用模型配置里的 Key（模型走中转站时需单独填）：<a href="https://platform.deepseek.com/api_keys" target="_blank">platform.deepseek.com</a></p>
           </div>
         </section>
       </div>
@@ -1026,6 +1058,7 @@
 <script src="/static/js/11-users-files.js"></script>
 <script src="/static/js/11b-memory.js"></script>
 <script src="/static/js/13-skill-panel.js"></script>
+<script src="/static/js/14-msg-nav.js"></script>
 <script src="/static/js/12-theme-init.js"></script>
 </body>
 </html>

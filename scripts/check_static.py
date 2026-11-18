@@ -49,7 +49,7 @@ def collect_js_files():
 
 
 # ---------- 1. CSS 变量 ----------
-def check_css_vars(css_files):
+def check_css_vars(css_files, js_files=()):
     defined = set()
     used = []  # (file, var_name, line)
     for f in css_files:
@@ -59,6 +59,21 @@ def check_css_vars(css_files):
                 defined.add(m.group(1))
             for m in re.finditer(r"var\(\s*(--[A-Za-z0-9_-]+)", line):
                 used.append((f, m.group(1), i))
+
+    # 有一类变量 CSS 里永远找不到定义：由 JS 在运行时算出来写进 style。
+    # 典型例子是 --fab-bottom —— 浮标的纵向位置必须按输入区实际高度
+    # 现算（免责声明字号、审批栏有无、textarea 自动增高都会改它），
+    # 写死数值迟早对不齐。这类变量在被引用之前会先有一句
+    # `el.style.setProperty('--fab-bottom', ...)`。
+    # 不认这种写法的话，检查脚本会把「正确的运行时注入」判成
+    # 「引用了未定义」；而人是会为了消掉红字去 CSS 里补一句假的
+    # `--fab-bottom: 200px` 的 —— 那就把运行时算的值又盖住了。
+    for f in js_files:
+        text = f.read_text(encoding="utf-8", errors="replace")
+        for m in re.finditer(r"setProperty\(\s*['\"](--[A-Za-z0-9_-]+)['\"]", text):
+            defined.add(m.group(1))
+        for m in re.finditer(r"style\.setProperty\(\s*['\"](--[A-Za-z0-9_-]+)['\"]", text):
+            defined.add(m.group(1))
 
     missing = []
     seen = set()
@@ -193,7 +208,7 @@ def main():
     css_files = collect_css_files()
     js_files = collect_js_files()
 
-    var_res = check_css_vars(css_files)
+    var_res = check_css_vars(css_files, js_files)
     dupes = check_js_dupes(js_files)
     refs = check_html_refs()
     selectors = check_selectors(js_files)

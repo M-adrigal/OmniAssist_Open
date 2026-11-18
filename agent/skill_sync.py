@@ -65,19 +65,38 @@ def _read_skill_md(skill_dir: str) -> str:
 
 
 def _scripts_json(skill_dir: str) -> str:
-    """把 scripts/ 下的工具定义打包成表里的 JSON 字符串。"""
+    """把 scripts/ 下的工具定义打包成表里的 JSON 字符串。
+
+    ⚠️ 2026-10-27 事故：这里曾只认 `scripts/*.json`，而 create/update_user_skill
+    落盘的是 `scripts/*.py`（schema 由 AST 从 execute 签名生成）。两者永远不相交，
+    于是表里的 `skill_scripts` 恒为 `[]` → `Skill.from_db_row` 读不到脚本 →
+    `ensure_user_tools` 空转 → **用户技能的工具在对话里完全不存在**。
+    症状是 update_user_skill 返回成功、磁盘上 SKILL.md 和 .py 都在，
+    但模型看不到那些工具，`list_user_skills` 回报 tool_count=0。
+
+    现在从 .py 真解析出完整定义（与磁盘加载同构），保证表里的索引可用。
+    """
     scripts_dir = os.path.join(skill_dir, "scripts")
     out = []
-    if os.path.isdir(scripts_dir):
-        for fn in sorted(os.listdir(scripts_dir)):
-            if not fn.endswith(".json") or fn.startswith("."):
-                continue
-            try:
-                with open(os.path.join(scripts_dir, fn), "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except Exception:
-                continue
-            out.append({"name": fn[:-5], "schema": data})
+    if not os.path.isdir(scripts_dir):
+        return json.dumps(out, ensure_ascii=False)
+
+    # 函数内导入：避免 skill_sync ←→ skill_registry 的顶层循环依赖
+    from agent.skill_registry import ScriptDef
+
+    for fn in sorted(os.listdir(scripts_dir)):
+        if not fn.endswith(".py") or fn.startswith(("_", ".")):
+            continue
+        try:
+            sd = ScriptDef.from_file(os.path.join(scripts_dir, fn), is_system=False)
+        except Exception as e:
+            # 解析失败（如缺 execute、语法错）就跳过该脚本，但必须留痕：
+            # 静默跳过会让「表里少一个工具」变成无人知晓的悬案。
+            logger.warning(f"解析技能脚本失败 {os.path.join(scripts_dir, fn)}: {e}")
+            continue
+        d = sd.to_dict()
+        d["is_system"] = False   # 传染来源标记，见 from_dict 的默认值
+        out.append(d)
     return json.dumps(out, ensure_ascii=False)
 
 
@@ -212,19 +231,28 @@ def sync_user_from_fs(user_id: int) -> dict:
         if r.get("ok") and r.get("removed"):
             result["removed"].append(name)
 
-    # 3) 两边都有 → 内容以磁盘为准（若 SKILL.md 变了，刷新表里的副本）
+    # 3) 两边都有 → 以磁盘为准刷新表里的副本
+    #    ⚠️ 必须同时比对 skill_scripts，不能只看 SKILL.md：
+    #    2026-10-27 之前 _scripts_json 只认 .json，存量用户的表记录里
+    #    skill_scripts 全是 `[]`（技能内容却没变）。若只比 content，
+    #    这些记录会被判为 "unchanged"，空索引永远修不回来 —— 用户升级后
+    #    工具依然不出现，看起来像"修了没用"。
     for name in sorted(disk_set & db_set):
         row = db_real[name]
-        content = _read_skill_md(os.path.join(user_dir, name))
-        if (row.get("skill_content") or "") != content:
+        skill_dir = os.path.join(user_dir, name)
+        content = _read_skill_md(skill_dir)
+        scripts_now = _scripts_json(skill_dir)
+        content_stale = (row.get("skill_content") or "") != content
+        scripts_stale = (row.get("skill_scripts") or "[]").strip() != scripts_now.strip()
+        if content_stale or scripts_stale:
             try:
                 from server.database import save_user_skill
-                save_user_skill(user_id, name, content,
-                                _scripts_json(os.path.join(user_dir, name)),
+                save_user_skill(user_id, name, content, scripts_now,
                                 1 if row.get("enabled", 1) else 0)
-                result["added"].append(f"{name} (内容已刷新)")
+                reason = "内容已刷新" if content_stale else "脚本索引已修复"
+                result["added"].append(f"{name} ({reason})")
             except Exception as e:
-                logger.warning(f"刷新技能内容失败 (user={user_id}, name={name}): {e}")
+                logger.warning(f"刷新技能失败 (user={user_id}, name={name}): {e}")
         else:
             result["unchanged"] += 1
 

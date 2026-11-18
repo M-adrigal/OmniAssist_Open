@@ -72,8 +72,14 @@ class ModelConfigResponse(BaseModel):
 
 
 class SearchConfigResponse(BaseModel):
+    # provider: tavily | deepseek。空/None 表示"不改"（前端只改 Key 时不必带上）
+    provider: Optional[str] = None
     tavily_api_key: Optional[str] = None
     tavily_api_key_masked: str = "(未设置)"
+    deepseek_api_key: Optional[str] = None
+    deepseek_api_key_masked: str = "(未设置)"
+    # 本月/今日调用次数（{month, month_total, today, by_kind}），用于免费额度可见
+    usage: Optional[dict] = None
 
 
 # ===== 记忆（每位用户一份，四段）=====

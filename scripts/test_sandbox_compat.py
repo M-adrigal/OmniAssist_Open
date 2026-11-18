@@ -106,6 +106,150 @@ def main():
     out = run("import os\ndef execute():\n    return 'kill=%s system=%s' % (hasattr(os,'kill'), hasattr(os,'system'))\n")
     check("危险函数仍然删除（kill / system 不可用）", "kill=False system=False" in out, out)
 
+    # ---- D. PATH 兜底（2026-10-26 线上踩到）----
+    # systemd 单元里 Environment="PATH=.../venv/bin" 一旦显式赋值，systemd 就不再
+    # 补系统默认路径。结果服务进程 PATH 里没有 /bin、/usr/bin，沙箱内
+    # run_command("echo") 抛 FileNotFoundError —— 报错像"命令不存在"，其实是 PATH 缺目录。
+    # 本地终端 PATH 正常，所以这条只能在"父进程 PATH 被精简"下才测得出来。
+    print("\n[D] PATH 兜底：父进程 PATH 被精简时，沙箱仍找得到二进制")
+    from agent.sandbox import ToolSandbox
+    _saved_path = os.environ.get("PATH")
+    os.environ["PATH"] = "/nonexistent/venv/bin"
+    try:
+        _p = ToolSandbox._system_path("/sandbox/venv/bin").split(":")
+        check("_system_path 补进系统目录", "/usr/bin" in _p and "/bin" in _p, _p)
+        check("沙箱 venv/bin 仍排第一", _p[0] == "/sandbox/venv/bin", _p)
+        out = run("def execute():\n    return run_command('echo sandbox-path-ok')\n")
+        check("父进程 PATH 精简时 run_command echo 仍可执行",
+              "sandbox-path-ok" in out, out)
+    finally:
+        if _saved_path is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = _saved_path
+
+    # ============================================================
+    print("\n[E] 带参数命令不被路径校验误伤（macOS 的 TMPDIR 在 /var 下）")
+    # ============================================================
+    # 曾经的 bug：把每个参数当相对路径拼到 cwd，再比对「禁读前缀」。
+    # macOS 的工作目录是 /private/var/folders/...，而 /var 在禁读前缀里 →
+    # echo hi 的 hi 被拼成 cwd/hi 命中 /var，报「禁止访问受限路径: hi」。
+    # 结果：**任何带参数的命令都跑不了**（ls -la 的 -la 同样被拒）。
+    # Linux 的 TMPDIR 是 /tmp 不在 /var 下，所以这个 bug 只在 macOS 露头 ——
+    # 服务器上一切正常，本地全挂，最容易误判成"本地环境有问题"。
+    out = run("def execute():\n    return run_command('echo hi')\n")
+    check("echo hi 能执行（参数不被当成受限路径）",
+          "hi" in out and "禁止访问受限路径" not in out, out)
+
+    out = run("def execute():\n    return run_command('ls -la')\n")
+    check("ls -la 能执行（-la 不被当成受限路径）",
+          "禁止访问受限路径" not in out, out)
+
+    # 安全边界不能被这次修改带松：绝对路径和父目录遍历仍必须拒
+    out = run("def execute():\n    return run_command('cat /etc/passwd')\n")
+    check("cat 绝对路径仍被拒", "禁止访问绝对路径" in out, out)
+
+    out = run("def execute():\n    return run_command('cat ../../../etc/passwd')\n")
+    check("cat 父目录遍历仍被拒", "父目录遍历" in out, out)
+
+    out = run("def execute():\n    return run_command('cat .tool_secrets')\n")
+    check("cat 密钥文件仍被拒", "禁止访问密钥文件" in out, out)
+
+    # ============================================================
+    print("\n[F] 白名单报错必须自带出路（否则模型只能瞎猜连环试错）")
+    # ============================================================
+    # 2026-10-26 评估跑批发现：SKILL.md 教模型 execute("python3 -c 'print(1+1)'")，
+    # 但沙箱刻意禁解释器；报错又只有一句「命令不在白名单」→ 模型只能换着猜
+    # （cd / nslookup / cal / awk…），每猜一次浪费一轮。
+    # 修复后：报错要列出可用命令、点明解释器被禁的原因、给出替代方案。
+    out = run("def execute():\n    return run_command('python3 --version')\n")
+    check("python3 报错列出可用命令", "可用命令" in out and "grep" in out, out)
+    check("python3 报错指明替代写法", "execute() 函数体内" in out, out)
+
+    out = run("def execute():\n    return run_command(\"awk 'BEGIN{print 1}'\")\n")
+    check("awk 报错给出被禁原因与替代", "system()" in out and "grep/sed/cut" in out, out)
+
+    out = run("def execute():\n    return run_command('cd ..')\n")
+    check("cd 报错指向 cwd 参数", "cwd 参数" in out, out)
+
+    # 新增白名单命令（模型真实用到且零风险）
+    out = run("def execute():\n    return run_command('cal 10 2026')\n")
+    check("cal 已进白名单（不报白名单错误）",
+          "不在白名单" not in out, out)
+    out = run("def execute():\n    return run_command('uname -s')\n")
+    check("uname 已进白名单", "不在白名单" not in out, out)
+
+    # 文档与沙箱必须一致：不得再教模型用被禁命令（文档撒谎 = 教模型试错）
+    skill_md = (ROOT / "agent/skills/run-command/SKILL.md").read_text(encoding="utf-8")
+    script_src = (ROOT / "agent/skills/run-command/scripts/run_command.py").read_text(encoding="utf-8")
+    check("SKILL.md 不再给 python3 示例", "python3 -c" not in skill_md, skill_md[:60])
+    check("SKILL.md 白名单不含被禁解释器",
+          "python3/python/node/" not in skill_md.replace(" ", ""), skill_md[:60])
+    check("docstring 不再把 awk 列进允许清单", "grep/awk" not in script_src, "")
+
+    # ============================================================
+    print("\n[G] shutil 受控放行（xlsxwriter / pptx 图表链，2026-10-26 跑批抓到）")
+    # ============================================================
+    # xlsxwriter 在模块导入时就要 from shutil import copy；python-pptx 的图表
+    # 模块 import 即拉起 xlsxwriter。shutil 整包被禁导致「带图表排版的 PPT
+    # 一直生成不出来」（模型第一次调 save_ppt 失败、去掉排版重试才成功）。
+    # 放行方式：shutil 允许 import；rmtree 换成自实现的纯路径版（每步走受控
+    # unlink/rmdir）；os.chmod / os.rmdir / unlink 补受控版本。
+    out = run("import xlsxwriter, pptx.chart.xlsx\ndef execute():\n    return 'xlsx-ok'")
+    check("xlsxwriter 与 pptx.chart 可导入", "xlsx-ok" in out, out)
+
+    out = run(
+        "import os, shutil, tempfile\n"
+        "def execute():\n"
+        "    d = os.path.join(tempfile.gettempdir(), 'sbx_g1')\n"
+        "    sub = os.path.join(d, 'sub')\n"
+        "    os.makedirs(sub, exist_ok=True)\n"
+        "    open(os.path.join(d, 'a'), 'w').write('x')\n"
+        "    open(os.path.join(sub, 'b'), 'w').write('x')\n"
+        "    shutil.rmtree(d)\n"
+        "    return 'rmtree-ok' if not os.path.exists(d) else 'STILL-EXISTS'\n")
+    check("shutil.rmtree 白名单内可用（含嵌套）", "rmtree-ok" in out, out)
+
+    out = run(
+        "import shutil\n"
+        "def execute():\n"
+        "    try:\n"
+        "        shutil.rmtree('/etc')\n"
+        "        return 'LEAK'\n"
+        "    except Exception:\n"
+        "        return 'denied'\n")
+    check("rmtree 白名单外仍被拒", "denied" in out, out)
+
+    out = run(
+        "import os, shutil, tempfile\n"
+        "def execute():\n"
+        "    d = os.path.join(tempfile.gettempdir(), 'sbx_g2')\n"
+        "    os.makedirs(d, exist_ok=True)\n"
+        "    os.symlink('/etc', os.path.join(d, 'evil'))\n"
+        "    shutil.rmtree(d)\n"
+        "    return 'link-only, /etc 完好=' + str(os.path.isdir('/etc'))\n")
+    check("rmtree 遇符号链接只删链接、不碰目标", "/etc 完好=True" in out, out)
+
+    out = run(
+        "import os\n"
+        "def execute():\n"
+        "    try:\n"
+        "        os.chmod('/etc/hosts', 0o644)\n"
+        "        return 'LEAK'\n"
+        "    except Exception:\n"
+        "        return 'denied'\n")
+    check("os.chmod 白名单外仍被拒", "denied" in out, out)
+
+    out = run(
+        "import shutil\n"
+        "def execute():\n"
+        "    try:\n"
+        "        shutil.copy('/etc/passwd', 'leak.txt')\n"
+        "        return 'LEAK'\n"
+        "    except Exception:\n"
+        "        return 'denied'\n")
+    check("shutil.copy 读禁区仍被拒（走 open 钩子）", "denied" in out, out)
+
     # 清理探针目录
     probe_dir = ROOT / "document_output" / PROBE_ID
     if probe_dir.is_dir():

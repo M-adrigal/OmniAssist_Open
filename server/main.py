@@ -255,24 +255,82 @@ def init_services():
         )
     logger.info(f"从技能中注册了 {len(skill_scripts)} 个工具脚本")
 
+    # 注册联网搜索工具（主进程执行，不走沙箱）
+    # 设计口径：**搜索是平台能力，不是用户代码**，所以放在主进程 ——
+    # 密钥不出主机、调用点统一计数限流、失败能决定降级方式。
+    # 抓取（fetch_url）仍在沙箱，但按工具名单独放行网络（见技能注册处的 _allow_net）。
+    #
     # 注册联网搜索工具（Tavily，主进程执行，不走沙箱网络拦截）
     # 替代被沙箱网络拦截的 web_fetch 技能，供 agent 在对话中按需检索最新/实时信息。
+    def _reuse_deepseek_key(user_id) -> str:
+        """DeepSeek Key 留空时，复用模型配置里的那一把。
+
+        界面写的就是「与模型用的 Key 是同一把」，再让用户去平台复制粘贴一次没有意义。
+        但只在 base_url 确实指向 DeepSeek 官方时才复用 —— 走中转站的 Key 拿去打
+        api.deepseek.com 会 401，那种情况必须在设置里单独填。
+        """
+        if not user_id:
+            return ""
+        try:
+            from server.model_store import resolve_active_model
+            mc = resolve_active_model(user_id) or {}
+            if "deepseek.com" in (mc.get("base_url") or "").lower():
+                return mc.get("api_key") or ""
+        except Exception as e:
+            logger.warning(f"复用模型 DeepSeek Key 失败（不影响其它功能）: {e}")
+        return ""
+
+    def _resolve_search_key(cfg, provider, user_id):
+        """按供应商取 Key。缺哪个报哪个，**不跨供应商回落** ——
+        回落会让人以为配置生效了，实际在花另一家的钱。"""
+        if provider == "deepseek":
+            key = cfg.get("deepseek_api_key", "") or _reuse_deepseek_key(user_id)
+            if not key:
+                return "", ("已选择 DeepSeek 搜索，但拿不到 DeepSeek API Key：模型配置的端点不是 DeepSeek 官方，"
+                            "设置里的 DeepSeek Key 也为空。请在「设置 → 联网搜索」填写 DeepSeek API Key。")
+            return key, ""
+        key = cfg.get("tavily_api_key", "")
+        if not key:
+            return "", ("已选择 Tavily 搜索，但未配置 Tavily API Key，无法搜索。"
+                        "请在「设置 → 联网搜索」填写 Tavily API Key。")
+        return key, ""
+
     def _web_search_tool(query: str, scenario: str = "auto", _user_id: int = None) -> str:
         from server.database import get_search_config
+        from server import search_runtime as _rt
         cfg = get_search_config()
-        api_key = cfg.get("tavily_api_key", "")
+        provider = "deepseek" if (cfg.get("provider") or "").strip().lower() == "deepseek" else "tavily"
+        api_key, err = _resolve_search_key(cfg, provider, _user_id)
         if not api_key:
-            return "联网搜索未配置 Tavily API Key，无法搜索。请管理员在设置中配置 Tavily API Key。"
+            return f"[搜索失败] {err}"
         if not scenario or scenario == "auto":
             from server.routes.chat import _classify_query
             scenario = _classify_query(query)
+
+        # 先查缓存：模型经常为同一个问题连发两三次搜索，每次都计费。
+        # 命中缓存既省钱又更快，且不会因为"多搜一次"把结果搅乱。
+        ck = _rt.cache_key("search", provider, query, scenario)
+        cached = _rt.cache_get(ck)
+        if cached:
+            logger.info(f"联网搜索命中缓存（{provider}）: {query[:40]}")
+            return cached
+
         from server.routes.chat import _do_web_search
-        result = _do_web_search(query, api_key, scenario)
-        return result or "未找到相关搜索结果。"
+        result = _do_web_search(query, api_key, scenario, provider=provider) or ""
+        if result.startswith("[搜索失败]"):
+            return result          # 失败不缓存、不计数（厂商口径：失败不计费）
+        if result.strip():
+            _rt.cache_put(ck, result, _rt.SEARCH_TTL)
+            try:
+                _rt.bump(provider, "search")
+            except Exception as e:
+                logger.warning(f"搜索计数写入失败（不影响搜索）: {e}")
+            return result
+        return "未找到相关搜索结果。"
     _tool_registry.register_tool(
         name="web_search",
         description=(
-            "联网搜索工具：通过 Tavily 搜索引擎检索最新/实时/外部信息。"
+            "联网搜索工具：检索最新/实时/外部信息（供应商由管理员配置，Tavily 或 DeepSeek）。"
             "当用户需要新闻、实时数据（股价/汇率）、最新版本发布、特定事实查证、"
             "教程步骤、对比分析，或任何需要联网获取的资料时使用。"
             "这是搜索工具而非网页抓取工具；若只需读取某个已知具体网址的页面内容，才用 web_fetch。"
@@ -288,7 +346,7 @@ def init_services():
         func=_web_search_tool,
         risk_level="safe",
     )
-    logger.info("已注册联网搜索工具 web_search（Tavily，主进程执行，不走沙箱）")
+    logger.info("已注册联网搜索工具 web_search（主进程执行，不走沙箱；供应商 tavily/deepseek 可切换）")
 
     # 初始化多 Agent 池
     _agent_pool = AgentPool(_llm_client, _sandbox_pool, _skill_registry)
@@ -303,37 +361,47 @@ def init_services():
     from agent.skill_editor import restore_user_skill, list_trashed_skills, cleanup_trashed_skills
     _tool_registry.register_tool(
         name="create_user_skill",
-        description="为用户创建一个新的自定义 Skill。Skill 包含 SKILL.md（技能描述）和可选的工具脚本。",
+        description=(
+            "为用户创建一个新的自定义 Skill。Skill 包含 SKILL.md（技能描述）和可选的工具脚本。"
+            "工具脚本必须是**完整的 Python 源码**（含 def execute(...) 函数，返回字符串）；"
+            "工具的参数 schema 由系统从 execute 签名自动解析，不要手写 JSON Schema。"
+            "脚本内可用沙箱注入的 run_command 等受控函数，也可用 json/re/datetime 等标准库。"
+            "最小示例：{\"name\": \"hello\", \"code\": \"def execute(name):\\n    return f'你好, {name}'\"}"),
         parameters={
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Skill 名称（英文标识，如 my_analyzer）"},
                 "skill_md": {"type": "string", "description": "SKILL.md 内容（Markdown 格式的技能描述和使用说明）"},
-                "tools": {"type": "array", "description": "工具脚本列表，每项含 name 和 content（JSON Schema）", "items": {"type": "object"}},
+                "tools": {"type": "array", "description": "工具脚本列表，每项含 name（工具名）和 code（完整 Python 源码字符串，必须含 execute 函数）；不要传工具定义 JSON", "items": {"type": "object"}},
             },
             "required": ["name", "skill_md"]
         },
         func=lambda name, skill_md, tools=None, _user_id=None: json.dumps(
             create_user_skill(_user_id, name, skill_md, tools), ensure_ascii=False
         ),
-        risk_level="write", risk_description="新建自定义技能：{name}",
+        # 技能管理是用户在界面上明确发起的动作，写入的是自己的技能目录，
+        # 且有软删除 + 7 天备份兜底 —— 逐次弹确认只会把创建流程切成七八段
+        # （2026-10-27 用户反馈）。执行该技能的**脚本**仍走 exec 级审批，安全边界不变。
+        risk_level="safe", risk_description="新建自定义技能：{name}",
     )
     _tool_registry.register_tool(
         name="update_user_skill",
-        description="更新用户已有的自定义 Skill。可修改 SKILL.md 内容和/或工具脚本。",
+        description=(
+            "更新用户已有的自定义 Skill。可修改 SKILL.md 内容和/或工具脚本。"
+            "工具脚本格式与 create_user_skill 相同：每项含 name 与 code（完整 Python 源码，必须含 execute 函数）"),
         parameters={
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "要更新的 Skill 名称"},
                 "skill_md": {"type": "string", "description": "新的 SKILL.md 内容（不传则不更新）"},
-                "tools": {"type": "array", "description": "新的工具脚本列表（不传则不更新，传空数组清空所有工具）", "items": {"type": "object"}},
+                "tools": {"type": "array", "description": "新的工具脚本列表（不传则不更新，传空数组清空所有工具）；每项含 name 与 code（完整 Python 源码）", "items": {"type": "object"}},
             },
             "required": ["name"]
         },
         func=lambda name, skill_md=None, tools=None, _user_id=None: json.dumps(
             update_user_skill(_user_id, name, skill_md, tools), ensure_ascii=False
         ),
-        risk_level="write", risk_description="更新自定义技能：{name}",
+        risk_level="safe", risk_description="更新自定义技能：{name}",
     )
     _tool_registry.register_tool(
         name="delete_user_skill",
@@ -348,7 +416,7 @@ def init_services():
         func=lambda name, _user_id=None: json.dumps(
             delete_user_skill(_user_id, name), ensure_ascii=False
         ),
-        risk_level="write", risk_description="删除自定义技能：{name}",
+        risk_level="safe", risk_description="删除自定义技能：{name}",
     )
     _tool_registry.register_tool(
         name="restore_user_skill",
@@ -363,7 +431,7 @@ def init_services():
         func=lambda name, _user_id=None: json.dumps(
             restore_user_skill(_user_id, name), ensure_ascii=False
         ),
-        risk_level="write", risk_description="恢复自定义技能：{name}",
+        risk_level="safe", risk_description="恢复自定义技能：{name}",
     )
     _tool_registry.register_tool(
         name="list_trashed_skills",
@@ -389,7 +457,7 @@ def init_services():
             cleanup_trashed_skills(_user_id, retention_days=retention_days, dry_run=bool(dry_run)),
             ensure_ascii=False
         ),
-        risk_level="write", risk_description="清理已删除技能的备份（保留 {retention_days} 天）",
+        risk_level="safe", risk_description="清理已删除技能的备份（保留 {retention_days} 天）",
     )
     _tool_registry.register_tool(
         name="sync_skills_to_db",
@@ -424,7 +492,9 @@ def init_services():
         },
         func=lambda key_name, value, _user_id=None: json.dumps(
             {"success": set_user_secret(_user_id, key_name, value)}, ensure_ascii=False
-        )
+        ),
+        # 写凭据不该静默：模型悄悄覆盖/新增 Key，用户集成坏了都查不到原因
+        risk_level="write", risk_description="保存私有密钥：{key_name}",
     )
     _tool_registry.register_tool(
         name="list_user_secrets",
@@ -446,7 +516,8 @@ def init_services():
         },
         func=lambda key_name, _user_id=None: json.dumps(
             {"success": delete_user_secret(_user_id, key_name)}, ensure_ascii=False
-        )
+        ),
+        risk_level="write", risk_description="删除私有密钥：{key_name}",
     )
     logger.info("已注册用户密钥管理工具（set/list/delete_user_secret）")
 
@@ -595,6 +666,8 @@ def init_services():
             "rel_path": {"type": "string", "description": "相对项目根目录的文件路径，必须位于 document_output 下"},
         }, "required": ["rel_path"]},
         lambda rel_path, _user_id=None: diag_delete_file(rel_path, _user_id),
+        # 删除是**不可逆**写操作，审批级别必须 ≥ 重命名（此前误标 safe，
+        # 模型删用户文件可以一个确认都不弹 —— 2026-10-27 工具表审计发现）
         risk_level="write", risk_description="删除文件：{rel_path}",
     )
     _reg(
@@ -667,6 +740,11 @@ def get_tool_registry() -> ToolRegistry:
 
 def get_skill_registry() -> SkillRegistry:
     return _skill_registry
+
+
+def get_sandbox_pool():
+    """沙箱池（用户技能工具执行要用）。未初始化时返回 None。"""
+    return _sandbox_pool
 
 
 def get_agent_pool() -> AgentPool:

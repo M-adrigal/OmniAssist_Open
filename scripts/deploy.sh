@@ -77,6 +77,27 @@ if [ -d venv ]; then
   venv/bin/pip install -r requirements.txt -q || { echo "$LOG ❌ 依赖安装失败"; exit 1; }
 fi
 
+# ---------- 3.5) 检查 systemd 单元的 PATH（只警告，不自动改 /etc） ----------
+# 单元文件在 /etc 下，git pull 不会更新它 —— "文档改了、机器没改"是这类问题的常态。
+# 踩过的坑：单元里只写 venv/bin，而 systemd 一旦用 Environment= 显式设置 PATH，
+# 就不再追加系统默认目录 → 沙箱里 run_command 连 echo 都找不到（FileNotFoundError）。
+# 代码侧已有兜底（ToolSandbox._system_path），所以这里只让不一致可见，不阻塞部署。
+UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+if [ -r "$UNIT_FILE" ]; then
+  _path_line="$(grep -m1 'Environment="PATH=' "$UNIT_FILE" 2>/dev/null || true)"
+  if [ -n "$_path_line" ]; then
+    case "$_path_line" in
+      *"/usr/bin"*|*"/bin"*) : ;;
+      *)
+        echo "$LOG ⚠ systemd 单元的 PATH 缺少系统目录："
+        echo "$LOG   $_path_line"
+        echo "$LOG   建议改成：Environment=\"PATH=<venv>/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\""
+        echo "$LOG   （代码侧已有兜底，不阻塞启动；但不改会让文档与机器长期不一致）"
+        ;;
+    esac
+  fi
+fi
+
 # ---------- 4) 重启 systemd 服务 ----------
 echo "$LOG 重启 systemd 服务 $SERVICE_NAME ..."
 if sudo systemctl restart "$SERVICE_NAME"; then

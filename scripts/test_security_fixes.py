@@ -62,8 +62,8 @@ except Exception as e:
     resolve = None
 
 if resolve:
-    ME = {"id": "u_me_test", "db_id": 101}
-    OTHER = {"id": "u_other_test", "db_id": 202}
+    ME = {"public_id": "u_me_test", "db_id": 101}
+    OTHER = {"public_id": "u_other_test", "db_id": 202}
 
     # 伪造 get_session：模拟「会话存在但属于他人」
     import server.database as real_db
@@ -171,6 +171,37 @@ up_src = _src("server/routes/upload.py")
 check("upload.py 的 delete/all-uploads/reference 前缀比较带 os.sep",
       "startswith(_uploads_real + os.sep)" in up_src)
 
+# 逻辑级验证：直接执行这个函数，而不是只对源码做文本断言。
+# 文本断言证不了"路径 data/users.db 会被拒" —— 而那正是曾经的漏洞：
+# relpath 成 ../data/users.db（3 段），骗过了「至少两段」的判断，管理员分支放行，
+# 等于能用 /api/files/download 下载整个数据库。用 AST 抠出函数体执行，不依赖 fastapi。
+import ast as _ast
+
+_fn = next((n for n in _ast.parse(files_src).body
+            if isinstance(n, _ast.FunctionDef) and n.name == "_check_file_access"), None)
+check("能定位 _check_file_access（否则下面的逻辑验证是空转）", _fn is not None)
+if _fn is not None:
+    _ns = {"os": os, "OUTPUT_ROOT": "document_output"}
+    exec(compile(_ast.Module(body=[_fn], type_ignores=[]), "<extract>", "exec"), _ns)
+    _chk = _ns["_check_file_access"]
+    _proj = os.path.realpath(ROOT)
+    _admin = {"user_type": "admin", "public_id": "u_admin"}
+    _user = {"user_type": "user", "public_id": "u_normal"}
+    check("管理员读项目内非产出目录被拒（data/users.db）",
+          _chk(os.path.join(_proj, "data", "users.db"), _proj, _admin) is False)
+    check("管理员读源码被拒（agent/main.py）",
+          _chk(os.path.join(_proj, "agent", "main.py"), _proj, _admin) is False)
+    check("管理员读 .env 被拒",
+          _chk(os.path.join(_proj, ".env"), _proj, _admin) is False)
+    check("产出目录根本身被拒",
+          _chk(os.path.join(_proj, "document_output"), _proj, _admin) is False)
+    check("管理员仍可监管他人的产出文件（设计不变）",
+          _chk(os.path.join(_proj, "document_output", "u_other", "uploads", "a.pdf"),
+               _proj, _admin) is True)
+    check("普通用户读不到他人产出文件（设计不变）",
+          _chk(os.path.join(_proj, "document_output", "u_other", "uploads", "a.pdf"),
+               _proj, _user) is False)
+
 # ============================================================
 print("\n【6】auth.py —— XFF 不盲信 + 双维度锁定键")
 # ============================================================
@@ -197,7 +228,7 @@ check("初始口令只打到控制台", 'print(f"    默认管理员初始密码
 print("\n【8】sessions.py —— 删会话连带删图的归属与链接处理")
 # ============================================================
 ses_src = _src("server/routes/sessions.py")
-check("删图目录以本人目录为界", 'user_root = os.path.realpath(os.path.join(project_root, "document_output", str(user["id"])))' in ses_src)
+check("删图目录以本人目录为界", 'user_root = os.path.realpath(os.path.join(project_root, "document_output", str(user["public_id"])))' in ses_src)
 check("符号链接只摘除不递归删除", "if os.path.islink(upload_dir):" in ses_src and "os.unlink(upload_dir)" in ses_src)
 check("rmtree 前仍校验归属", "real_dir.startswith(user_root + os.sep)" in ses_src)
 
@@ -205,7 +236,36 @@ check("rmtree 前仍校验归属", "real_dir.startswith(user_root + os.sep)" in 
 print("\n【9】sandbox.py —— 命令白名单 / os 名单 / importlib / 别名随机化")
 # ============================================================
 sb_src = _src("agent/sandbox.py")
-check("awk 已移出命令白名单", '"awk"' not in sb_src and "'awk'" not in sb_src)
+# awk 不在白名单集合里 —— 用真集合判断，不能全文搜 "awk"：
+# sandbox.py 的报错提示里合法地包含 'awk'（告诉模型为什么被禁、该用什么替代），
+# 文本匹配会误伤（2026-10-26 被误伤过一次）。
+def _check_skill_whitelist(real_wl):
+    """SKILL.md 里列的命令清单必须与沙箱真实白名单一致（两边都不能多）。
+
+    文档与实现不一致就是教模型试错 —— SKILL.md 曾写着允许 python3/awk，
+    而沙箱禁止它们，模型照文档调、被拒、换命令再试，一路浪费轮次。
+    """
+    import re as _re
+    md = _src("agent/skills/run-command/SKILL.md")
+    # 锚定正文里加粗的「**命令白名单**」（frontmatter 的 description 里也有同名词，
+    # 不能用第一次出现的位置），清单是一个跨多行的反引号代码段。
+    m = _re.search(r"\*\*命令白名单\*\*.*?`([^`]+)`", md, _re.S)
+    if not m:
+        return False
+    listed = {x.strip() for x in m.group(1).replace("\n", " ").split(",") if x.strip()}
+    return listed == set(real_wl)
+
+
+try:
+    from agent.sandbox import ToolSandbox as _TS
+    _wl = getattr(_TS, "_ALLOWED_COMMANDS", set())
+    check("awk 已移出命令白名单", "awk" not in _wl, sorted(_wl))
+    check("解释器不在命令白名单",
+          not {"python3", "python", "node"} & _wl, sorted(_wl))
+    check("命令白名单与文档一致（SKILL.md 列的都是白名单子集）",
+          _check_skill_whitelist(_wl))
+except Exception as _e:  # pragma: no cover
+    check("awk 已移出命令白名单", False, f"导入失败: {_e}")
 check("os 危险函数含 execl", "'execl'" in sb_src)
 check("os 危险函数含 execvp", "'execvp'" in sb_src)
 check("os 危险函数含 posix_spawn", "'posix_spawn'" in sb_src)

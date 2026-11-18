@@ -71,3 +71,6 @@ temp/
 # Local project memory / runtime user skills (never commit)
 .workbuddy/
 agent/skills/user/
+# Node（只用于前端类型检查，无构建产物）
+node_modules/
+package-lock.json

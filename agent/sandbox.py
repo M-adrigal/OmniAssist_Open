@@ -89,12 +89,41 @@ class ToolSandbox:
         return ""
 
     @staticmethod
+    def _system_path(prefix: str = "") -> str:
+        """拼出一条能真正找到二进制的 PATH。
+
+        **不要依赖继承来的 PATH**。生产环境 systemd 单元把 PATH 显式设成
+        只有 `venv/bin`（见 deploy.md 的 Environment= 行），而 systemd 一旦
+        显式赋值就不再补默认路径 —— 于是服务进程里 PATH 完全没有 /bin、/usr/bin。
+        沙箱再拼上自己的 venv/bin，两个路径里都找不到 `echo`，`subprocess.run`
+        抛 FileNotFoundError：报错看起来像"命令不存在"，实际是"PATH 里没有系统目录"。
+        本地开发不会复现（终端 PATH 正常），只在 systemd 部署上炸。
+
+        Args:
+            prefix: 要排在最前面的目录，通常是沙箱自己的 venv/bin。
+
+        Returns:
+            str: 去重后的 PATH，末尾一定包含系统标准目录。
+        """
+        parts = []
+        for p in ([prefix] if prefix else []) + os.environ.get("PATH", "").split(os.pathsep):
+            p = (p or "").strip()
+            if p and p not in parts:
+                parts.append(p)
+        for p in ("/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"):
+            if p not in parts:
+                parts.append(p)
+        return os.pathsep.join(parts)
+
+    @staticmethod
     def _clean_pip_env() -> dict:
         """构造不含代理环境变量的 pip 运行环境，避免主进程 HTTP_PROXY 致 pip 失败。"""
         env = dict(os.environ)
         for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
                   "ALL_PROXY", "all_proxy"):
             env.pop(k, None)
+        # PATH 同样要补齐，避免 systemd 精简 PATH 时 pip 的子进程找不到二进制
+        env["PATH"] = ToolSandbox._system_path()
         return env
 
     @staticmethod
@@ -542,7 +571,7 @@ class ToolSandbox:
         project_root = os.path.dirname(base_dir)
 
         subprocess_env = {
-            "PATH": os.path.dirname(self.venv_python) + ":" + os.environ.get("PATH", ""),
+            "PATH": self._system_path(os.path.dirname(self.venv_python)),
             "HOME": os.environ.get("HOME", tempfile.gettempdir()),
             "TMPDIR": tempfile.gettempdir(),
             "TEMP": tempfile.gettempdir(),
@@ -614,7 +643,11 @@ class ToolSandbox:
         "decimal", "fractions", "statistics",
     }
     _BLOCKED_MODULES = {
-        "subprocess", "shutil", "ctypes",
+        # shutil 不再整包禁用（2026-10-26）：xlsxwriter import 即需 shutil.copy，
+        # python-pptx 图表模块 import 即拉起 xlsxwriter → 带图表的 PPT 一直生成
+        # 不出来。shutil 的文件级操作走已挂钩的 open/os.*，天然受文件边界约束；
+        # rmtree 在 wrapper 里单独加了写白名单守卫（见 _safe_shutil_rmtree）。
+        "subprocess", "ctypes",
         "requests", "popen", "signal", "pty",
         "fcntl", "posix", "grp", "pwd", "spwd", "crypt",
         "multiprocessing", "asyncio", "select", "selectors",
@@ -643,11 +676,14 @@ class ToolSandbox:
     # 执行 AI 生成的 Python 代码请走 ToolSandbox.execute() 路径（带钩子约束）。
     # awk 已从白名单移除：awk 内置 system()/管道可直接执行任意命令
     # （`awk -v c=id 'BEGIN{system(c)}'`），等于把命令白名单整个架空。
+    # cal/uname/whoami 是 2026-10-26 评估跑批后补的：模型真实用到且零风险
+    # （纯只读，无参数执行任意代码的能力）。
     _ALLOWED_COMMANDS = {
         "ls", "cat", "echo", "date", "pwd",
         "wc", "sort", "head", "tail", "grep", "sed", "jq", "cut",
         "tr", "uniq", "nl", "od", "base64", "xxd", "file", "stat", "printf",
         "true", "false", "test", "expr", "tee", "diff", "comm",
+        "cal", "uname", "whoami",
     }
     # 网络出口已由 _build_wrapper 内的 getaddrinfo 补丁统一管控
     # （SANDBOX_NETWORK_ALLOWLIST，默认全阻断）。下列集合保留作参考，不再自动并入禁用清单。
@@ -837,14 +873,16 @@ class ToolSandbox:
             "_orig_replace = _os.replace\n"
             "_orig_symlink = _os.symlink\n"
             "_orig_link = _os.link\n"
-            # os.open 在下面会被从 _DANGEROUS_OS 里删掉，但删掉会连带打死 tempfile
-            # （tempfile._get_default_tempdir 就是调 os.open）→ pandas/PIL/openpyxl
-            # 等一切用临时文件的库在沙箱里全部失灵。改为「先存原函数、再换成带同样
-            # 检查的包装」（见 _safe_os_open），安全边界不变、功能不再缺胳膊。
+            # os.open / os.chmod 在下面会被从 _DANGEROUS_OS 里删掉，但删掉会打死
+            # 标准库：os.open 没了 tempfile 失灵（pandas/PIL/openpyxl 全废）；
+            # os.chmod 没了 shutil.copy 的 copymode 撞 AttributeError。都改为
+            # 「先存原函数、再换成带同样检查的包装」（见 _safe_os_open / _safe_os_chmod），
+            # 安全边界不变、功能不再缺胳膊。
             "_orig_os_open = _os.open\n"
+            "_orig_chmod = _os.chmod\n"
             # execl/execlp/execvp/posix_spawn* 必须一并删除：它们会直接替换进程镜像，
             # 一旦调用，Python 层的 import/open/网络钩子全部失效（等价于完全逃逸）。
-            "_DANGEROUS_OS = ['system', 'popen', 'execv', 'execve', 'execl', 'execle', 'execlp', 'execlpe', 'execvp', 'execvpe', 'posix_spawn', 'posix_spawnp', 'spawnl', 'spawnle', 'spawnlp', 'spawnlpe', 'spawnv', 'spawnve', 'spawnvp', 'spawnvpe', 'remove', 'rmdir', 'removedirs', 'renames', 'chmod', 'chown', 'kill', 'killpg', 'setuid', 'setgid', 'fork', 'forkpty', 'unlink', 'open']\n"
+            "_DANGEROUS_OS = ['system', 'popen', 'execv', 'execve', 'execl', 'execle', 'execlp', 'execlpe', 'execvp', 'execvpe', 'posix_spawn', 'posix_spawnp', 'spawnl', 'spawnle', 'spawnlp', 'spawnlpe', 'spawnv', 'spawnve', 'spawnvp', 'spawnvpe', 'remove', 'removedirs', 'renames', 'chown', 'kill', 'killpg', 'setuid', 'setgid', 'fork', 'forkpty', 'unlink', 'open']\n"
             "for _func in _DANGEROUS_OS:\n"
             "    if hasattr(_os, _func):\n"
             "        delattr(_os, _func)\n"
@@ -916,7 +954,9 @@ class ToolSandbox:
             "        return True\n"
             "    return _in_dirs(rp, _READ_SECRET_DIRS)\n"
             # 删除控制（仅白名单目录）
-            "def _safe_unlink(path):\n"
+            "def _safe_unlink(path, *, dir_fd=None):\n"
+            "    if dir_fd is not None:\n"
+            "        raise PermissionError('[沙箱] os.unlink 不支持 dir_fd')\n"
             "    real = _os.path.realpath(path)\n"
             "    if _in_dirs(real, _WRITE_ALLOWED_DIRS):\n"
             "        return _orig_unlink(path)\n"
@@ -924,6 +964,18 @@ class ToolSandbox:
             "    raise PermissionError(f'[沙箱] 禁止删除此路径的文件: {path}')\n"
             "_os.unlink = _safe_unlink\n"
             "_os.remove = _safe_unlink\n"
+            # os.rmdir 同口径受控（原来整删会让 shutil.rmtree 删目录树时撞
+            # AttributeError —— rmtree 靠 rmdir 逐层删空目录）。
+            "_orig_rmdir = _os.rmdir\n"
+            "def _safe_rmdir(path, *, dir_fd=None):\n"
+            "    if dir_fd is not None:\n"
+            "        raise PermissionError('[沙箱] os.rmdir 不支持 dir_fd')\n"
+            "    real = _os.path.realpath(str(path))\n"
+            "    if _in_dirs(real, _WRITE_ALLOWED_DIRS):\n"
+            "        return _orig_rmdir(path)\n"
+            "    _sb_audit('file_delete_denied', f'path={path}')\n"
+            "    raise PermissionError(f'[沙箱] 禁止删除此路径的目录: {path}')\n"
+            "_os.rmdir = _safe_rmdir\n"
             # 创建目录控制（仅白名单目录）
             "def _safe_makedirs(path, mode=0o777, exist_ok=False):\n"
             "    if _in_dirs(_os.path.realpath(path), _WRITE_ALLOWED_DIRS):\n"
@@ -976,7 +1028,7 @@ class ToolSandbox:
             # 但 mimetypes.init() 会读它们 —— 被 /etc 前缀拦下会让 openpyxl 之类
             # 「import 即初始化 mimetypes」的库直接 ImportError（save_excel 生成不出
             # xlsx 就是这个原因，2026-10-24 由质量评估集发现）。
-            "    if _read and _rp not in _MIME_ALLOW and (_is_secret(_rp) or _under_prefix(_rp, _READ_DENY_PREFIXES) or _is_other_user_home(_rp) or (_rp.startswith(_DOC_ROOT + _os.sep) and not _rp.startswith(_USER_DOC + _os.sep))):\n"
+            "    if _read and _rp not in _MIME_ALLOW and not _in_dirs(_rp, _WRITE_ALLOWED_DIRS) and (_is_secret(_rp) or _under_prefix(_rp, _READ_DENY_PREFIXES) or _is_other_user_home(_rp) or (_rp.startswith(_DOC_ROOT + _os.sep) and not _rp.startswith(_USER_DOC + _os.sep))):\n"
             "        _sb_audit('file_read_denied', f'path={path}')\n"
             "        raise PermissionError(f'[沙箱] 禁止读取受限文件: {path}')\n"
             "    if _write and not _in_dirs(_rp, _WRITE_ALLOWED_DIRS):\n"
@@ -994,7 +1046,7 @@ class ToolSandbox:
             "    _acc = flags & _os.O_ACCMODE\n"
             "    _read = (_acc == _os.O_RDONLY) or (_acc == _os.O_RDWR)\n"
             "    _write = (_acc != _os.O_RDONLY) or bool(flags & (_os.O_CREAT | _os.O_TRUNC | _os.O_APPEND))\n"
-            "    if _read and _rp not in _MIME_ALLOW and (_is_secret(_rp) or _under_prefix(_rp, _READ_DENY_PREFIXES) or _is_other_user_home(_rp) or (_rp.startswith(_DOC_ROOT + _os.sep) and not _rp.startswith(_USER_DOC + _os.sep))):\n"
+            "    if _read and _rp not in _MIME_ALLOW and not _in_dirs(_rp, _WRITE_ALLOWED_DIRS) and (_is_secret(_rp) or _under_prefix(_rp, _READ_DENY_PREFIXES) or _is_other_user_home(_rp) or (_rp.startswith(_DOC_ROOT + _os.sep) and not _rp.startswith(_USER_DOC + _os.sep))):\n"
             "        _sb_audit('file_read_denied', f'path={path}')\n"
             "        raise PermissionError(f'[沙箱] 禁止读取受限文件: {path}')\n"
             "    if _write and not _in_dirs(_rp, _WRITE_ALLOWED_DIRS):\n"
@@ -1005,12 +1057,66 @@ class ToolSandbox:
             # 「删除的危险函数 → 受控替代」对照表。_safe_import 每次 import os 都会
             # 重新删一遍危险函数，必须靠这张表把它们换回受控版本，否则标准库
             # （tempfile / shutil / pathlib）会撞 AttributeError。没有受控替代的
-            # （chmod / kill / system / exec* 等）保持删除，不进此表。
+            # （kill / system / exec* 等）保持删除，不进此表。
+            # （表本体在下方 _safe_os_chmod 定义之后 —— 它也要进表。）
+            # ---- shutil 放行但受控（2026-10-26 评估跑批抓到）----
+            # xlsxwriter 在模块导入时就要 `from shutil import copy`，而
+            # python-pptx 的图表模块 import 即拉起 xlsxwriter →
+            # shutil 被整包禁用导致「带图表的 PPT 一直生成不出来」。
+            # 放行依据：shutil 的文件级操作（copy/copyfile/copytree/move）最终走
+            # 已挂钩的 builtins.open / os.*，天然被文件边界约束；真正要单独拦的
+            # 只有 rmtree（批量删除，open 钩子管不到「删目录树」本身）。
+            "import shutil as _shutil\n"
+            "# rmtree 直接替换成自实现的「纯路径版」：Python 3.12+ 的 rmtree 用\n"
+            "# dir_fd 方式遍历删除（os.unlink(entry.name, dir_fd=fd)），而 macOS\n"
+            "# 没有 /proc/self/fd，fd 无法解析回路径做白名单校验 → dir_fd 形式的\n"
+            "# unlink/rmdir 只能一律拒绝，原生 rmtree 会全废。自实现版每一步都调\n"
+            "# 受控 unlink/rmdir（带 realpath 白名单校验），天然受写边界约束。\n"
+            "def _safe_shutil_rmtree(path, ignore_errors=False, *args, **kwargs):\n"
+            "    _rp = _os.path.realpath(str(path))\n"
+            "    if not _in_dirs(_rp, _WRITE_ALLOWED_DIRS):\n"
+            "        _sb_audit('shutil_rmtree_denied', f'path={path}')\n"
+            "        if ignore_errors:\n"
+            "            return\n"
+            "        raise PermissionError(f'[沙箱] shutil.rmtree 仅允许写白名单目录内: {path}')\n"
+            "    def _rm_one(_p):\n"
+            "        # 符号链接删「链接本身」：链接路径就在 rp 之下（已过白名单），\n"
+            "        # 若走受控 unlink 会被 realpath 解析到链接目标（可能在禁区）而误拒。\n"
+            "        if _os.path.islink(_p):\n"
+            "            return _orig_unlink(_p)\n"
+            "        return _os.unlink(_p)\n"
+            "    try:\n"
+            "        for _root, _dirs, _files in _os.walk(_rp, topdown=False):\n"
+            "            for _f in _files:\n"
+            "                _rm_one(_os.path.join(_root, _f))\n"
+            "            for _d in _dirs:\n"
+            "                _pd = _os.path.join(_root, _d)\n"
+            "                if _os.path.islink(_pd):\n"
+            "                    _rm_one(_pd)\n"
+            "                else:\n"
+            "                    _os.rmdir(_pd)\n"
+            "        _os.rmdir(_rp)\n"
+            "    except OSError:\n"
+            "        if not ignore_errors:\n"
+            "            raise\n"
+            "_shutil.rmtree = _safe_shutil_rmtree\n"
+            # shutil.copy → copymode → os.chmod；os.chmod 原本被整删会让 copy 撞
+            # AttributeError，换成受控版本（只能改写白名单内文件的权限）。
+            "def _safe_os_chmod(path, mode, *, dir_fd=None, follow_symlinks=True):\n"
+            "    if dir_fd is not None:\n"
+            "        raise PermissionError('[沙箱] os.chmod 不支持 dir_fd')\n"
+            "    _rp = _os.path.realpath(str(path))\n"
+            "    if not _in_dirs(_rp, _WRITE_ALLOWED_DIRS):\n"
+            "        _sb_audit('file_chmod_denied', f'path={path}')\n"
+            "        raise PermissionError(f'[沙箱] 禁止修改白名单外文件的权限: {path}')\n"
+            "    return _orig_chmod(path, mode, follow_symlinks=follow_symlinks)\n"
+            "_os.chmod = _safe_os_chmod\n"
             "_SAFE_OS_RESTORE = {\n"
             "    'open': _safe_os_open, 'unlink': _safe_unlink, 'remove': _safe_unlink,\n"
             "    'makedirs': _safe_makedirs, 'mkdir': _safe_mkdir,\n"
             "    'rename': _safe_rename, 'replace': _safe_rename,\n"
             "    'symlink': _safe_symlink, 'link': _safe_link,\n"
+            "    'chmod': _safe_os_chmod, 'rmdir': _safe_rmdir,\n"
             "}\n"
             # 受控命令执行（命令白名单，默认禁用 rm/sudo/dd 等危险命令）
             f"_ALLOWED_CMDS = set({allowed_cmds})\n"
@@ -1022,7 +1128,19 @@ class ToolSandbox:
             "        raise ValueError('空命令')\n"
             "    if _parts[0] not in _ALLOWED_CMDS:\n"
             "        _sb_audit('cmd_denied', f'cmd={cmd}')\n"
-            "        raise PermissionError(f'[沙箱] 命令不在白名单: {_parts[0]}')\n"
+            # 报错必须自带出路，否则模型只能瞎猜换命令连环试错（实测会试
+            # cd/nslookup/awk…，每次都浪费一轮）。列出可用命令 + 被禁原因 + 替代方案。
+            "        _hint = ''\n"
+            "        if _parts[0] in ('python3', 'python', 'node'):\n"
+            "            _hint = '；解释器被刻意禁止（沙箱逃逸通道），Python 逻辑请直接写在 execute() 函数体内'\n"
+            "        elif _parts[0] == 'awk':\n"
+            "            _hint = '；awk 被禁（内置 system() 可逃逸沙箱），文本处理用 grep/sed/cut，或写在 execute() 里用 Python 处理'\n"
+            "        elif _parts[0] == 'cd':\n"
+            "            _hint = '；本工具不是 shell，不支持 cd，请改用 cwd 参数指定工作目录'\n"
+            "        raise PermissionError(\n"
+            "            f'[沙箱] 命令不在白名单: {_parts[0]}{_hint}。可用命令: '\n"
+            "            + ', '.join(sorted(_ALLOWED_CMDS))\n"
+            "            + '。注意本工具不是 shell：不支持管道 | 、重定向 > 、&& 串联，多步处理写在 execute() 里用 Python 完成')\n"
             "    # 路径参数白名单：禁止绝对路径、家目录展开、父目录遍历、密钥文件与受限目录\n"
             "    for _arg in _parts[1:]:\n"
             "        _a = _arg.strip()\n"
@@ -1038,7 +1156,11 @@ class ToolSandbox:
             "            _sb_audit('cmd_secret_denied', f'cmd={cmd} arg={_arg}')\n"
             "            raise PermissionError(f'[沙箱] run_command 禁止访问密钥文件: {_arg}')\n"
             "        _rp = _os.path.realpath(_os.path.join(str(cwd or _DEFAULT_CWD), _a))\n"
-            "        if _under_prefix(_rp, _READ_DENY_PREFIXES):\n"
+            # 写白名单内的路径当然可读。不加这一句的话，`echo hi` 里的 hi 会被拼成
+            # cwd/hi，而 macOS 的工作目录在 /var/folders 下（/var 在禁读前缀里），
+            # 于是「任何带参数的命令」都被判成访问受限路径 —— echo hi、ls -la 全拒。
+            # Linux 的 TMPDIR 是 /tmp，不命中 /var，所以这个 bug 只在 macOS 露头。
+            "        if not _in_dirs(_rp, _WRITE_ALLOWED_DIRS) and _under_prefix(_rp, _READ_DENY_PREFIXES):\n"
             "            _sb_audit('cmd_path_denied', f'cmd={cmd} arg={_arg}')\n"
             "            raise PermissionError(f'[沙箱] run_command 禁止访问受限路径: {_arg}')\n"
             "    if cwd is None:\n"

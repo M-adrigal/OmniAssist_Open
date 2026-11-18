@@ -51,6 +51,15 @@ def _check_file_access(full_path: str, project_root: str, user: dict) -> bool:
         return False
 
     out_root = os.path.realpath(os.path.join(project_root, OUTPUT_ROOT))
+
+    # 边界必须收紧到 document_output 本身，不能只到 project_root。
+    # 否则 `path=data/users.db` 经 relpath 会变成 `../data/users.db`（3 段），
+    # 恰好通过下面「至少两段」的判断，管理员分支直接放行 ——
+    # 等于管理员能用 /api/files/download 下载整个数据库（密码哈希、所有用户的
+    # 加密 Key、全部会话内容）与源码、.env。文件接口的边界本该只是产出目录。
+    if full_path != out_root and not full_path.startswith(out_root + os.sep):
+        return False
+
     rel = os.path.relpath(full_path, out_root)
     parts = rel.split(os.sep)
     # 必须位于某个用户子目录内（至少 user/sub/... 两段），禁止命中 document_output 根
@@ -65,7 +74,7 @@ def _check_file_access(full_path: str, project_root: str, user: dict) -> bool:
         file_user_id = parts[0]
     except Exception:
         return False
-    return file_user_id == user["id"]
+    return file_user_id == user["public_id"]
 
 
 # 文件库类别标签：立即子目录名 -> 中文标签
@@ -157,7 +166,7 @@ def list_files(request: Request):
         dir_user_id = entry
 
         # 普通用户仅看自己；管理员可查看所有用户的文件目录（全局监管）
-        if user.get("user_type") != "admin" and dir_user_id != user["id"]:
+        if user.get("user_type") != "admin" and dir_user_id != user["public_id"]:
             continue
 
         user_label = _get_user_display_name(dir_user_id)
@@ -229,7 +238,7 @@ def list_library(request: Request, search: str = Query("")):
                     continue
                 files.extend(_recursive_list_library(d, project_root))
     else:
-        files = _recursive_list_library(user["id"], project_root)
+        files = _recursive_list_library(user["public_id"], project_root)
     if search and search.strip():
         tokens = [t for t in search.strip().lower().split() if t]
         if tokens:

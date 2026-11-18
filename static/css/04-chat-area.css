@@ -12,6 +12,9 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* 右侧问题刻度条（19-msg-nav.css 的 .msg-nav）要以聊天区为基准绝对定位，
+     否则它会一路找到 .main-content 之类更外层的定位祖先，竖线偏离视线 */
+  position: relative;
   background-color: var(--bg-canvas);
   /* 顶部一层几乎察觉不到的冷暖柔光，压掉纯色的"平"，不干扰阅读 */
   background-image:
@@ -244,10 +247,12 @@
 }
 
 .welcome-message code {
-  background: var(--bg-tertiary);
+  background: var(--code-bg);
+  color: var(--code-fg);
   padding: 2px 6px;
   border-radius: 4px;
-  font-size: 13px;
+  font-family: var(--mono);
+  font-size: 0.92em;
 }
 
 /* 消息行
@@ -418,7 +423,9 @@
 /* 输入区：文字框与工具条共用一层白底，附件/发送都在底部这一排 */
 .chat-composer {
   background: #FFFFFF;
-  border-radius: 22px;
+  /* 26px：比原先 22px 更接近"整块容器"而不是"一条输入框"。
+     圆角太小会把下面的按钮排挤成另一层，看起来像两张卡叠着 */
+  border-radius: 26px;
   padding: 8px 10px 8px;
   /* 用一条细描边定形，投影只做很小的一层：原先 20px 大模糊会向上晕出约 16px 灰影，
      正好落在输入卡上缘，加重了"被挡住"的观感 */
@@ -603,27 +610,34 @@
 /* 模型选择与发送一起贴在右侧 */
 .chat-input-toolbar .btn-model { margin-left: auto; }
 
+/* 底部两个模式按钮：中空细描边胶囊
+   取参考图「透明底 + 细边框 + 淡字」的做法，但**不做成蓝色**：
+   蓝色在这两个按钮上已经有语义了（联网搜索=开、权限=完全访问），
+   关闭态若也用蓝色，用户会以为已经开了 —— 正好违反"关闭态必须写明状态"。
+   所以中性态用描边承担"这里可以点"，颜色只随状态变。 */
 .btn-web-search,
 .btn-perm {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 16px;
+  padding: 7px 14px;
   border-radius: 999px;
-  background: #F2F2F5;
-  border: none;
-  color: #374151;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  color: var(--text-secondary);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  transition: background-color 0.2s, transform 0.1s;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s, transform 0.1s;
   user-select: none;
 }
 
 .btn-web-search:hover,
 .btn-perm:hover {
-  background: #E5E7EB;
+  background: rgba(16, 24, 40, 0.045);
+  border-color: var(--line-strong);
+  color: var(--text-primary);
 }
 
 .btn-web-search:active,
@@ -797,3 +811,15 @@
   border-radius: 4px;
 }
 
+
+/* 中断/阻断说明：追加在已输出正文之后，不覆盖正文。
+   视觉上要与正文区分（浅色细线 + 次要色），但也不能做成刺眼的报错红 ——
+   它不是异常，是"我就停在这里了"的说明。 */
+.stream-notice {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}

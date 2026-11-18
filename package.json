@@ -1,0 +1,12 @@
+{
+  "name": "omniassist-frontend",
+  "private": true,
+  "description": "仅用于前端类型检查（tsc --noEmit）。前端无构建步骤，浏览器直接加载 static/js/*.js。",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "check": "python3 scripts/check_static.py && python3 scripts/check_contract.py --strict && tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  }
+}

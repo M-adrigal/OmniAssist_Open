@@ -295,10 +295,30 @@ async function loadBuiltinCatalog() {
 async function loadSearchConfig() {
   try {
     const searchCfg = await API.get('/api/config/search');
+    const providerEl = $('#cfg-search-provider');
+    if (providerEl) providerEl.value = searchCfg.provider || 'tavily';
     const searchKeyEl = $('#cfg-search-tavily-key');
     if (searchKeyEl) {
       searchKeyEl.value = '';
       searchKeyEl.placeholder = searchCfg.tavily_api_key_masked || '';
+    }
+    const dsKeyEl = $('#cfg-search-deepseek-key');
+    if (dsKeyEl) {
+      dsKeyEl.value = '';
+      dsKeyEl.placeholder = searchCfg.deepseek_api_key_masked || '';
+    }
+    // 免费额度可见：Tavily 每月 1000 次，用完了要么报错要么开始计费，
+    // 只让用户去厂商后台对账等于把这件事藏起来。
+    const usageEl = $('#cfg-search-usage');
+    if (usageEl) {
+      const u = searchCfg.usage || {};
+      const m = u.month_total || {};
+      const parts = [];
+      if (m.tavily) parts.push(`Tavily ${m.tavily} 次`);
+      if (m.deepseek) parts.push(`DeepSeek ${m.deepseek} 次`);
+      usageEl.textContent = parts.length
+        ? `${u.month || ''} 已用：${parts.join(' · ')}（只统计成功调用）`
+        : '';
     }
   } catch (e) {
     // 搜索配置加载失败不阻塞
@@ -341,11 +361,19 @@ async function saveConfig() {
   const tab = _configTab;
 
   if (tab === 'search') {
-    const searchKeyEl = $('#cfg-search-tavily-key');
     const body = {};
+    const providerEl = $('#cfg-search-provider');
+    if (providerEl) body.provider = providerEl.value;
+    const searchKeyEl = $('#cfg-search-tavily-key');
     if (searchKeyEl) {
       const key = searchKeyEl.value.trim();
       if (key) body.tavily_api_key = key;
+    }
+    // 只回传用户新填的 Key：留空表示"保持原值"，避免把已存的明文再发一次
+    const dsKeyEl = $('#cfg-search-deepseek-key');
+    if (dsKeyEl) {
+      const key = dsKeyEl.value.trim();
+      if (key) body.deepseek_api_key = key;
     }
     try {
       await API.put('/api/config/search', body);
@@ -781,7 +809,7 @@ function initModelConfigEvents() {
     const el = $(sel);
     if (!el) return;
     el.addEventListener('click', async (e) => {
-      const btn = e.target.closest('button[data-action]');
+      const btn = evTarget(e)?.closest('button[data-action]');
       if (!btn) return;
       const action = btn.dataset.action;
       const entry = btn.dataset.entry;

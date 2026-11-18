@@ -158,10 +158,10 @@ def delete_session(session_id: str, request: Request = None):
     # 用户以为删干净了，实际还躺在服务器上。
     try:
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        upload_dir = os.path.join(project_root, "document_output", str(user["id"]), "uploads", session_id)
+        upload_dir = os.path.join(project_root, "document_output", str(user["public_id"]), "uploads", session_id)
         # 归属校验必须以「本人目录」为界，只判「在 document_output 内」不够：
         # 若该目录被替换成指向他人产出目录的符号链接，rmtree 会顺着链接删掉他人整个目录。
-        user_root = os.path.realpath(os.path.join(project_root, "document_output", str(user["id"])))
+        user_root = os.path.realpath(os.path.join(project_root, "document_output", str(user["public_id"])))
         if os.path.islink(upload_dir):
             # 是链接就只摘链接，绝不递归删链接目标
             os.unlink(upload_dir)

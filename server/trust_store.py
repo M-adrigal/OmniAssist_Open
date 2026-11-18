@@ -1,4 +1,4 @@
-"""会话级「权限模式」状态机（进程内，单事件循环安全）。
+"""会话级「权限模式」状态机（跨进程：进程内 / Redis 二选一）。
 
 两种权限模式：
 - "request"（请求批准，默认）：敏感操作前需用户在聊天框逐项确认。
@@ -13,18 +13,21 @@
 设计要点：
 - 以 session_id 隔离每个会话的权限模式，多用户并发互不影响。
 - 仅会话拥有者（owner_id 匹配）可切换/查询，防越权。
-- 完全访问权限是「提权」，默认 request，且前端需持续提示。
-- 多进程部署（如 gunicorn -w N）注意：本实现为单进程内存态，跨进程不共享；
-  若启用多 worker，需替换为 Redis 等跨进程共享存储（接口保持一致即可）。
+- **状态放在 server/kv.py**：默认进程内，配了 REDIS_URL 就是 Redis。
+  多 worker 下"A 进程开了完全访问权限、请求落到 B 进程又不生效"是原来最脏的问题
+  —— 用户以为已提权，实际换了个进程又开始弹确认，且没有任何提示。
 
 同时提供 audit_log() 供审批/信任模块复用，统一写入 logs/audit.log 以便追溯。
 """
-import logging
 import os
 import time
-import uuid
 
-log = logging.getLogger("trust")
+from agent.logger import get_logger
+from server import kv
+
+log = get_logger(__name__)
+
+TRUST_TTL = 86400   # 会话权限模式保留 24 小时；会话本身有 TTL，到期自然清
 
 
 class TrustStore:
@@ -33,9 +36,13 @@ class TrustStore:
     MODE_FULL = "full"         # 完全访问权限
     _VALID_MODES = (MODE_REQUEST, MODE_FULL)
 
-    def __init__(self):
-        # session_id -> {"owner_id", "mode", "enabled", "updated_at"}
-        self._trust: dict[str, dict] = {}
+    @staticmethod
+    def _key(session_id: str) -> str:
+        return f"trust:session:{session_id}"
+
+    def _load(self, session_id: str):
+        rec = kv.get_backend().get_json(self._key(session_id))
+        return rec if isinstance(rec, dict) else None
 
     def set(self, session_id: str, owner_id: int, enabled: bool = None,
             mode: str = None) -> bool:
@@ -44,49 +51,63 @@ class TrustStore:
         Args:
             enabled: 兼容旧调用，True 映射为 full、False 映射为 request。
             mode: 显式模式 "request" / "full"。若同时给出以 mode 为准。
+
+        ⚠️ **`mode` 只能用关键字传**。写成 `set(sid, owner, "full")` 会把模式字符串
+        塞进 `enabled` 位置，而非空字符串在 Python 里是 truthy → 静默变成"已开启，
+        且模式按 enabled 推导"，也就是看起来成功了、实际语义全靠巧合。
+        这种"看起来对"的错最难查（写测试时我自己就踩了一次），所以这里不再用
+        truthy 兜着，直接拒绝并说清原因。
         """
+        if enabled is not None and not isinstance(enabled, bool):
+            log.error(
+                f"trust_store.set 的 enabled 必须是 bool，收到 "
+                f"{type(enabled).__name__}={enabled!r}（session={session_id}）。"
+                f"疑似把 mode 传到了 enabled 位置 —— 请改用 mode= 关键字。已按失败处理。"
+            )
+            return False
         if mode is None:
             mode = self.MODE_FULL if enabled else self.MODE_REQUEST
         if mode not in self._VALID_MODES:
             return False
-        cur = self._trust.get(session_id)
-        if cur and cur["owner_id"] != owner_id:
+        cur = self._load(session_id)
+        if cur and cur.get("owner_id") != owner_id:
             return False
-        self._trust[session_id] = {
+        kv.get_backend().set_json(self._key(session_id), {
             "owner_id": owner_id,
             "mode": mode,
             "enabled": (mode == self.MODE_FULL),
             "updated_at": time.time(),
-        }
+        }, ttl=TRUST_TTL)
         return True
 
     def is_trusted(self, session_id: str, user_id: int = None) -> bool:
         """查询会话是否处于完全访问权限；若传入 user_id 则同时校验归属。"""
-        cur = self._trust.get(session_id)
+        cur = self._load(session_id)
         if not cur:
             return False
-        if user_id is not None and cur["owner_id"] != user_id:
+        if user_id is not None and cur.get("owner_id") != user_id:
             return False
         return bool(cur.get("enabled", False))
 
     def get(self, session_id: str, user_id: int = None) -> dict:
-        cur = self._trust.get(session_id)
+        cur = self._load(session_id)
         if not cur:
             return {"enabled": False, "mode": self.MODE_REQUEST}
-        if user_id is not None and cur["owner_id"] != user_id:
+        if user_id is not None and cur.get("owner_id") != user_id:
             return {"enabled": False, "mode": self.MODE_REQUEST}
-        return {"enabled": bool(cur.get("enabled", False)), "mode": cur.get("mode", self.MODE_REQUEST)}
+        return {"enabled": bool(cur.get("enabled", False)),
+                "mode": cur.get("mode", self.MODE_REQUEST)}
 
     def clear(self, session_id: str):
-        """会话删除/结束时清理，避免内存泄漏。"""
-        self._trust.pop(session_id, None)
+        """会话删除/结束时清理。"""
+        kv.get_backend().delete(self._key(session_id))
 
 
-# 全局单例（单进程内共享）
+# 全局单例（状态在后端，实例本身无状态）
 trust_store = TrustStore()
 
 
-def audit_log(event_type: str, **fields):
+def audit_log(event_type, **fields):
     """统一审计日志：写入 logs/audit.log（可追溯）。失败静默。"""
     try:
         os.makedirs("logs", exist_ok=True)

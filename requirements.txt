@@ -14,5 +14,11 @@ python-pptx>=0.6.23
 # 图片处理（文档技能生成含图 PDF，PIL 在 pdf_formatter 顶层 import）
 Pillow>=10.0.0
 # 数据库管理界面（server/main.py 以子进程 `python -m sqlite_web` 启动）
-sqlite-web>=0.10.0
+# 注意：上游版本号停在 0.8.x（当前最新 0.8.2），**不存在 0.9 / 0.10**；
+# 写成 >=0.10.0 会让整份 requirements 直接装不上（No matching distribution）。
+sqlite-web>=0.8.0
 
+
+# 跨进程共享状态（审批 / 信任模式）。只在设置 REDIS_URL 时用到；
+# 没配或没装时自动退回进程内存储（单 worker 够用，多 worker 必须配）。
+redis>=5.0.0

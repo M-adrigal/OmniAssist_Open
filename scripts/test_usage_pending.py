@@ -23,8 +23,8 @@ database._local.conn = None
 database.init_db()
 conn = database._get_connection()
 conn.execute(
-    "INSERT INTO users (username, password_hash, user_type) VALUES (?, ?, ?)",
-    ("pending_tester", "x", "user"),
+    "INSERT INTO users (username, password_hash, user_type, public_id) VALUES (?, ?, ?, ?)",
+    ("pending_tester", "x", "user", database._gen_public_id()),
 )
 conn.commit()
 TEST_UID = conn.execute("SELECT id FROM users WHERE username='pending_tester'").fetchone()["id"]
@@ -124,7 +124,8 @@ check("10 天前的中断不计入近 7 天", stats2["interrupted"] == stats["in
 # 场景 5：用户隔离
 print("\n[5] 用户隔离")
 conn.execute(
-    "INSERT INTO users (username, password_hash, user_type) VALUES ('other', 'x', 'user')")
+    "INSERT INTO users (username, password_hash, user_type, public_id) VALUES ('other', 'x', 'user', ?)",
+    (database._gen_public_id(),))
 conn.commit()
 OTHER = conn.execute("SELECT id FROM users WHERE username='other'").fetchone()["id"]
 usage_store.mark_pending("s7", OTHER)

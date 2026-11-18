@@ -16,12 +16,23 @@ from agent.model_gateway import ModelGateway, thinking_mode_to_flags
 from agent.logger import get_logger, set_context, clear_context
 from agent.parallel_executor import ParallelToolExecutor
 from agent.loop_guard import new_loop_state, evaluate as _eval_loop_guard, _call_signature
+from server.user_tools import (
+    ensure_user_tools as _ensure_user_tools,
+    is_foreign_user_tool as _is_foreign_user_tool,
+    resolve_tool_name as _resolve_tool_name,
+    strip_prefix as _strip_tool_prefix,
+)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = get_logger("chat")
 
 # 安全限制
 MAX_MESSAGE_LENGTH = 10000      # 单条消息最大字符数
+
+# 客户端断开后，后台任务再运行多少秒就自动取消（宽限期内重连则取消倒计时）。
+# 默认 60s：覆盖「刷新页面」的重连间隔；0 = 关闭自动停止，回到「跑完为止」旧行为。
+# 取消走与手动 /stop 相同的路径：已生成内容按「中断」落库，不会凭空丢失。
+_STREAM_STOP_GRACE = max(0, int(os.environ.get("AGENT_STREAM_STOP_GRACE", "60")))
 MAX_SESSION_TITLE_LENGTH = 200  # 会话标题最大字符数
 
 from server.routes.auth import get_current_user
@@ -57,6 +68,57 @@ def _mask_tool_args(name: str, args: dict) -> dict:
         else:
             masked[k] = v
     return masked
+
+
+def _approval_signature(name: str, args: dict) -> str:
+    """审批记忆的签名：工具名 + 参数的稳定哈希（同参同操作才算同一个）。"""
+    import hashlib
+    try:
+        payload = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        payload = str(args)
+    return f"{name}:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _classify_tool_calls(registry, tool_calls, session_id: str, user_id: int,
+                         iteration: int = None) -> tuple:
+    """把本轮工具调用分为（免审批， 待审批）两类。
+
+    规则：
+    - **自伤型**（block_during_stream，会终止服务进程）：一律进待审批并标
+      selfharm —— 流中执行会自杀（2026-10-23 事故），且**永不进批准记忆**
+      （否则批准重启一次 = 24 小时内可静默再重启）；
+    - 需审批且「同工具+同参数」本会话已批准过 → 归入免审批（批量场景的关键），
+      参数一变仍会询问；
+    - 其余按注册表 risk_level 推断。
+
+    抽成模块级函数的原因：分流规则曾以「逻辑副本」形式写在测试里，主逻辑改了
+    副本没改，测试照样绿 —— 假绿比没有测试更糟。现在测试直接调这个真函数。
+    """
+    _safe, _pending = [], []
+    for tc in tool_calls:
+        _tname = tc["function"]["name"]
+        _targs = json.loads(tc["function"]["arguments"])
+        if registry.blocks_during_stream(_tname):
+            _pending.append({"tc": tc, "name": _tname, "args": _targs,
+                             "sig": _approval_signature(_tname, _targs),
+                             "selfharm": True})
+            continue
+        if registry.needs_approval(_tname, _targs):
+            # 「同工具+同参数」本会话已批准过 → 不再重复打扰。
+            # 批量场景（同一脚本逐个文件跑）用户批一次就够了；
+            # 参数一变仍会询问，放行的只是用户批过的那个操作
+            _asig = _approval_signature(_tname, _targs)
+            if approval_store.is_allowed(session_id, user_id, _asig):
+                _safe.append({"tc": tc, "name": _tname, "args": _targs})
+                agent_audit.record_event(
+                    "approval_remembered", session_id=session_id,
+                    user_id=user_id, tool=_tname, iteration=iteration)
+            else:
+                _pending.append({"tc": tc, "name": _tname, "args": _targs, "sig": _asig})
+        else:
+            _safe.append({"tc": tc, "name": _tname, "args": _targs})
+    return _safe, _pending
 
 
 # ===== 会话消息脱敏与截断（持久化前）=====
@@ -176,6 +238,8 @@ class SessionTask:
         self.completed_at: float | None = None
         self.answer = ""
         self._bg_task: asyncio.Task | None = None
+        # 断连宽限期计时器（见 _schedule_grace_stop）
+        self._grace_task: asyncio.Task | None = None
 
     def add_event(self, event_str: str):
         """添加一个 SSE 事件到缓冲区，并推送给所有活跃订阅者"""
@@ -198,6 +262,7 @@ class SessionTask:
             return
         self.status = "completed"
         self.completed_at = time.time()
+        self._cancel_grace_timer()
         for q in self.subscribers:
             try:
                 q.put_nowait(None)  # None = 流结束信号
@@ -210,6 +275,7 @@ class SessionTask:
             return
         self.status = "failed"
         self.completed_at = time.time()
+        self._cancel_grace_timer()
         for q in self.subscribers:
             try:
                 q.put_nowait(None)
@@ -218,6 +284,8 @@ class SessionTask:
 
     async def subscribe(self) -> asyncio.Queue:
         """订阅任务事件：先回放历史事件，再等待新事件"""
+        # 有人（重新）连上来 → 撤掉断连自动停的倒计时（刷新页面就是这条路径）
+        self._cancel_grace_timer()
         q: asyncio.Queue = asyncio.Queue(maxsize=10000)
         # 回放已有事件
         for evt in self.events:
@@ -233,6 +301,40 @@ class SessionTask:
         """取消订阅"""
         if q in self.subscribers:
             self.subscribers.remove(q)
+        self._schedule_grace_stop()
+
+    def _cancel_grace_timer(self):
+        if self._grace_task and not self._grace_task.done():
+            self._grace_task.cancel()
+        self._grace_task = None
+
+    def _schedule_grace_stop(self):
+        """最后一个订阅者也断开后，启动「宽限期后自动停」倒计时。
+
+        为什么有宽限期：浏览器刷新会先断开再重连（/subscribe 重放事件），
+        没有宽限期的「一断就停」会把刷新误杀成停止。宽限期内重连则取消倒计时。
+        环境变量 AGENT_STREAM_STOP_GRACE 控制秒数（默认 60，0 = 关闭自动停止，
+        回到「断连后任务跑完为止」的旧行为）。
+        """
+        if _STREAM_STOP_GRACE <= 0 or self.status != "running" or self.subscribers:
+            return
+        if self._grace_task and not self._grace_task.done():
+            return
+        self._grace_task = asyncio.create_task(self._grace_stop())
+
+    async def _grace_stop(self):
+        try:
+            await asyncio.sleep(_STREAM_STOP_GRACE)
+        except asyncio.CancelledError:
+            return  # 宽限期内有人重连（或任务已结束），正常取消
+        if self.status == "running" and not self.subscribers \
+                and self._bg_task and not self._bg_task.done():
+            logger.info(
+                f"客户端断开超过 {_STREAM_STOP_GRACE}s 且无重连，自动停止后台任务 "
+                f"(session={self.session_id})")
+            # cancel 触发 _run_chat_background 的 CancelledError 分支：
+            # 取消挂起的审批、按「中断」落库已生成内容、标记 failed —— 与手动 /stop 同一路径
+            self._bg_task.cancel()
 
 
 # 全局任务注册表
@@ -472,12 +574,15 @@ def _select_round_images(dir_images: list, uploaded_files: list):
     return kept, skipped
 
 
-def _build_skill_context(user_id: int, skill_registry) -> str:
+def _build_skill_context(user_id: int, skill_registry, selected_names=None) -> str:
     """构建用户技能上下文，注入系统提示词
 
     Args:
         user_id: 用户 ID
         skill_registry: SkillRegistry 实例
+        selected_names: 本轮用户显式勾选的技能名。这些技能稍后会以「全文置顶」方式
+            单独注入，这里必须跳过，否则同一份说明进两次 —— 白烧 token，
+            而且两处措辞不完全一致时会把模型拉向两个方向。
 
     Returns:
         str: 技能上下文字符串
@@ -503,7 +608,23 @@ def _build_skill_context(user_id: int, skill_registry) -> str:
 
     # 注意：build_context 的第二个参数是「被禁用」的技能集合，
     # 不是「启用」的集合。传错会导致上下文里的技能被整体反选。
-    return skill_registry.build_context(user_id, _get_disabled_skills(user_id))
+    return skill_registry.build_context(
+        user_id, _get_disabled_skills(user_id),
+        skip_names=set(selected_names or []),
+    )
+
+
+def _is_admin_user(user_id) -> bool:
+    """当前用户是否管理员。取不到就按非管理员处理（最小权限）。
+
+    异常一律返回 False：诊断工具被误藏只是少个入口，
+    误放则是把管理员能力交给普通用户，两者代价不对等。
+    """
+    try:
+        from server.database import get_user_role
+        return get_user_role(user_id) == "admin"
+    except Exception:
+        return False
 
 
 def _filter_disabled_tools(tool_specs: list, user_id: int, skill_registry,
@@ -533,13 +654,37 @@ def _filter_disabled_tools(tool_specs: list, user_id: int, skill_registry,
     if disable_web_search:
         blocked.add("web_search")
 
+    # 3) 诊断工具只对管理员暴露
+    # 运行时本来就有 _require_admin 兜底（非 admin 调用会被拒），但让普通用户在
+    # 工具清单里看见 diag_* 有三个坏处：暴露内部入口、诱导无效尝试、白烧迭代次数
+    # （试一次失败一次，连续失败还会触发循环防护提前收尾）。
+    if not _is_admin_user(user_id):
+        blocked |= {
+            spec.get("function", {}).get("name", "")
+            for spec in tool_specs
+            if spec.get("function", {}).get("name", "").startswith("diag_")
+        }
+
     if not blocked:
         return tool_specs
+
+    # 4) 别的用户的技能工具一律不下发（名字带 u{别人的id}__ 前缀）
+    for spec in tool_specs:
+        _n = spec.get("function", {}).get("name", "")
+        if _is_foreign_user_tool(_n, user_id):
+            blocked.add(_n)
 
     filtered = [
         spec for spec in tool_specs
         if spec.get("function", {}).get("name") not in blocked
     ]
+
+    # 5) 自己的用户工具：把注册表里的 u{uid}__fetch_prices 还原成 fetch_prices
+    # 再交给模型。前缀只是隔离手段，不该让模型看见（否则它会照着前缀去猜别人的名字）。
+    for spec in filtered:
+        fn = spec.get("function", {})
+        if fn.get("name"):
+            fn["name"] = _strip_tool_prefix(fn["name"])
     if len(filtered) != len(tool_specs):
         logger.info(
             f"已屏蔽 {len(tool_specs) - len(filtered)} 个工具 "
@@ -672,7 +817,7 @@ def _run_deferred_tools(deferred: list, session_id: str, user_id: int,
         args = p.get("args") or {}
         _t0 = time.time()
         try:
-            result = registry.execute(name, args, user_id=user_id, public_id=pub_id,
+            result = registry.execute(_resolve_tool_name(registry, name, user_id), args, user_id=user_id, public_id=pub_id,
                                       usage_sink=usage_sink)
         except Exception as e:
             result = f"Error executing tool '{name}': {e}"
@@ -780,95 +925,39 @@ def _compress_if_needed(messages: list, llm_client, config) -> list:
 
 SCENARIO_CONFIG = {
     "realtime": {
-        "label": "实时信息",
         "search_depth": "advanced",
         "max_results": 3,
         "append_date": True,
-        "instruction": (
-            "用户正在查询实时信息（如股价、新闻等），时效性至关重要。\n"
-            "1. 请先使用 get_current_datetime 工具获取当前准确日期和时间。\n"
-            "2. 严格基于搜索结果回答，并注明每条信息的来源和发布时间。\n"
-            "3. 如果搜索结果中的日期与当前日期不一致，请明确指出并告知用户数据可能已过时。\n"
-            "4. 优先采用发布时间最新的结果。"
-        ),
     },
     "factual": {
-        "label": "事实知识",
         "search_depth": "basic",
         "max_results": 3,
         "append_date": False,
-        "instruction": (
-            "用户正在查询事实性知识。\n"
-            "1. 将搜索结果作为补充参考，可以结合你自己的知识综合回答。\n"
-            "2. 如果搜索结果与你的知识一致，直接给出准确答案。\n"
-            "3. 如果搜索结果与你的知识有冲突，优先采用搜索结果并注明来源。\n"
-            "4. 回答应简洁准确，不需要过度展开。"
-        ),
     },
     "latest": {
-        "label": "最新动态",
         "search_depth": "advanced",
         "max_results": 5,
         "append_date": True,
-        "instruction": (
-            "用户正在查询最新动态、版本更新或近期发展。\n"
-            "1. 请先使用 get_current_datetime 工具获取当前准确日期。\n"
-            "2. 重点关注搜索结果中的时间信息，按时间倒序整理。\n"
-            "3. 明确标注每条信息的发布时间或版本号。\n"
-            "4. 区分'已发布'和'即将发布'的内容。\n"
-            "5. 如果搜索结果不够新，请如实告知用户。"
-        ),
     },
     "howto": {
-        "label": "教程指南",
         "search_depth": "basic",
         "max_results": 3,
         "append_date": False,
-        "instruction": (
-            "用户正在寻求操作指南或教程。\n"
-            "1. 基于搜索结果整理出清晰的操作步骤，按顺序编号。\n"
-            "2. 每个步骤应具体可执行，必要时补充注意事项。\n"
-            "3. 如果搜索结果中有多种方法，列出并说明各自的适用场景。\n"
-            "4. 注明信息来源，方便用户深入了解。"
-        ),
     },
     "comparison": {
-        "label": "对比分析",
         "search_depth": "advanced",
         "max_results": 5,
         "append_date": False,
-        "instruction": (
-            "用户正在对比多个事物。\n"
-            "1. 基于搜索结果，从多个维度（功能、性能、价格、适用场景等）进行系统对比。\n"
-            "2. 使用对比表格或分点列出各自的优缺点。\n"
-            "3. 给出综合建议，说明在什么情况下选择哪个。\n"
-            "4. 注明信息来源，确保对比的公平客观。"
-        ),
     },
     "local": {
-        "label": "本地化信息",
         "search_depth": "basic",
         "max_results": 3,
         "append_date": True,
-        "instruction": (
-            "用户正在查询与特定地点相关的信息。\n"
-            "1. 请先使用 get_current_datetime 工具获取当前准确日期。\n"
-            "2. 确认搜索结果中的地点与用户查询的地点一致。\n"
-            "3. 注意信息的时效性，标注发布时间。\n"
-            "4. 如果涉及交通等实时数据，优先采用最新结果。"
-        ),
     },
     "general": {
-        "label": "通用搜索",
         "search_depth": "basic",
         "max_results": 3,
         "append_date": False,
-        "instruction": (
-            "以下是通过联网搜索获取的信息。\n"
-            "1. 请参考搜索结果回答用户问题。\n"
-            "2. 如果搜索结果与问题无关或不充分，可以基于你自己的知识回答。\n"
-            "3. 在回答中适当引用信息来源。"
-        ),
     },
 }
 
@@ -932,12 +1021,37 @@ def _classify_query(query: str) -> str:
     return "general"
 
 
-def _do_web_search(query: str, api_key: str, scenario: str = "general") -> str:
+def _do_web_search_deepseek(query: str, api_key: str, cfg: dict) -> str:
+    """用 DeepSeek 官方 Search 接口检索（¥5 / 1000 次成功请求）。
+
+    与 Tavily 路径的三处差异，改之前先看：
+    1. **不往 query 后面拼日期**。DeepSeek 支持 `after:` / `before:` 语法并自带
+       时效性重排；把「2026年10月26日」塞进 query 会污染语义匹配。
+    2. 结果自带 `summary`（600~800 字，专为给模型读设计）和 `authority`（权威性 0~4），
+       格式化时优先用 summary，并标出权威性 ≥3 的结果。
+    3. 失败必须显式说原因。余额不足 / Key 无效 / QPS 超限如果被吞成"没搜到"，
+       用户会以为是搜不到，而不是配置没生效。
+    """
+    from server.search_client import SearchError, format_results, search
+    try:
+        data = search(query, api_key, count=cfg.get("max_results", 10), need_content=False)
+    except SearchError as e:
+        # 统一失败标记：工具层据此区分「这是故障」和「这是资料」，
+        # 否则模型会把"搜索出错：余额不足"当成一条搜索结果继续编。
+        return f"[搜索失败] {e}"
+    return format_results(data.get("results") or [])
+
+
+def _do_web_search(query: str, api_key: str, scenario: str = "general",
+                   provider: str = "tavily") -> str:
     if not api_key:
         return ""
 
     cfg = SCENARIO_CONFIG.get(scenario, SCENARIO_CONFIG["general"])
     search_query = query
+
+    if (provider or "tavily").strip().lower() == "deepseek":
+        return _do_web_search_deepseek(search_query, api_key, cfg)
 
     if cfg["append_date"]:
         today_str = datetime.now().strftime("%Y年%m月%d日")
@@ -978,7 +1092,7 @@ def _do_web_search(query: str, api_key: str, scenario: str = "general") -> str:
     except ImportError:
         return ""
     except Exception as e:
-        return f"搜索出错: {str(e)}"
+        return f"[搜索失败] {str(e)}"
 
 
 async def _handle_command(message: str, session_id: str, user_id: int):
@@ -1244,6 +1358,10 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
     _done_sent = False
     _messages_saved = False
     _assistant_content_produced = False  # 是否已向用户产出过真实助手内容（用于 fallback 去污染）
+    # 跨迭代累积已输出的正文。full_content 每轮都会重置，中断/阻断时只能拿到"本轮"
+    # 那一段；用户在界面上看到的却是所有轮拼起来的。要保住"用户已经看到的内容"，
+    # 必须在这里单独累积。
+    _answer_so_far = ""
     _llm_attempts = 0  # LLM 调用重试计数（应对网络抖动/临时错误）
     # 延迟执行队列：会终止当前服务进程的工具（如 diag_restart_service）。
     # 绝不能在流式生成期间执行——否则服务会在自己输出到一半时被杀，
@@ -1345,22 +1463,27 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
             "1. 仔细阅读每个工具的 description（描述），判断是否与用户需求匹配\n"
             "2. 只有当用户明确需要工具的功能时才调用工具，不要随意调用\n"
             "3. 如果用户只是提问或聊天，直接回答即可，不需要调用任何工具\n"
-            "4. 如果用户说'放到word里'、'保存为文档'、'生成word'等，应使用 save_to_word 工具\n"
-            "5. 如果用户问时间日期，使用 get_current_datetime 工具\n"
-            "6. 如果用户需要计算，使用 simple_calculator 工具\n"
+            "4. 生成文件用对应的保存工具：Word 用 save_word、Excel 用 save_excel、PDF 用 save_pdf、"
+            "PPT 用 save_ppt。用户说『放到 word 里』『保存为文档』都指 save_word\n"
+            "5. 如果用户问时间日期，使用 get_datetime 工具\n"
+            "6. 如果用户需要计算，使用 calculate 工具\n"
             "7. 如果用户需要搜索最新/实时/外部信息（新闻、股价、最新版本、事实查证、教程、对比分析等），使用 web_search 工具；搜索结果会附带『来源: url』，请在回答末尾用『信息来源：』段落统一列出所有参考来源，每条格式为【标题】(完整URL)，例如：\n信息来源：\n- 【Macworld 新品路线图】(https://www.macworld.com/article/...)\n- 【新浪财经前瞻】(https://finance.sina.com.cn/...)\n"
-            "8. 如果需要读取某个已知具体网址的页面内容，使用 web_fetch 工具（该工具已在沙箱内放行网络，可正常抓取网页；搜索最新/实时信息仍优先用 web_search）\n"
-            "9. 如果用户需要农历转换，使用 convert_gregorian_to_lunar 工具\n"
-            "10. 调用工具前先确认参数是否齐全，参数不齐时向用户询问\n\n"
+            "8. 如果需要读取某个已知具体网址的页面内容，用 fetch_url 工具"
+            "（沙箱内已按工具名对它放行网络，可抓公开网页）。抓取失败时不要换参数反复重试，"
+            "改用 web_search 找这个页面的摘要与相关信息\n"
+            "9. 如果用户需要农历转换，使用 convert_lunar 工具\n"
+            "10. 调用工具前先确认参数是否齐全，参数不齐时向用户询问\n"
+            "11. 工具返回以 `[搜索失败]` 或 `[抓取失败]` 开头时，那是故障不是资料："
+            "不要引用、不要据此编造，直接告诉用户失败了以及原因（如余额不足、Key 无效、站点抓不到）\n\n"
             "工具复用原则（重要）：\n"
-            "11. 调用工具前，先检查对话历史中是否已有该工具的执行结果\n"
-            "12. 如果之前的工具调用已经获取了所需数据，直接引用历史结果，不要重复调用\n"
-            "13. 只有以下情况才需要重新调用工具：\n"
+            "1. 调用工具前，先检查对话历史中是否已有该工具的执行结果\n"
+            "2. 如果之前的工具调用已经获取了所需数据，直接引用历史结果，不要重复调用\n"
+            "3. 只有以下情况才需要重新调用工具：\n"
             "    - 之前没有相关数据\n"
             "    - 用户明确要求重新查询（如'重新查一下'、'再查一下'、'刷新'）\n"
             "    - 数据范围超出已有结果（如已有某范围数据但用户问范围外的内容）\n"
             "    - 数据可能已过期（时间敏感数据，如股市行情、实时路况等）\n"
-            "14. 例如：之前已查到某数据，用户再问其中一部分，直接引用已有数据回答即可\n\n"
+            "4. 例如：之前已查到某数据，用户再问其中一部分，直接引用已有数据回答即可\n\n"
             "回答风格原则（重要）：\n"
             "优先使用自然段落进行回答，像人类对话一样流畅自然。只在必要时使用格式：\n"
             "- 简短问答、闲聊、一般性解释：直接用自然段落回答，不要使用任何列表或格式标记\n"
@@ -1389,8 +1512,9 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
         if web_search == "off":
             system_prompt += (
-                "\n\n注意：当前会话已关闭联网搜索功能，请勿调用 web_search 工具，"
-                "直接基于你的知识回答用户即可。"
+                "\n\n注意：本轮未开启联网搜索（web_search 工具已不可用），不要假装查过。"
+                "如果用户问的是需要实时/外部信息的问题，先用你已有的知识回答（并说明可能不是最新），"
+                "再提醒用户可以在输入框上方把「联网搜索·关」切换成「联网搜索·自动」后重问。"
             )
 
         if _thinking_enabled:
@@ -1517,7 +1641,9 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
         # 注入技能上下文
         if skill_registry and user_id:
-            skill_context = await _run_sync(_build_skill_context, user_id, skill_registry)
+            skill_context = await _run_sync(
+                _build_skill_context, user_id, skill_registry, list(selected_skills or [])
+            )
             if skill_context:
                 system_prompt += "\n" + skill_context
 
@@ -1576,6 +1702,18 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
 
         # 先剔除被禁用技能的工具，以及（联网搜索关闭时）web_search 工具，
         # 再按意图筛选，确保开关在工具层真正生效（关闭即模型完全看不到该工具）
+        # 用户技能脚本不是启动时注册的（那时不知道是哪个用户），这里补一次懒注册。
+        # 已注册过的只做一次 dict 查找，开销可忽略。
+        try:
+            from server.main import get_sandbox_pool
+            _sandbox_pool_ref = get_sandbox_pool()
+        except Exception:
+            _sandbox_pool_ref = None
+        await _run_sync(
+            _ensure_user_tools, registry, skill_registry, user_id,
+            _get_disabled_skills(user_id), _sandbox_pool_ref,
+            llm,
+        )
         _all_specs = await _run_sync(
             _filter_disabled_tools, registry.get_all_openai_specs(), user_id,
             skill_registry, web_search == "off"
@@ -1605,6 +1743,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
         _output_baseline = _snapshot_output_files(pub_id)
         # 迭代级防护状态（防止模型陷入“调用-失败/诊断-再调用”死循环）
         _loop_state = new_loop_state(_output_baseline)
+        _guard_events_sent = 0   # 已落审计的防护事件游标（evaluate 每轮往 guard_events 追加）
 
         user_ctx = {
             "user_id": user_id,
@@ -1635,6 +1774,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                 _iter_tool_names = set()    # 本轮调用的工具名集合（空转检测用）
                 _iter_signatures: list = []  # 本轮每次调用的签名（工具名+参数哈希），空转检测用
                 _iter_fail_signatures: list = []  # 本轮失败调用的签名，loop_guard 判"同一操作反复失败"用
+                _iter_perm_signatures: list = []  # 本轮命中「权限不足」的签名，判"同一权限错误"用
                 _iter_failed = False         # 本轮是否有工具报错
                 _iter_perm_denied = False    # 本轮是否出现“权限不足”
 
@@ -1656,6 +1796,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                         if chunk.get("content"):
                             content = chunk["content"]
                             full_content += content
+                            _answer_so_far += content
                             _assistant_content_produced = True
 
                             if reasoning_field is not None:
@@ -1813,36 +1954,10 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                 chat_messages.append(assistant_msg)
 
                 # ===== 工具执行（含敏感操作审批门）=====
-                # 1) 划分无需审批 / 需要审批
-                #    ⛔ 先摘出自伤型工具（会终止服务进程，如重启服务）——
-                #    它们不能在本轮流式生成期间执行，否则服务会自杀：
-                #    生成器损坏（generator already executing）且本轮上下文全部丢失。
-                #    处理方式：移出本轮 → 整轮结束、消息落库后再执行。
-                _safe, _pending, _selfharm = [], [], []
-                for tc in tool_calls:
-                    _tname = tc["function"]["name"]
-                    _targs = json.loads(tc["function"]["arguments"])
-                    if registry.blocks_during_stream(_tname):
-                        _selfharm.append({"tc": tc, "name": _tname, "args": _targs})
-                        continue
-                    if registry.needs_approval(_tname, _targs):
-                        _pending.append({"tc": tc, "name": _tname, "args": _targs})
-                    else:
-                        _safe.append({"tc": tc, "name": _tname, "args": _targs})
-
-                if _selfharm:
-                    _deferred_tools.extend(_selfharm)
-                    _names = ", ".join(p["name"] for p in _selfharm)
-                    logger.warning(
-                        f"自伤型工具已延迟到本轮结束后执行 (session={session_id}, tools={_names})"
-                    )
-                    agent_audit.record_event(
-                        "tool_deferred", session_id=session_id, user_id=user_id,
-                        iteration=iteration,
-                        tools=[{"name": p["name"], "arguments": p["args"]} for p in _selfharm],
-                        reason="会终止服务进程，禁止在流式生成期间执行",
-                    )
-                    yield f"data: {json.dumps({'type': 'status', 'content': f'「{_names}」将在本轮回复完成后执行'})}\n\n"
+                # 1) 分流：免审批 / 待审批（自伤型一律待审批并标 selfharm，
+                #    批准后延迟到本轮结束、消息落库之后才执行 —— 流中执行会自杀）
+                _safe, _pending = _classify_tool_calls(
+                    registry, tool_calls, session_id, user_id, iteration)
 
                 # 2) 敏感工具审批门（逐项否决；会话信任 / 角色免确认则跳过）
                 _results_by_id = {}
@@ -1876,7 +1991,17 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                         )
                         yield f"data: {json.dumps({'type': 'approval_skipped', 'session_id': session_id, 'reason': _reason, 'items': _items}, ensure_ascii=False)}\n\n"
                         for p in _pending:
-                            _results_by_id[p["tc"].get("id", "")] = None  # 待执行
+                            if p.get("selfharm"):
+                                # 自伤型工具即使在免确认模式也只「批准并延迟」：
+                                # 流中执行会杀掉正在进行的生成（2026-10-23 事故）
+                                _deferred_tools.append({"tc": p["tc"], "name": p["name"], "args": p["args"]})
+                                _results_by_id[p["tc"].get("id", "")] = {
+                                    "name": p["name"], "arguments": p["args"],
+                                    "result": "已免确认批准：将在本轮回复完成后执行（服务将重启，连接会短暂中断）",
+                                    "tool_call_id": p["tc"].get("id", ""),
+                                }
+                            else:
+                                _results_by_id[p["tc"].get("id", "")] = None  # 待执行
                             yield f"data: {json.dumps({'type': 'tool_call', 'name': p['name'], 'arguments': p['args']}, ensure_ascii=False)}\n\n"
                     else:
                         _items = [{
@@ -1909,9 +2034,38 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                         )
                         yield f"data: {json.dumps({'type': 'approval_resolved', 'group_id': _gid, 'decisions': _decisions}, ensure_ascii=False)}\n\n"
                         approval_store.cleanup(_gid)
+                        # 用户批准的签名记入会话白名单：同操作再执行不再询问。
+                        # ⛔ 自伤型工具（会终止服务进程，如重启服务）**永不记忆**——
+                        # 否则「批准重启一次」变成 24 小时内模型可静默再重启
+                        _approved_sigs = [
+                            p["sig"] for p in _pending
+                            if _decisions.get(p["tc"].get("id", "")) == "approve"
+                            and not registry.blocks_during_stream(p["name"])
+                        ]
+                        if _approved_sigs:
+                            approval_store.remember_allowed(session_id, user_id, _approved_sigs)
                         for p in _pending:
                             _iid = p["tc"].get("id", "")
                             _dec = _decisions.get(_iid)
+                            if p.get("selfharm"):
+                                # 自伤型工具：批准 → 延迟到本轮结束后执行（流中执行会自杀）；
+                                # 拒绝/跳过 → 不执行。**永不进批准记忆**（上面已过滤），
+                                # 每次重启都要重新确认
+                                if _dec == "approve":
+                                    _deferred_tools.append({"tc": p["tc"], "name": p["name"], "args": p["args"]})
+                                    _results_by_id[_iid] = {
+                                        "name": p["name"], "arguments": p["args"],
+                                        "result": "已确认：将在本轮回复完成后执行（服务将重启，连接会短暂中断）",
+                                        "tool_call_id": _iid,
+                                    }
+                                else:
+                                    _results_by_id[_iid] = {
+                                        "name": p["name"], "arguments": p["args"],
+                                        "result": "Error: 用户未批准该操作（服务不会重启）", "error": True,
+                                        "tool_call_id": _iid,
+                                    }
+                                yield f"data: {json.dumps({'type': 'tool_call', 'name': p['name'], 'arguments': p['args']}, ensure_ascii=False)}\n\n"
+                                continue
                             if _dec == "approve":
                                 _results_by_id[_iid] = None  # 待执行
                                 yield f"data: {json.dumps({'type': 'tool_call', 'name': p['name'], 'arguments': p['args']}, ensure_ascii=False)}\n\n"
@@ -1940,7 +2094,15 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                 _to_exec = [p for p in (_safe + _pending) if _results_by_id.get(p["tc"].get("id", "")) is None]
                 if len(_to_exec) > 0:
                     if len(_to_exec) == 1:
-                        yield f"data: {json.dumps({'type': 'status', 'content': f'正在调用工具: {_to_exec[0]["name"]}...'})}\n\n"
+                        # 拆成两步：在 f-string 的替换字段里再嵌一个用「同种引号」的
+                        # f-string，只有 Python 3.12+ 支持（PEP 701）。项目声明 3.10+，
+                        # 这样写会让 chat.py 在 3.10/3.11 上导入即 SyntaxError —— 服务
+                        # 根本起不来，而单测因为不 import 本模块，全绿也发现不了。
+                        _one_status = json.dumps(
+                            {"type": "status",
+                             "content": f"正在调用工具: {_to_exec[0]['name']}..."}
+                        )
+                        yield f"data: {_one_status}\n\n"
                     else:
                         yield f"data: {json.dumps({'type': 'status', 'content': f'正在并行调用 {len(_to_exec)} 个工具...'})}\n\n"
                 if len(_to_exec) == 0:
@@ -1948,7 +2110,7 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                 elif len(_to_exec) == 1:
                     p = _to_exec[0]
                     try:
-                        result = await _run_sync(registry.execute, p["name"], p["args"], user_id=user_id, public_id=pub_id, usage_sink=_usage_sink)
+                        result = await _run_sync(registry.execute, _resolve_tool_name(registry, p["name"], user_id), p["args"], user_id=user_id, public_id=pub_id, usage_sink=_usage_sink)
                         if isinstance(result, dict):
                             result_str = json.dumps(result, ensure_ascii=False)
                         else:
@@ -2022,14 +2184,27 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                         "权限不足" in _rr or "permission denied" in _rr.lower() or "无权限" in _rr
                     ):
                         _iter_perm_denied = True
+                        # 签名供防护 2 判「同一权限错误」：首次豁免、第 2 次才硬停
+                        _iter_perm_signatures.append(
+                            _call_signature(r["name"], r.get("arguments")))
 
                 # === 迭代级防护：防止模型陷入“调用-失败/诊断-再调用”死循环 ===
-                # 三道防护（任意工具连续失败 / 权限不足硬停 / 空转重复检测）统一在此判定
+                # 三道防护（失败宽限 / 权限豁免+硬停 / 空转重复检测）统一在此判定
                 _stop_msg, _stop_answer = _eval_loop_guard(
                     _loop_state, partial(_snapshot_output_files, pub_id),
                     _iter_failed, _iter_perm_denied, _iter_tool_names,
                     _iter_signatures, _iter_fail_signatures,
+                    _iter_perm_signatures,
                 )
+                # 防护触发/豁免事件落审计（豁免不中断任务，但没有记录就永远调不了参）
+                _new_events = _loop_state.get("guard_events", [])[_guard_events_sent:]
+                _guard_events_sent = len(_loop_state.get("guard_events", []))
+                for _evt in _new_events:
+                    agent_audit.record_event(
+                        "loop_guard", session_id=session_id, user_id=user_id,
+                        rule=_evt.get("rule"), detail=_evt.get("detail"),
+                        iteration=iteration,
+                    )
                 if _stop_msg is not None:
                     # 先推送本轮可能已产生的产出文件，保证用户可见
                     _stop_files = _collect_new_output_files(pub_id, _output_baseline)
@@ -2039,8 +2214,12 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                     if all_tool_calls:
                         yield f"data: {json.dumps({'type': 'tool_summary', 'tools': all_tool_calls})}\n\n"
                     if not _done_sent:
+                        # 中断时不要把用户已经看到的回答丢掉：能保住多少保多少，
+                        # 说明追加在后面（正文为空时才只存说明）。
+                        _kept = _answer_so_far.strip()
+                        _saved_text = (f"{_kept}\n\n---\n{_stop_answer}" if _kept else _stop_answer)
                         _save_assistant_message_immediate(
-                            session_id, _stop_answer, "",
+                            session_id, _saved_text, "",
                             search_info, all_thoughts, all_tool_calls, user_id,
                             files=_stop_files if _stop_files else None,
                         )
@@ -2091,7 +2270,11 @@ async def _stream_chat(message: str, session_id: str = None, web_search: str = "
                 store[session_id]["messages"].append({"role": "user", "content": message})
                 _used = [t.get("name") for t in (all_tool_calls or []) if t.get("name")]
                 if _assistant_content_produced:
-                    store[session_id]["messages"].append({"role": "assistant", "content": "(任务执行中断)"})
+                    _kept_fb = _answer_so_far.strip()
+                    store[session_id]["messages"].append({
+                        "role": "assistant",
+                        "content": _kept_fb if _kept_fb else "(本轮已中断；模型已开始输出，但内容未能保存)",
+                    })
                 else:
                     _detail = f"（已调用工具：{'、'.join(_used)}）" if _used else ""
                     store[session_id]["messages"].append({
@@ -2237,7 +2420,7 @@ async def chat_stream(body: ChatRequest, request: Request):
 
     # 启动后台 asyncio.Task（与客户端连接解耦）
     task._bg_task = asyncio.create_task(
-        _run_chat_background(task, body.message, body.session_id, body.web_search, user["db_id"], body.show_thought, public_id=user["id"], selected_skills=body.selected_skills, uploaded_files=body.uploaded_files)
+        _run_chat_background(task, body.message, body.session_id, body.web_search, user["db_id"], body.show_thought, public_id=user["public_id"], selected_skills=body.selected_skills, uploaded_files=body.uploaded_files)
     )
 
     # 返回 SSE 响应（订阅任务事件）

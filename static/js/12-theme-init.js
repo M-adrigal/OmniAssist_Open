@@ -72,16 +72,20 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e)
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
   initCapCards();
+  // 消息导航（右侧问题刻度条 + 回到底部浮标）。
+  // 必须在这里初始化：它依赖 #chat-messages 与 state.sessionContainers 都已就位，
+  // 早于 DOMContentLoaded 绑不上滚动容器。
+  initMsgNav();
   // 消息「重新生成」：只挂在最后一条回答上，事件委托到 document，后补进来的按钮也生效
   document.addEventListener('click', (e) => {
-    const btn = e.target.closest('.msg-act[data-regenerate]');
+    const btn = evTarget(e)?.closest('.msg-act[data-regenerate]');
     if (!btn) return;
     regenerateLastTurn();
   });
 
   // 消息「复制」：clipboard API 只在 https / localhost 可用，其余场景走 textarea 兜底
   document.addEventListener('click', (e) => {
-    const btn = e.target.closest('.msg-act[data-copy]');
+    const btn = evTarget(e)?.closest('.msg-act[data-copy]');
     if (!btn) return;
     const area = btn.closest('.message') && btn.closest('.message').querySelector('.answer-area');
     if (!area) return;
@@ -120,7 +124,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 文件库预览「返回文件列表」按钮（事件委托，兼容动态生成的按钮）
   document.addEventListener('click', (e) => {
-    if (e.target.closest('#preview-back-btn')) {
+    if (evTarget(e)?.closest('#preview-back-btn')) {
       e.preventDefault();
       returnToFileList();
     }
@@ -258,8 +262,9 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
       searchDialogResults.innerHTML = sessions.map(s => {
-        const date = new Date(s.created_at * 1000);
-        const timeStr = date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+        // 走统一的 formatTime：后端返回的是 "YYYY-MM-DD HH:MM:SS" 字符串，
+        // 这里历史上写成了 s.created_at * 1000（当秒级时间戳用）→ 显示 "Invalid Date"
+        const timeStr = formatTime(s.created_at);
         return `
           <div class="search-dialog-item" data-id="${s.id}">
             <div class="item-icon">
@@ -448,8 +453,14 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      if (isComposing) return;
+    /* 发送 = 裸 Enter。**任何**修饰键在场都不发送：Shift 换行是老习惯，
+       而 Cmd/Ctrl/Alt + Enter 用户拿来当"换行"或"什么都不做"，
+       之前只判了 `!e.shiftKey`，于是 Cmd+Enter 被当成裸 Enter 直接发出去
+       （用户 2026-10-29 反馈「按 command+enter 没反应，直接发送出去了」）。
+       判据换成「没有任何修饰键」才最贴近"裸 Enter"这个语义：
+       以后再加别的组合键也不会意外发送。 */
+    if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (isComposing || e.isComposing || e.keyCode === 229) return;
       e.preventDefault();
       if (state.commandMode && state.selectedCommandIdx >= 0) {
         const container = $('#command-suggestions');
@@ -463,6 +474,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
       sendMessage();
+      return;
+    }
+    /* Cmd/Ctrl + Enter：显式换行。
+       不依赖"浏览器对带修饰键的 Enter 不会插换行"这个默认行为 ——
+       macOS 上 Safari / 部分输入框实现里它确实可能什么都不做，
+       用户的原话就是「没反应」。这里手动插入，行为可控。 */
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
+      if (isComposing || e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      insertTextAtCursor(input, '\n');
       return;
     }
     if (e.key === 'ArrowDown') { e.preventDefault(); navigateCommand(1); return; }
@@ -490,12 +511,15 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.addEventListener('click', (e) => {
-    if (!e.target.closest('.chat-input-container') && !e.target.closest('#command-suggestions')) {
+    // 先收窄成元素再判断。不用 `!evTarget(e)?.closest(...)`：目标不是元素时
+    // 那个表达式是 undefined，取反为 true，会把"点到文字节点"误判成"点在外面"。
+    const t = evTarget(e);
+    if (t && !t.closest('.chat-input-container') && !t.closest('#command-suggestions')) {
       hideCommandSuggestions();
     }
     // 点空白处：一级菜单与技能二级面板一起收（点在面板内不关，面板有自己的 mask）
-    if (!e.target.closest('#attach-menu') && !e.target.closest('#btn-attach')
-        && !e.target.closest('#skill-panel')) {
+    if (t && !t.closest('#attach-menu') && !t.closest('#btn-attach')
+        && !t.closest('#skill-panel')) {
       $('#attach-menu').classList.add('hidden');
       if (typeof closeSkillPanel === 'function') closeSkillPanel();
     }
@@ -655,27 +679,38 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 联网搜索两态切换: off -> auto -> off
   const WEB_SEARCH_MODES = ['off', 'auto'];
+  // 关闭态也必须把「关」写出来：只写「联网搜索」时，按钮看起来像已开启，
+  // 用户会以为搜索在生效，实际每轮都把 web_search 工具剔掉了。
   const WEB_SEARCH_LABELS = {
-    off: '联网搜索',
+    off: '联网搜索·关',
     auto: '联网搜索·自动',
   };
-  $('#btn-web-search').addEventListener('click', () => {
+  function renderWebSearchBtn() {
     const btn = $('#btn-web-search');
-    const currentIdx = WEB_SEARCH_MODES.indexOf(state.webSearch);
-    const nextIdx = (currentIdx + 1) % WEB_SEARCH_MODES.length;
-    state.webSearch = WEB_SEARCH_MODES[nextIdx];
+    if (!btn) return;
     btn.dataset.mode = state.webSearch;
-    btn.querySelector('span').textContent = WEB_SEARCH_LABELS[state.webSearch];
+    const label = btn.querySelector('span');
+    if (label) label.textContent = WEB_SEARCH_LABELS[state.webSearch];
     btn.classList.remove('active', 'auto');
     if (state.webSearch === 'auto') btn.classList.add('auto');
     btn.title = WEB_SEARCH_LABELS[state.webSearch];
+  }
+  // 首帧按持久化的状态渲染：原来只存内存，刷新即回到「关」，
+  // 于是「我明明开了」和「实际没开」会同时成立 —— 正是"搜索没生效"的来源之一。
+  renderWebSearchBtn();
+  $('#btn-web-search').addEventListener('click', () => {
+    const currentIdx = WEB_SEARCH_MODES.indexOf(state.webSearch);
+    const nextIdx = (currentIdx + 1) % WEB_SEARCH_MODES.length;
+    state.webSearch = WEB_SEARCH_MODES[nextIdx];
+    try { localStorage.setItem('webSearch', state.webSearch); } catch (e) { /* 隐私模式下忽略 */ }
+    renderWebSearchBtn();
   });
 
   // 思考强度：模型下拉里的三档分段（关闭 / 低 / 高），只在改变档位时写后端
   const thinkSeg = $('#mm-think-seg');
   if (thinkSeg) {
     thinkSeg.addEventListener('click', async (e) => {
-      const btn = e.target.closest('button[data-think]');
+      const btn = evTarget(e)?.closest('button[data-think]');
       if (!btn) return;
       const next = btn.dataset.think;
       if (next === state.thinkingMode) return;

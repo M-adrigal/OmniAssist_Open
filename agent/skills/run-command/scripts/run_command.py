@@ -5,8 +5,14 @@
 + 输出截断）。直接调用即可，无需也不应使用 subprocess 自行启动进程。
 
 安全边界（沙箱强制）：
-- 仅允许白名单命令（ls/cat/echo/grep/awk/sed/jq 等）；解释器（python3/node）与
-  危险命令（rm/sudo/dd 等）一律拒绝。
+- 仅允许白名单命令：cat/date/echo/grep/ls/pwd/sed/sort/wc/head/tail/jq/cut/
+  tr/uniq/nl/od/base64/xxd/file/stat/printf/test/expr/tee/diff/comm/cal/uname/
+  whoami。完整清单以报错信息里列出的为准。
+- 解释器（python3/python/node）与 awk 被**刻意禁止** —— 它们是沙箱逃逸通道
+  （可起不受 import/文件钩子约束的进程；awk 内置 system() 可执行任意命令）。
+  Python 逻辑请直接写在 execute() 函数体内，那里同样在沙箱保护下运行。
+- **本工具不是 shell**：不支持管道 `|`、重定向 `>`、`&&` 串联，也不支持 `cd`
+  （要换工作目录用 cwd 参数）。多步处理请写在 execute() 里用 Python 完成。
 - 命令参数中的路径禁止绝对路径、家目录展开（~）、父目录遍历（..）、密钥文件名，
   且不得指向 /etc、/home、/Users、/var、数据库目录等受限前缀，杜绝读取 SSH 私钥、
   数据库、密钥文件或系统文件。
@@ -20,10 +26,12 @@ def execute(command: str, timeout: int = 30) -> str:
     """在隔离沙箱中执行一条 shell 命令并返回其输出。
 
     Args:
-        command: 要执行的 shell 命令字符串，例如 "ls -la /tmp"。
-                 仅允许白名单内的命令（ls/cat/echo/date/grep/awk/sed/jq 等），
-                 危险命令（rm/sudo/dd 等）以及解释器（python3/python/node）
-                 会被沙箱拒绝。执行 Python 代码请使用代码执行工具而非本工具。
+        command: 要执行的单条命令字符串，例如 "ls -la" 或 "grep -n 关键词 data.txt"。
+                 仅允许白名单内的命令（cat/echo/date/ls/grep/sed/sort/wc/head/tail
+                 等，完整清单见报错信息）。解释器（python3/python/node）与 awk
+                 会被沙箱拒绝 —— Python 逻辑请直接写在 execute() 函数体内。
+                 本工具不是 shell：不支持管道 |、重定向 >、&& 串联；cd 请用 cwd 参数。
+                 路径参数只能用相对路径（相对 cwd），禁止 /tmp 这类绝对路径。
         timeout: 命令超时时间（秒），默认 30，最大 120。
 
     Returns:

@@ -1,6 +1,9 @@
 from fastapi import APIRouter, HTTPException, Request
 from server.models import ModelConfigUpdate, ModelConfigResponse, SearchConfigResponse
 from server.routes.auth import require_permission, require_login
+from agent.logger import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
@@ -169,8 +172,17 @@ def get_search_config(request: Request):
     from server.database import get_search_config
     require_permission(request, "search_config", "read")
     cfg = get_search_config()
+    usage = None
+    try:
+        from server.search_runtime import summary
+        usage = summary()
+    except Exception as e:      # 计数表坏了不该让设置页打不开
+        logger.warning(f"搜索用量统计读取失败: {e}")
     return SearchConfigResponse(
+        provider=cfg.get("provider", "tavily"),
         tavily_api_key_masked=cfg.get("tavily_api_key_masked", "(未设置)"),
+        deepseek_api_key_masked=cfg.get("deepseek_api_key_masked", "(未设置)"),
+        usage=usage,
     )
 
 
@@ -178,7 +190,13 @@ def get_search_config(request: Request):
 def update_search_config(body: SearchConfigResponse, request: Request):
     from server.database import save_search_config
     require_permission(request, "search_config", "write")
-    cfg = save_search_config(tavily_api_key=body.tavily_api_key)
+    cfg = save_search_config(
+        tavily_api_key=body.tavily_api_key,
+        provider=body.provider,
+        deepseek_api_key=body.deepseek_api_key,
+    )
     return SearchConfigResponse(
+        provider=cfg.get("provider", "tavily"),
         tavily_api_key_masked=cfg.get("tavily_api_key_masked", "(未设置)"),
+        deepseek_api_key_masked=cfg.get("deepseek_api_key_masked", "(未设置)"),
     )

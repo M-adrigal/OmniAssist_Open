@@ -185,9 +185,11 @@
 
 .tool-item-args code {
   display: block;
-  background: var(--bg-tertiary);
+  background: var(--code-bg);
+  color: var(--code-fg);
   padding: 4px 6px;
   border-radius: 4px;
+  font-family: var(--mono);
   font-size: 11px;
   overflow-x: auto;
   white-space: pre-wrap;
@@ -493,21 +495,30 @@
   border-radius: var(--radius);
   overflow-x: auto;
   margin: 0;
+  font-family: var(--mono);
   font-size: 13px;
 }
 
+/* 行内代码：等宽字形做辨识，颜色只做轻微下沉。
+   原来的 #e83e8c 品红在浅色下发粉、深色下发光，而 --mono 变量定义了却没人用，
+   等于让颜色独自承担全部辨识度 —— 所以才会"扎眼"。
+   现在辨识靠字体（Tech/DS 都是这个做法），颜色回到中性。 */
 .answer-area code {
-  background: var(--bg-tertiary);
-  color: #e83e8c;
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-size: 13px;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  padding: 1.5px 5px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 0.9em;    /* 相对正文缩放：等宽字体同字号看起来偏大 */
 }
 
+/* 代码块内部：清掉行内代码的底色与缩放，但不能把字号留在 0.9em，
+   否则 pre 的 13px 会被再乘一次（0.9 × 13 ≈ 11.7px），代码块看着突然变小。 */
 .answer-area pre code {
   background: none;
   color: var(--text-primary);
   padding: 0;
+  font-size: inherit;
 }
 
 .answer-area .code-block {

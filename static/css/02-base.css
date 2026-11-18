@@ -9,6 +9,8 @@
 .hidden { display: none !important; }
 
 .dark .chat-composer {
+  /* 深色输入卡用比画布（#15151a）亮一档的 #202027，
+     与参考图里"深灰容器浮在近黑底上"的层次一致 */
   background: #202027;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.07);
 }
@@ -17,15 +19,20 @@
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4), 0 0 0 2px rgba(59, 130, 246, 0.4);
 }
 
+/* 深色下中空胶囊：描边用半透明白，静止时几乎只是"轮廓"，
+   不给底色 —— 给底色就又变回一块可以误读成已激活的实心块 */
 .dark .btn-web-search,
 .dark .btn-perm {
-  background: #2a2a2a;
-  color: #cccccc;
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.16);
+  color: #b8b8c4;
 }
 
 .dark .btn-web-search:hover,
 .dark .btn-perm:hover {
-  background: #333333;
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.26);
+  color: #ececf2;
 }
 
 .dark .btn-web-search.active {

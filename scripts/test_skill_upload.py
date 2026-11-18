@@ -51,8 +51,8 @@ database._local.conn = None
 database.init_db()
 conn = database._get_connection()
 conn.execute(
-    "INSERT INTO users (username, password_hash, user_type) VALUES (?, ?, ?)",
-    ("skill_tester", "x", "user"),
+    "INSERT INTO users (username, password_hash, user_type, public_id) VALUES (?, ?, ?, ?)",
+    ("skill_tester", "x", "user", database._gen_public_id()),
 )
 conn.commit()
 TEST_UID = conn.execute("SELECT id FROM users WHERE username='skill_tester'").fetchone()["id"]

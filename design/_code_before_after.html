@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>行内代码 before / after</title>
+<link rel="stylesheet" href="../static/css/01-variables.css">
+<link rel="stylesheet" href="../static/css/02-base.css">
+<link rel="stylesheet" href="../static/css/10-message.css">
+<link rel="stylesheet" href="../static/css/04-chat-area.css">
+<style>
+  * { transition: none !important; animation: none !important; }
+  html, body { margin: 0; }
+  body { font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; }
+
+  section { padding: 20px 22px 26px; }
+  section.light { background: #fbfbfd; color: #1a1a2e; }
+  section.dark  { background: #15151a; color: #ffffff; }
+
+  .title { font-size: 12.5px; font-weight: 600; opacity: .62; margin-bottom: 14px; letter-spacing: .3px; }
+  .row { display: flex; gap: 16px; }
+  .col { flex: 1; }
+  .label { font-size: 11.5px; margin-bottom: 7px; opacity: .55; }
+  .panel { border-radius: 10px; padding: 13px 15px; }
+  section.light .panel { background: #fff; border: 1px solid #e0e0e8; }
+  section.dark  .panel { background: #1d1d23; border: 1px solid #333; }
+
+  .answer-area { font-size: 15px; line-height: 1.75; }
+  .answer-area p { margin: 0 0 9px 0; }
+  .answer-area p:last-child { margin-bottom: 0; }
+
+  /* 复刻改动前：#e83e8c 品红 + 未用等宽字体 */
+  .before .answer-area code {
+    background: #ececf1; color: #e83e8c;
+    padding: 1px 5px; border-radius: 3px; font-size: 13px; font-family: inherit;
+  }
+  section.dark .before .answer-area code { background: #2a2a2a; }
+</style>
+</head>
+<body>
+
+<section class="light">
+  <div class="title">浅色模式</div>
+  <div class="row">
+    <div class="col before">
+      <div class="label">改动前 · 品红 #e83e8c · 非等宽</div>
+      <div class="panel"><div class="answer-area">
+        <p><code>web_search</code> 能干的只是"把网页抓回来"。</p>
+        <p><code>build_queries</code> 解决"搜什么"。用 <code>allowJs + checkJs</code> 升级。</p>
+      </div></div>
+    </div>
+    <div class="col after">
+      <div class="label">改动后 · 中性色 · 等宽</div>
+      <div class="panel"><div class="answer-area">
+        <p><code>web_search</code> 能干的只是"把网页抓回来"。</p>
+        <p><code>build_queries</code> 解决"搜什么"。用 <code>allowJs + checkJs</code> 升级。</p>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<section class="dark">
+  <div class="title">深色模式</div>
+  <div class="row">
+    <div class="col before">
+      <div class="label">改动前 · 品红在暗景上发光</div>
+      <div class="panel"><div class="answer-area">
+        <p><code>web_search</code> 能干的只是"把网页抓回来"。</p>
+        <p><code>build_queries</code> 解决"搜什么"。用 <code>allowJs + checkJs</code> 升级。</p>
+      </div></div>
+    </div>
+    <div class="col after">
+      <div class="label">改动后 · 中性色 · 等宽</div>
+      <div class="panel"><div class="answer-area">
+        <p><code>web_search</code> 能干的只是"把网页抓回来"。</p>
+        <p><code>build_queries</code> 解决"搜什么"。用 <code>allowJs + checkJs</code> 升级。</p>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+</body>
+</html>

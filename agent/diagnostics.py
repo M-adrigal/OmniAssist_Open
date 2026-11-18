@@ -73,6 +73,14 @@ _DB_READ_TABLES = {
     "model_configs", "search_config",
 }
 
+# 敏感列：值替换成 ***，列名保留（看得出结构，看不到内容）。
+# 密文也必须脱敏 —— 密文外泄 + 弱密钥/历史旧格式 = 明文，
+# 而这张表被写成"只读查询"很容易让人以为没有风险。
+_SENSITIVE_COLS = {
+    "password_hash", "password", "salt", "secret", "secret_key",
+    "token", "private_key", "api_key", "api_key_encrypted",
+}
+
 OUTPUT_CAP = 8000          # 单个工具返回的最大字符数
 DB_ROWS_CAP = 200          # DB 查询最大返回行数
 AUDIT_LOG = os.path.join(_LOGS_DIR, "diagnostics_audit.log")
@@ -378,12 +386,25 @@ def diag_db_query(sql, user_id=None):
         cols = [d[0] for d in cur.description] if cur.description else []
         truncated = len(rows) > DB_ROWS_CAP
         rows = rows[:DB_ROWS_CAP]
-        data = [dict(r) for r in rows]
+        masked_cols = []
+        data = []
+        for r in rows:
+            d = dict(r)
+            for c in list(d.keys()):
+                low = c.lower()
+                # 覆盖 *_encrypted 这类命名（新增的密钥列不必再来改白名单）
+                if low in _SENSITIVE_COLS or low.endswith("_encrypted"):
+                    if d[c] not in (None, ""):
+                        d[c] = "***"
+                    if c not in masked_cols:
+                        masked_cols.append(c)
+            data.append(d)
         conn.close()
         return _ok({
             "columns": cols,
             "row_count": len(data),
             "truncated": truncated,
+            "masked_columns": masked_cols,
             "rows": data,
         })
     except Exception as e:

@@ -38,8 +38,20 @@ let memEditingKey = null;   // 正在编辑哪一段（一次只编辑一段）
 let memProposals = [];      // 模型提炼出的提议（未入库）
 let memPendingImport = null;
 
+/**
+ * 取段定义。
+ *
+ * 兜底对象必须带全部字段：调用方会直接读 max_items / max_chars / hint，
+ * 缺任何一个都会让编辑面板显示 "undefined"（kind 为 list 时上限算成 0，
+ * 于是第一次输入就被判定超限）。接口还没回来时会走到这里。
+ *
+ * @param {string} key
+ */
 function memSpec(key) {
-  return memRegistry.filter(s => s.key === key)[0] || { key: key, title: key, kind: 'text' };
+  return memRegistry.filter(s => s.key === key)[0] || {
+    key: key, title: key, kind: 'text',
+    max_chars: 2000, max_items: 20, order: 0, inject: true, hint: '',
+  };
 }
 
 // ===== 查看态渲染 =====
@@ -762,7 +774,7 @@ function initMemoryEvents() {
   const menu = $('#mem-menu');
   if (menu) {
     menu.addEventListener('click', function (e) {
-      const btn = e.target.closest('.mem-menu-item');
+      const btn = evTarget(e)?.closest('.mem-menu-item');
       if (!btn) return;
       const act = btn.getAttribute('data-act');
       menu.classList.add('hidden');
@@ -777,16 +789,16 @@ function initMemoryEvents() {
   const view = $('#mem-view');
   if (view) {
     view.addEventListener('click', function (e) {
-      const edit = e.target.closest('[data-edit]');
+      const edit = evTarget(e)?.closest('[data-edit]');
       if (edit) { memEnterEdit(edit.getAttribute('data-edit')); return; }
-      const del = e.target.closest('[data-del]');
+      const del = evTarget(e)?.closest('[data-del]');
       if (del) memDeleteItem(del.getAttribute('data-del'));
     });
   }
   const vers = $('#mem-versions-list');
   if (vers) {
     vers.addEventListener('click', function (e) {
-      const btn = e.target.closest('[data-restore]');
+      const btn = evTarget(e)?.closest('[data-restore]');
       if (btn) memRestore(btn.getAttribute('data-restore'));
     });
   }

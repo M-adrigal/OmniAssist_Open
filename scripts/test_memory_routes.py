@@ -105,8 +105,8 @@ database.init_db()
 
 # 第二个用户：用来验证「管理员也看不到别人的记忆」
 _conn = sqlite3.connect(str(TMP / "users.db"))
-_conn.execute("INSERT OR IGNORE INTO users (id, username, password_hash, user_type) "
-              "VALUES (2, 'bob', 'x', 'user')")
+_conn.execute("INSERT OR IGNORE INTO users (id, username, password_hash, user_type, public_id) "
+              "VALUES (2, 'bob', 'x', 'user', 'u_0000000000000000bob1')")
 _conn.commit()
 _conn.close()
 

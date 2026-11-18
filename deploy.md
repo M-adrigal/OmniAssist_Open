@@ -1,119 +1,117 @@
-# 服务器部署指南
+# 部署指南
+
+面向：在一台 Linux 服务器上首次部署，或从旧版本升级。本文所有路径以 `/home/agent/Lightweight_agent_service` 为例，用户名以 `agent` 为例——换成你自己的即可，全文一致即可。
+
+| 项 | 默认值 |
+|---|---|
+| 主服务端口 | `17520` |
+| 数据库管理界面 | `17521`（仅监听 `127.0.0.1`） |
+| 数据目录 | `data/`（SQLite + 密钥，受 `.gitignore` 保护） |
+| 用户产出目录 | `document_output/{public_id}/` |
+| 沙箱目录 | `tool_sandbox/` |
+| 日志目录 | `logs/` |
 
 ## 1. 准备服务器
 
-### 系统要求
 - Ubuntu 20.04+ / Debian 11+ / CentOS 8+
-- Python 3.10+（兼容 3.10~3.14，本机开发使用 3.14）
-- 至少 2GB RAM，10GB 磁盘空间
+- Python 3.10+（3.10 ~ 3.14 均可）
+- 至少 2GB 内存、10GB 磁盘
 
-### 创建部署用户
 ```bash
-# 登录服务器
 ssh root@your-server-ip
-
-# 创建部署用户
 adduser agent
 usermod -aG sudo agent
 su - agent
 ```
 
-## 2. 安装依赖
+## 2. 安装系统依赖
 
 ```bash
-# 更新系统
 sudo apt update && sudo apt upgrade -y
-
-# 安装 Python 和 Git
-sudo apt install -y python3 python3-pip python3-venv git nginx
+sudo apt install -y python3 python3-pip python3-venv git nginx sqlite3 curl
 ```
 
-## 3. 部署代码
+中文 PDF 输出需要系统字体（文档技能用到）：
 
-### 方式一：使用 Git 部署
 ```bash
-# 在服务器上
+sudo apt install -y fonts-noto-cjk
+# 字体通常落在 /usr/share/fonts/opentype/noto/ 或 /usr/share/fonts/truetype/noto/
+```
+
+## 3. 获取代码
+
+```bash
 cd /home/agent
-git clone https://github.com/your-repo/Lightweight_agent_service.git
+git clone https://github.com/M-adrigal/OmniAssist_Open.git Lightweight_agent_service
 cd Lightweight_agent_service
 ```
 
-### 方式二：通过 SCP 上传
+无法直连 GitHub 时，也可以在本地打包上传：
+
 ```bash
-# 在本地机器上
-scp -r /path/to/Lightweight_agent_service/* agent@your-server-ip:/home/agent/Lightweight_agent_service/
+scp -r /path/to/Lightweight_agent_service agent@your-server-ip:/home/agent/
 ```
 
 ## 4. 安装 Python 依赖
 
 ```bash
-cd /home/agent/Lightweight_agent_service
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-
-# 如需在 Linux 服务器上生成中文 PDF（文档技能），需安装系统中文字体：
-# sudo apt install -y fonts-noto-cjk
-# 安装后字体通常位于 /usr/share/fonts/opentype/noto/ 或 /usr/share/fonts/truetype/noto/
 ```
 
-## 5. 首次启动与初始化
+## 5. 构建沙箱依赖
+
+**必做，不能跳过。** 技能脚本运行在每用户独立 venv 中，这些 venv 通过 `PYTHONPATH` 继承一个共享基础 venv（`tool_sandbox/shared/pyX.Y/venv`，按 Python 小版本分桶）里的通用库（python-docx / openpyxl / reportlab / python-pptx / lxml / Pillow 等），避免每个用户重复安装重型库。
 
 ```bash
-# 启动服务
+python3 scripts/build_sandbox_venv.py
+
+# 默认用清华源；需要换源：
+SANDBOX_PIP_INDEX=https://pypi.org/simple python3 scripts/build_sandbox_venv.py
+```
+
+漏掉这一步不会让服务起不来——首次用到时会懒构建，但那一刻用户要等几分钟，且如果网络不通就直接失败。
+
+## 6. 首次启动
+
+```bash
 python server/main.py
 ```
 
-首次启动时会自动完成以下初始化：
-- 在 `data/` 目录下创建 SQLite 数据库（`users.db`），包含用户表、会话表、模型配置表、搜索配置表、权限表
-- 创建默认管理员账户：用户名 `admin`，**初始密码随机生成，只打印在启动控制台**（`print` 到 stdout，不写进 `logs/` —— 日志文件管理员可下载）。记下它，或去控制台日志里找 `默认管理员初始密码` 那一行
-- 初始化默认权限（admin 拥有全部权限，user 拥有基础权限）
-- 创建密码文件 `data/.db_web_password`（权限 0o600），用于数据库管理界面认证
+首次启动自动完成：
 
-> ⚠️ **重要**：首次登录后必须修改管理员密码，否则无法使用平台功能。修改密码后，`.db_web_password` 文件会自动同步更新。
+- 在 `data/` 下建库 `users.db`（用户 / 会话 / 模型配置 / 搜索配置 / 权限 / 用量等表）
+- 建默认管理员 `admin`，**初始密码随机生成，只打印在启动控制台**
+- 初始化默认权限（`admin` 全量，`user` 基础）
+- 生成 `data/.db_web_password`（权限 `0600`），供数据库管理界面认证
 
-启动成功后，通过浏览器访问 `http://your-server-ip:17520` 登录。
+> ⚠️ 初始密码**只进 stdout，不写 `logs/`**（日志文件管理员可下载）。记下控制台里 `默认管理员初始密码` 那一行。首次登录后必须改密，否则平台功能不可用；改密后 `.db_web_password` 自动同步。
+
+浏览器访问 `http://your-server-ip:17520`。确认能登录后按 `Ctrl+C` 停掉，交给 systemd 托管。
 
 ### 数据库管理界面
 
-服务启动后会自动启动数据库管理界面（基于 sqlite-web）：
+随服务自动启动（基于 sqlite-web），地址 `http://127.0.0.1:17521`，Basic Auth 用管理员账号密码。只绑回环，从本地访问需 SSH 隧道：
 
-- **地址**：`http://127.0.0.1:17521`（仅监听本地回环，不对外网开放）
-- **访问方式**：在服务器本机浏览器直接访问，或通过 SSH 隧道从本地访问：
-  `ssh -L 17521:127.0.0.1:17521 agent@your-server-ip`，随后在本机浏览器打开 `http://127.0.0.1:17521`
-- **认证**：使用管理员账号 `admin` 和当前密码登录（Basic Auth）
-- **依赖**：需安装 `sqlite-web`（已在 `requirements.txt` 中）
+```bash
+ssh -L 17521:127.0.0.1:17521 agent@your-server-ip
+# 然后在本机浏览器打开 http://127.0.0.1:17521
+```
 
-> 注意：数据库管理界面仅管理员可访问，普通用户无法通过认证。出于安全考虑已绑定 `127.0.0.1`，**请勿在防火墙上开放 17521 端口**。
+> **不要在防火墙上开放 17521**。普通用户无法通过认证，仅管理员可进。
 
-## 6. 配置模型与搜索
+## 7. 交给 systemd 托管
 
-登录 Web 界面后，在左侧设置面板中配置：
+> **生产铁律：只允许 systemd 托管，禁止 `nohup` / 手动前台启动。** 两种方式并存会争抢 17520：systemd 绑定失败（`exit-code=3`），配合 `Restart=always` 陷入反复重启，服务长时间不可用。
 
-### 模型配置
-- **API Key**：你的 LLM API 密钥（加密存储）
-- **Base URL**：API 端点地址，如 `https://api.openai.com/v1`
-- **Model Name**：模型名称，如 `gpt-4`、`deepseek-v3-2-251201`
-- **Context Limit**：上下文 token 上限，如 `32k`、`64k`、`128k`（留空则不限制）
-- **最大迭代次数**：单轮对话允许的工具调用/思考循环上限，默认 10（留空用默认）。任务复杂、工具链较长时可适当调大
-- **温度策略**：`auto`（默认）或 `static`。`auto` 由 `agent/temperature.py` 按任务类型动态计算每次调用的温度（脑暴/写作较发散，代码/分析较确定），并随迭代轮次向 0.2 收敛；`static` 则全程使用固定温度值，结果可复现
-- **温度值**：`temperature_mode=auto` 时作为分析/未知类任务的基准温度，`static` 时作为唯一温度。范围 0~2，默认 0.7。修改后保存即热更新生效，无需重启
-
-管理员可配置"全局模型配置"，供所有用户共享使用；普通用户可配置"个人模型配置"，优先级高于全局配置。
-
-### 搜索配置（可选）
-- **Tavily API Key**：用于联网搜索功能，可在 [https://tavily.com](https://tavily.com) 免费注册获取
-
-## 7. 使用 systemd 运行服务
-
-### 创建服务文件
 ```bash
 sudo nano /etc/systemd/system/agent.service
 ```
 
 ```ini
 [Unit]
-Description=Lightweight Agent Service
+Description=OmniAssist
 After=network.target
 
 [Service]
@@ -121,16 +119,16 @@ Type=simple
 User=agent
 Group=agent
 WorkingDirectory=/home/agent/Lightweight_agent_service
-Environment="PATH=/home/agent/Lightweight_agent_service/venv/bin"
-# 沙箱网络出口白名单（可选，强烈建议保持默认即全阻断）。
-# 逗号分隔的主机后缀列表；匹配「主机名等于该项」或「主机名以 .该项 结尾」才放行，
-# 其余一律拒绝并记录到 sandbox_audit.log。
-# 留空（即不设置此行）= 沙箱子进程完全禁止访问外部网络，最安全。
-# 若确有需要让沙箱内技能脚本访问特定外网（如某些需访问外部 API 的技能若改为沙箱运行），
-# 再按需放开，例如：
-# Environment="SANDBOX_NETWORK_ALLOWLIST=api.example.com,query1.finance.yahoo.com"
-# 说明：服务启动时会自动检测 17520 端口占用——若存在手动 nohup 残留实例会自动清理；
-#       若检测到本服务已由 systemd 托管则拒绝重复启动。请勿手动 nohup 启动本服务。
+
+# 必须显式列出系统目录：systemd 一旦用 Environment= 设了 PATH，就不再追加默认路径。
+# 只写 venv/bin 会让服务进程里没有 /bin、/usr/bin，沙箱内 run_command 直接 FileNotFoundError。
+Environment="PATH=/home/agent/Lightweight_agent_service/venv/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+# 环境变量（可选，按需开）。各自含义见第 16 节。
+# Environment="AGENT_STREAM_STOP_GRACE=60"
+# Environment="SANDBOX_NETWORK_ALLOWLIST=api.example.com"
+# Environment="REDIS_URL=redis://127.0.0.1:6379/0"
+
 ExecStart=/home/agent/Lightweight_agent_service/venv/bin/python server/main.py
 Restart=always
 RestartSec=10
@@ -142,17 +140,16 @@ SyslogIdentifier=agent
 WantedBy=multi-user.target
 ```
 
-### 启动服务
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable agent
-sudo systemctl start agent
+sudo systemctl enable --now agent
 sudo systemctl status agent
 ```
 
-## 8. 配置 Nginx 反向代理（推荐）
+服务自带端口守卫：手动启动时若检测到 systemd 托管会拒绝启动；systemd 重启时会清理手动残留实例。
 
-### 创建 Nginx 配置
+## 8. 反向代理与 HTTPS
+
 ```bash
 sudo nano /etc/nginx/sites-available/agent
 ```
@@ -174,22 +171,30 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_cache_bypass $http_upgrade;
+
+        # 对话是流式长连接，超时必须放大，否则长任务会在中途被切断
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
     }
 }
 ```
 
-> 注意：由于 AI 对话可能耗时较长，`proxy_read_timeout` 和 `proxy_send_timeout` 需设置足够大。
-
-### 启用站点
 ```bash
 sudo ln -s /etc/nginx/sites-available/agent /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl reload nginx
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
-## 9. 配置防火墙
+HTTPS：
+
+```bash
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d your-domain.com
+sudo certbot renew --dry-run
+```
+
+> 走反向代理时，若要让登录失败锁定按真实 IP 计数，需在 systemd 单元里加 `Environment="TRUSTED_PROXY_IPS=127.0.0.1"`。不在白名单内的来源，`X-Forwarded-For` **不被采信**（防伪造）。
+
+## 9. 防火墙
 
 ```bash
 sudo ufw allow 22/tcp
@@ -198,322 +203,294 @@ sudo ufw allow 443/tcp
 sudo ufw enable
 ```
 
-## 10. 使用 HTTPS（推荐）
+只开放这三个。`17520` 由 Nginx 反代访问，`17521` 只绑回环，都不需要对外。
+
+## 10. 配置模型与搜索
+
+在「设置」面板中配置。
+
+### 模型
+
+| 项 | 说明 |
+|---|---|
+| API Key | LLM 密钥，加密存储 |
+| Base URL | OpenAI 兼容端点，如 `https://api.openai.com/v1` |
+| Model Name | 模型名，如 `gpt-4`、`deepseek-v3-2-251201` |
+| Context Limit | 上下文上限，如 `32k` / `64k` / `128k`；留空不限 |
+| 最大迭代次数 | 单轮允许的工具调用 / 思考循环上限，默认 10 |
+| 温度策略 | `auto` 按任务类型动态计算并随轮次收敛到 0.2；`static` 全程固定值，可复现 |
+| 温度值 | `auto` 时作分析/未知类任务的基准；`static` 时作唯一值。范围 0~2，默认 0.7 |
+
+管理员可配「全局模型配置」供所有用户共享；普通用户的「个人模型配置」优先级更高。改完保存即热更新，无需重启。
+
+### 联网搜索（可选）
+
+支持两家，**两把 Key 相互独立**，在「设置 → 联网搜索」里选一家：
+
+- **DeepSeek**：与模型同一把 Key，[platform.deepseek.com](https://platform.deepseek.com/api_keys)。按成功请求计费 ¥5 / 1000 次（搜不到、超时、报错均不计费）
+- **Tavily**：[tavily.com](https://tavily.com) 免费注册获取
+
+选了哪家就只用哪家。选 DeepSeek 但没填 Key 会直接报「未配置」，**不会回落到 Tavily**。
+
+## 11. Redis（可选，当前版本不需要）
+
+**按默认方式部署不需要装 Redis。** 保留这一节是因为网上和旧文档容易让人以为装了就"更生产"，当前版本装了没有收益。
+
+### 它管什么
+
+只有两样东西会用到它：审批状态（`approval_store`）和会话权限模式（`trust_store`）。代码在 `server/kv.py`：
+
+- 不设 `REDIS_URL` → 用进程内存
+- 设了 `REDIS_URL` → 用 Redis
+- 设了但 `redis` 包缺失或连不上 → **自动退回进程内存**，并打一条告警
+
+连不上就退回进程内存，这是刻意的：缓存不可用时退回单进程行为，比因为 Redis 挂了把整个对话打死要好。
+
+### 为什么现在不需要
+
+单进程（默认）下，内存实现与 Redis 语义等价——审批状态的生命周期本来就短（600 秒超时），且必须由一个活着的进程持有等待方。把同样的数据再往 Redis 写一份，不改变任何行为，只多了一个可能连不上的依赖。
+
+那为什么代码里还支持？为了将来支持多 worker 预留。但**只配 Redis 并不能开启多 worker**，见下节。
+
+### 如果确实要装
 
 ```bash
-sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d your-domain.com
-sudo certbot renew --dry-run
+# 方式一：系统包
+sudo apt install -y redis-server
+sudo sed -i 's/^# *bind 127.0.0.1 ::1/bind 127.0.0.1/' /etc/redis/redis.conf
+sudo systemctl enable --now redis-server
+
+# 方式二：Docker（不落盘，纯缓存）
+docker run -d --name agent-redis -p 127.0.0.1:6379:6379 redis:7-alpine redis-server --save ""
 ```
 
-## 11. 日常维护
+两种方式都只绑回环，**不要对公网开放 6379**。然后在 systemd 单元里加一行并重启：
 
-> **⚠️ 生产环境铁律：只允许 systemd 托管，禁止 `nohup` / 手动前台启动服务。**
->
-> 手动启动的进程与 systemd 服务并存会**争抢 17520 端口**：systemd 绑定失败（`exit-code=3`），配合 `Restart=always` 陷入**反复重启循环**，服务长时间不可用（详见第 12 节"端口冲突"）。
-> 如需临时调试，请先 `sudo systemctl stop agent`，或改用其他端口（如 `PORT=17520 python server/main.py` 不支持，请直接修改后另起端口验证）。
-> 服务自身已内置端口守卫：手动启动时会检测到 systemd 托管服务并**拒绝启动**；systemd 重启时会自动清理手动残留实例。
-
-### 一键部署（推荐）
+```ini
+Environment="REDIS_URL=redis://127.0.0.1:6379/0"
+```
 
 ```bash
-# 在服务器上，以服务运行用户（agent）执行；git pull + 依赖 + 重启 + 健康检查 一步完成
+sudo systemctl daemon-reload && sudo systemctl restart agent
+```
+
+### 验证是否真的用上了
+
+```bash
+sudo journalctl -u agent -n 100 | grep -E "审批/信任状态使用"
+```
+
+- 生效：`审批/信任状态使用 Redis: 127.0.0.1:6379/0`
+- 退回：`Redis 不可用，已退回进程内存储（多 worker 下审批会跨进程丢失）`
+
+连通性单独测：
+
+```bash
+redis-cli -u redis://127.0.0.1:6379/0 ping    # 期望 PONG
+```
+
+## 12. 不要用多 worker
+
+不要用 `gunicorn -w N`（N>1）或 `uvicorn --workers N`。**配 Redis 也不行。**
+
+流式对话的任务句柄 `_running_tasks` 是**进程内字典**（`server/routes/chat.py`）。除了审批，下面这些接口都要先在它里面找到任务，找不到直接 404：
+
+| 接口 | 作用 | 多 worker 下的表现 |
+|---|---|---|
+| `GET /api/chat/subscribe/{session_id}` | 刷新页面后重连正在跑的流 | 打到别的进程 → 404，页面一片空白，但任务还在后台烧 token |
+| `POST /api/chat/stop/{session_id}` | 停止按钮 | 404，停不下来 |
+| `POST /api/chat/regenerate/{session_id}` | 重新生成 | 并发保护失效，可能同一会话跑两轮 |
+| `POST /api/approval/{session_id}/approve` | 审批决议 | 404，审批卡片点了没反应，600 秒后超时 |
+
+所以 Redis 只解决了「审批**数据**能跨进程读到」，解决不了「审批**请求**打不到持有等待方的那个进程」。这两件事是分开的，前者已修，后者没有。
+
+另外：数据库管理界面（`sqlite_web` 子进程）与沙箱池（`SandboxPool`，进程内缓存 + 线程锁）也都是单进程假设，多 worker 会重复启动、缓存不共享。
+
+**单进程 + 异步 I/O 已经能撑住内部自用规模。** 需要更高并发时，优先调大 `PARALLEL_TOOL_MAX_WORKERS`（工具并发，默认 4），而不是加 worker 进程。
+
+## 13. 日常运维
+
+### 13.1 更新代码
+
+一键脚本（推荐）：
+
+```bash
 bash scripts/deploy.sh
 ```
 
-脚本会自动：预检 17520 端口占用并清理手动残留进程 → `git pull --ff-only` → 安装依赖 → `sudo systemctl restart agent` → 健康检查（15 次探测 `/api/health`）。
+它依次做：端口占用预检并清理手动残留 → `git pull --ff-only` → 装依赖 → `sudo systemctl restart agent` → 15 次健康探测。
 
-### 查看日志
+> ⚠️ **`deploy.sh` 不跑数据库迁移**，它只管代码与进程。凡本文写明「升级必跑」的迁移，都必须自己执行一次。推荐顺序：`git pull` → **跑迁移** → `bash scripts/deploy.sh`（迁移会先备份，此时服务还没重启，出问题好回退）。
 
-服务内置了日志系统，日志文件位于 `logs/` 目录：
+**从旧版本升级**：迁移要求随版本变化，逐步的变更明细见 [`CHANGELOG.md`](CHANGELOG.md)。两条必须知道的：
+
+- **v2.0.0 引入双 ID 体系**：升级前必须跑 `python3 scripts/migrate_public_id.py` 回填 `public_id` 并重命名 `document_output/{整数id}` → `{public_id}`，否则存量用户全部被判未登录（401 锁死）。脚本幂等。结尾若提示「仍有 N 个用户缺少 public_id」，**禁止启动服务**，先排查。
+- **时间基准统一迁移**：全库时间统一为本地时间（此前个别写入路径混入 UTC）。含此改动的版本升级后、重启前执行一次（幂等，自动备份到 `data/users.db.bak-tz`）：
 
 ```bash
-# 应用日志（全量，INFO 及以上）
-tail -f /home/agent/Lightweight_agent_service/logs/app.log
-
-# 错误日志（仅 ERROR 级别）
-tail -f /home/agent/Lightweight_agent_service/logs/error.log
+python3 scripts/migrate_timezone.py --dry-run   # 先看要改什么
+python3 scripts/migrate_timezone.py
 ```
 
-日志格式：`[时间戳] [级别] [模块名] [user:N] [sess:xxx] 消息内容`
-
-日志配置：
-- **轮转策略**：按天轮转 + 单文件 10MB 上限
-- **保留时间**：30 天自动清理
-- **错误分离**：ERROR 级别日志同时写入独立的 `error.log`
-- **审计日志**：审批与权限模式切换事件写入独立的 `audit.log`
-- **历史归档**：轮转/清理前的旧日志归入 `logs/archive/`
-- **uvicorn 日志已统一接入**：服务启动、访问等 uvicorn 内部日志现统一写入 `logs/app.log`，**不会在根目录产生散落的 `serverN.log`**（若仍出现散落日志，说明日志接管未生效，需检查服务是否正常启动）
+手动分步（升级场景，顺序不可颠倒）：
 
 ```bash
-# 服务日志（systemd 方式）
-sudo journalctl -u agent -f
-sudo tail -f /var/log/nginx/error.log
-```
-
-### 更新代码
-
-> **统一入口**：日常更新代码请直接执行 `bash scripts/deploy.sh`（自动处理端口冲突、拉代码、装依赖、重启、健康检查），**不要**手动 `nohup` 启动。
->
-> **v2.0.0 升级必读**：该版本引入双 ID 体系，升级前必须先跑迁移脚本回填 `public_id` 并重命名目录，否则存量用户会被全部判为未登录（401 锁死）。迁移脚本幂等，可重复执行。
->
-> **v2.1.0（2026-10-24）不需要跑迁移**：只新增了 1 张表（`usage_pending`）和 4 个字段（`user_skills.source/risk_level/confirmed_at`），`init_db()` 用 `CREATE TABLE IF NOT EXISTS` + 幂等 `ALTER` 自动补齐，**重启即完成**。若你是从 v2.0.0 之前直接跳过来，仍要先跑 `migrate_public_id.py`。
-
-```bash
-cd /home/agent/Lightweight_agent_service
-
-# 常规更新（推荐）：
-bash scripts/deploy.sh
-
-# 或手动分步执行（升级场景，顺序不可颠倒）：
 git pull
 source venv/bin/activate
 pip install -r requirements.txt
-
-# 升级到 v2.0.0 及以上：先停服 → 迁移 → 启动（顺序不可颠倒）
 sudo systemctl stop agent
-python3 scripts/migrate_public_id.py   # 回填 public_id + 重命名 document_output/{整数id}→{public_id} + 补齐产出子目录
+python3 scripts/migrate_public_id.py
 sudo systemctl start agent
-
-# 旧版本平滑更新（无双 ID 变更时）可直接 restart：
-# sudo systemctl restart agent
 ```
 
-> 迁移脚本仅重命名目录、不删除文件；`data/` 与 `document_output/` 受 `.gitignore` 保护，`git pull` 不会触碰用户数据。若脚本结尾提示「仍有 N 个用户缺少 public_id」，**禁止启动服务**，需先排查再继续。
->
-> （可选）回归校验：`python3 scripts/test_model_config.py`（在临时副本库上跑，不碰真实数据）。
+迁移脚本只重命名目录、不删文件；`data/` 与 `document_output/` 在 `.gitignore` 内，`git pull` 不碰用户数据。
 
-### 备份数据
+### 13.2 日志
+
+| 文件 | 内容 |
+|---|---|
+| `logs/app.log` | 全量 INFO 及以上 |
+| `logs/error.log` | 仅 ERROR |
+| `logs/audit.log` | 审批决议、权限模式切换 |
+| `logs/sandbox_audit.log` | 沙箱越权尝试与放行（网络、文件、命令） |
+| `logs/archive/` | 轮转与清理前的归档 |
+
+按天轮转，单文件上限 10MB，保留 30 天。格式 `[时间戳] [级别] [模块] [user:N] [sess:xxx] 消息`。uvicorn 内部日志已统一接入 `app.log`，不会在根目录散落 `serverN.log`。
+
 ```bash
-# 备份数据库、配置、文档和日志
-tar -czf agent-backup-$(date +%Y%m%d).tar.gz \
-    data/ \
-    document_output/ \
-    logs/
+tail -f logs/app.log
+sudo journalctl -u agent -f
 ```
 
-### 用户管理
-登录 Web 界面后，管理员可在"用户管理"页面：
-- 创建新用户（设置用户名、密码、角色）
-- 编辑用户信息（修改密码、角色、描述）
-- 删除用户
-
-## 12. 故障排除
-
-### 服务无法启动
+### 13.3 备份
 
 ```bash
-# 检查端口占用
+tar -czf agent-backup-$(date +%Y%m%d).tar.gz data/ document_output/ logs/
+```
+
+`data/` 里有 `.db_secret` 与 `.db_web_password`，备份文件按密钥对待。
+
+### 13.4 用户管理
+
+管理员在「用户管理」页可创建用户（用户名 / 密码 / 角色 / 描述）、改密改角色、删除用户。
+
+## 14. 故障排除
+
+### 服务起不来
+
+```bash
 sudo ss -tlnp | grep 17520
-
-# 检查 Python 依赖
 python3 -c "import fastapi; print('FastAPI OK')"
 python3 -c "import openai; print('OpenAI OK')"
-
-# 检查数据库文件权限
 ls -la data/users.db
+```
 
-# 手动前台启动查看错误（⚠️ 先停掉 systemd 服务，避免端口争抢）
+看真实报错（**先停 systemd，避免端口争抢**）：
+
+```bash
 sudo systemctl stop agent
-cd /home/agent/Lightweight_agent_service
-source venv/bin/activate
-python server/main.py        # 排障完必须 systemctl start agent 恢复托管
+cd /home/agent/Lightweight_agent_service && source venv/bin/activate
+python server/main.py
+# 排障完必须 sudo systemctl start agent 恢复托管
 ```
 
-### 端口冲突（`exit-code=3` / 反复重启循环）
-
-> **场景**：手动 `nohup` 启动与 systemd 托管并存，systemd 绑定 17520 失败反复重启。
-> **根因**：同一时间两种启动方式争抢同一端口。
-> **铁律**：生产环境只允许 systemd 托管，禁止手动启动。
+### 端口冲突（`exit-code=3` / 反复重启）
 
 ```bash
-# 1. 定位占用 17520 端口的进程
+# 1. 找占用者
 sudo ss -tlnp | grep 17520
-#    输出如: users:(("python",pid=94909,fd=17))  ← pid 即占用者
+#    输出如 users:(("python",pid=94909,fd=17))
 
-# 2. 确认是手动残留（而不是 systemd 托管）后终止它
-#    - 若该进程的 cgroup 含 agent.service（systemd 托管），请勿手动杀，
-#      直接 restart 即可：sudo systemctl restart agent
-#    - 否则为手动残留，终止并释放端口：
-sudo kill 94909            # 无权限时：sudo kill -9 94909
+# 2. 确认是手动残留再杀。若该进程 cgroup 含 agent.service，别手动杀，直接 restart。
+sudo kill 94909
 
-# 3. 让 systemd 恢复
-sudo systemctl restart agent
-sudo systemctl status agent
-
-# 4. 验证健康
-curl -s http://127.0.0.1:17520/api/health
+# 3. 恢复
+sudo systemctl restart agent && curl -s http://127.0.0.1:17520/api/health
 ```
 
-> 服务已内置端口守卫自动兜底：`systemctl restart agent` 时若存在手动残留实例会自动清理；反之手动启动遇到 systemd 托管服务会拒绝启动并提示。日常更新请统一用 `bash scripts/deploy.sh`。
+### 页面能开但功能异常
 
-### 无法访问
 ```bash
-# 检查防火墙
 sudo ufw status
-
-# 检查 Nginx
-sudo nginx -t
-sudo systemctl status nginx
-
-# 检查服务
+sudo nginx -t && sudo systemctl status nginx
 sudo systemctl status agent
+tail -50 logs/error.log
 ```
 
-### 数据库问题
-```bash
-# 检查数据库完整性
-sqlite3 data/users.db "PRAGMA integrity_check;"
+### 数据库
 
-# 查看用户列表
+```bash
+sqlite3 data/users.db "PRAGMA integrity_check;"
 sqlite3 data/users.db "SELECT id, username, user_type FROM users;"
 ```
 
 ### 内存不足
-```bash
-# 查看内存使用
-free -h
-top -o %MEM
-
-# 在 systemd 服务文件中限制内存（可选）：
-# MemoryHigh=1G
-# MemoryMax=2G
-```
-
-### 沙箱依赖安装问题
-
-工具的技能脚本（如 `python-docx`、`openpyxl`、`reportlab` 等）运行在独立的沙箱虚拟环境中，与主服务隔离。
-
-**工作原理**：
-- 每位用户拥有独立的沙箱 venv，位于 `tool_sandbox/{user_id}/venv/`
-- 用户沙箱通过 `PYTHONPATH` 继承**共享基础 venv** `tool_sandbox/shared/pyX.Y/venv`（按 Python 小版本分桶，例如 `py3.14`）中的通用依赖（python-docx / openpyxl / reportlab / python-pptx / lxml / Pillow 等），避免每个用户重复安装重型库
-- 共享 venv 的依赖清单见仓库根 `requirements.sandbox.txt`，由 `scripts/build_sandbox_venv.py` 按当前 Python 版本分桶构建
-- 技能脚本所需的、共享 venv 中没有的依赖，会在首次执行时通过 AST 解析 `import` 自动安装进该用户自己的 venv
-- 沙箱池（SandboxPool）负责管理用户沙箱的懒加载和线程安全调度
-
-**部署后必做**：构建共享基础 venv（否则首跑会按需懒构建，或由每个用户各自安装）：
 
 ```bash
-cd /home/agent/Lightweight_agent_service
-python3 scripts/build_sandbox_venv.py
-# 可选：自定义镜像源（默认已用清华源）
-SANDBOX_PIP_INDEX=https://pypi.org/simple python3 scripts/build_sandbox_venv.py
+free -h && top -o %MEM
 ```
 
-**常见问题**：
+可在单元文件加 `MemoryHigh=1G` / `MemoryMax=2G`。
+
+### 技能跑不起来 / 依赖缺失
+
+先确认共享 venv 存在：
 
 ```bash
-# 1. 确保 python3-venv 已安装（沙箱需要创建虚拟环境）
-sudo apt install -y python3-venv
-
-# 2. 查看共享 venv 与用户沙箱列表
-ls -la /home/agent/Lightweight_agent_service/tool_sandbox/shared/
-ls -la /home/agent/Lightweight_agent_service/tool_sandbox/
-
-# 3. 手动检查某用户沙箱是否正常（以用户 ID=1 为例）
-ls -la /home/agent/Lightweight_agent_service/tool_sandbox/user_1/venv/bin/python
-
-# 4. 跨 Python 版本注意：共享 venv 与用户 venv 的 Python 小版本必须一致。
-#    若用户 venv 是用不同 Python 创建的，沙箱会跳过共享继承、改为在该用户 venv 内单独安装，
-#    不会出现「跨版本注入 C 扩展导致 ImportError」的问题。排查版本：
-cat /home/agent/Lightweight_agent_service/tool_sandbox/shared/py3.14/venv/pyvenv.cfg
-cat /home/agent/Lightweight_agent_service/tool_sandbox/user_1/venv/pyvenv.cfg
-
-# 5. pip 安装超时（网络慢）：共享 venv 用 SANDBOX_PIP_INDEX 控制镜像源；
-#    也可在用户 venv 中设置：
-/home/agent/Lightweight_agent_service/tool_sandbox/user_1/venv/bin/pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
-
-# 6. 清理并重建某用户沙箱（以用户 ID=1 为例）
-rm -rf /home/agent/Lightweight_agent_service/tool_sandbox/1
-sudo systemctl restart agent
+ls tool_sandbox/shared/
 ```
 
-## 13. 性能优化
+列表为空说明第 5 步漏了，补跑 `python3 scripts/build_sandbox_venv.py`。其余排查：
 
-### 使用 Gunicorn（生产环境推荐）
 ```bash
-pip install gunicorn
+# 某用户沙箱是否正常
+ls tool_sandbox/user_1/venv/bin/python
 
-# 修改 systemd 服务文件的 ExecStart：
-# ExecStart=/home/agent/Lightweight_agent_service/venv/bin/gunicorn server.main:app \
-#     -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:17520 \
-#     --timeout 300 --graceful-timeout 30
+# 跨 Python 版本：共享 venv 与用户 venv 的小版本必须一致，否则会跳过继承、改为各自安装
+cat tool_sandbox/shared/py3.14/venv/pyvenv.cfg
+cat tool_sandbox/user_1/venv/pyvenv.cfg
+
+# pip 超时
+tool_sandbox/user_1/venv/bin/pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 重建某用户沙箱
+rm -rf tool_sandbox/1 && sudo systemctl restart agent
 ```
 
-### 调整系统限制
-在 systemd 服务文件中添加：
-```ini
-[Service]
-...
-LimitNOFILE=65535
-LimitNPROC=65535
+技能脚本所需的、共享 venv 里没有的依赖，会在首次执行时通过 AST 解析 `import` 自动装进该用户自己的 venv。
+
+## 15. 安全边界（默认已生效，无需配置）
+
+| 边界 | 默认行为 |
+|---|---|
+| 凭据加密 | API Key 与加密字段用 HMAC-SHA256 密钥流 + 认证标签（`v2:` 前缀）。纯标准库实现，无需装 `cryptography`。密钥来自 `data/.db_secret`（`0600`） |
+| 沙箱网络 | 子进程 `getaddrinfo` **全部拒绝**，越权记 `sandbox_audit.log`。要放行需显式设 `SANDBOX_NETWORK_ALLOWLIST` |
+| 主进程技能联网 | 不受限。`web-fetch` 等经 `ToolRegistry` 直调，不走沙箱 |
+| 沙箱读取 | 拒绝系统目录、他人 home、密钥文件；只允许读本人的 `document_output/{public_id}/` |
+| 沙箱写入 | 仅 `document_output/{public_id}/`、`TMPDIR`、`/tmp/user_skill`（可用 `SANDBOX_WRITE_DIRS` 追加） |
+| 命令执行 | 白名单制，禁绝对路径、`~`、`..`、密钥文件名；解释器（`python`/`node`）已从白名单移除 |
+| 会话落库 | 自动遮盖 `sk-`/`ghp_`/`glpat_`/`AKIA` 等密钥样例与 JWT，并按上限截断（thought 2000、工具结果 3000、答案 20000、搜索词 1500 字符）。**脱敏只作用于存储**，前端收到的仍是原文 |
+| 框架头 | `X-Frame-Options: SAMEORIGIN` + `frame-ancestors 'self'`（本站自己有同源 iframe：Token 看板、PDF 预览，设成 DENY 会让它们白屏） |
+
+沙箱内的 `os.open` **不是被删掉，而是换成了带同样校验的包装**（写判定按 `O_ACCMODE`/`O_CREAT` 位，`dir_fd` 一律拒绝）。直接删会打死 `tempfile`，进而让一切用临时文件的库失灵。
+
+## 16. 环境变量速查
+
+全部可选，不设即用默认值。
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `REDIS_URL` | 空 | 审批/信任状态改用 Redis。空 = 进程内存。见第 11 节 |
+| `AGENT_STREAM_STOP_GRACE` | `60` | 客户端断连后后台任务再跑多少秒自动取消。宽限期内重连会取消倒计时，正常刷新不受影响。`0` = 关闭自动停止 |
+| `SANDBOX_NETWORK_ALLOWLIST` | 空 | 沙箱网络出口白名单，逗号分隔主机后缀。匹配「等于」或「以 `.该项` 结尾」才放行。空 = 全阻断 |
+| `SANDBOX_WRITE_DIRS` | 空 | 追加沙箱可写目录（逗号分隔） |
+| `SANDBOX_PIP_INDEX` | 清华源 | 沙箱依赖安装的 pip 镜像源，见第 5 节 |
+| `SANDBOX_PIP_TIMEOUT` | `300` | 沙箱内 pip 安装超时（秒） |
+| `PARALLEL_TOOL_MAX_WORKERS` | `4` | 工具并行执行的最大线程数。并发不够时先调这个，别加 worker |
+| `TRUSTED_PROXY_IPS` | 空 | 可信反向代理 IP 白名单。只有来自这些 IP 的 `X-Forwarded-For` 才被采信，用于登录失败按真实 IP 计数 |
+
+## 17. 健康检查
+
+```bash
+curl -s http://127.0.0.1:17520/api/health     # 期望 {"status":"ok"}
 ```
-
-## 14. 健康检查
-
-访问 `http://your-server:17520/api/health` 应返回 `{"status":"ok"}`。
-
-## 15. 审批与权限模式（部署注意）
-
-平台提供「请求批准 / 完全访问」双权限模式与聊天框审批门（详见 README「审批与权限模式」章节）。部署时请注意：
-
-- **单进程内存态**：审批状态机（`approval_store`）与会话权限状态机（`trust_store`）均为**单进程内存态**，仅存在于当前运行进程。
-- **多 worker 需共享存储**：若在 systemd 中使用 `gunicorn -w N`（N>1）启用多 worker，跨进程不共享审批/信任状态，会导致审批卡片无法被同一会话的其它 worker 唤醒。生产环境如确需多 worker，请将这两个存储替换为 Redis 等跨进程共享方案（接口保持一致即可），否则建议**保持单进程**（`python server/main.py` 或 `gunicorn -w 1`）。
-- **operator 在场要求**：`request`（请求批准）模式下，敏感操作会暂停等待人工在聊天框点击「允许 / 拒绝 / 跳过」。若无人值守（如定时任务、无人监控的后台调用），操作将一直挂起——此类场景应切换为 `full` 模式或确保有操作员实时在线。
-
-## 16. 安全加固说明（部署必读）
-
-本版本对多处历史安全风险做了**彻底修复**（非间接缓解），部署上线前请确认以下加固已生效。
-
-### 16.1 凭据与敏感数据加密（强加密替代弱 XOR）
-
-- 模型 API Key、数据库内加密字段现已使用**标准库实现的 AEAD 语义强加密**（`agent/crypto_utils.py`，HMAC-SHA256 密钥流 + HMAC 认证标签），密钥来源：
-  - 配置文件：`config_dir` 下的 salt 派生 32 字节密钥；
-  - 数据库：`.db_secret` 文件（自动生成、权限 0o600）。
-- 旧版 XOR 弱加密格式（`v1:` 前缀）仍可读但不再写入，新数据全部为 `v2:` 前缀的强加密。
-- **无需额外第三方依赖**：加密完全基于 Python 标准库，服务器无需 `pip install cryptography`。
-
-### 16.2 沙箱网络出口默认全阻断
-
-- 沙箱子进程（`tool_sandbox/{user_id}/venv/`）的网络解析（`socket.getaddrinfo`）默认**全部拒绝**，任何外部主机访问都会抛 `PermissionError` 并记入 `logs/sandbox_audit.log`。
-- 仅当显式设置 `SANDBOX_NETWORK_ALLOWLIST`（见第 7 节 service 文件注释）时才放行匹配的主机后缀。
-- 主进程技能（web-fetch 等通过 `ToolRegistry` 直调，不经沙箱）**不受此限制**，仍按部署环境正常联网。
-
-### 16.3 沙箱文件读取边界
-
-沙箱脚本读取文件时受以下边界约束（越界写 `sandbox_audit.log` 并拒绝）：
-
-- **系统目录拒绝**：`/etc`、`/root`、`/var`、`/proc`、`/sys`、`/boot`、`/usr`、`/bin`、`/sbin`、`/lib`、`/opt`
-- **其他用户的家目录拒绝**：`/Users/<他人>`、`/home/<他人>`。**当前用户自己的家目录可读**，但其中的密钥目录（`.ssh`、`.aws`、`.kube`、`.netrc`、`.env` 等）仍拒绝
-- **密钥文件拒绝**：文件名命中密钥清单（`id_rsa`、`*.pem`、`_db_secret` 等）一律拒绝
-- **跨用户文档隔离**：只允许访问「当前用户」的 `document_output/{public_id}/`，禁读他人产出
-- **写入白名单**：仅限 `document_output/{public_id}/`、`TMPDIR`、`/tmp/user_skill` 等（`SANDBOX_WRITE_DIRS` 可追加），其余目录不可写
-- **唯一的读取例外**：系统 MIME 映射表（`/etc/{mime.types,apache2/mime.types,apache/mime.types,httpd/conf/mime.types}`）。它们是静态类型对照表、不含凭据，但 `mimetypes.init()` 会读；不放行会导致 `openpyxl` 等「导入即初始化 mimetypes」的库直接失败（Excel 生成不出来就是这个原因）
-
-> `os.open` **不是被删掉，而是换成了带同样校验的包装**（写判定按 `O_ACCMODE`/`O_CREAT` 等位，`dir_fd` 一律拒绝）。删掉会打死 `tempfile`，进而让一切用临时文件的库失灵。
-> `os.unlink` / `remove` / `makedirs` / `mkdir` / `rename` / `replace` / `symlink` / `link` 同样保留为受控版本；`chmod` / `kill` / `system` / `exec*` 仍然彻底删除。
-
-### 16.4 run_command 参数路径限制
-
-受控命令执行（`agent/skills/run-command`）新增参数约束：
-
-- 禁止绝对路径（`/` 开头）与 `~` 家目录展开；
-- 禁止父目录遍历（`..` / `../`）；
-- 禁止访问密钥文件名；
-- 命令本身仍受 `_ALLOWED_COMMANDS` 白名单约束（**已移除 `python3`/`python`/`node` 等解释器，杜绝以 `python -c` 绕过沙箱钩子**）。
-- 任何拒绝/放行均写入 `sandbox_audit.log`，便于审计。
-
-### 16.5 沙箱审计日志
-
-- 路径：`logs/sandbox_audit.log`。
-- 记录事件：`net_denied`（网络被拒）、`file_read_denied`（读敏感/越界文件）、`cmd_denied`/`cmd_path_denied`/`cmd_secret_denied`（命令执行被拒）、`cmd_exec`（放行执行）、`file_delete_denied`/`rename_denied`/`symlink_denied`/`link_denied`（危险文件操作被拒）等。
-- 与第 11 节的 `audit.log`（审批/权限事件）相互独立，排查安全事件时可结合查看。
-
-### 16.6 会话内容脱敏与截断
-
-- 持久化会话消息（`server/routes/chat.py`）在落库前经过 `_sanitize_messages` 脱敏与截断：
-  - 自动识别并遮盖密钥样例（`sk-`/`ghp_`/`glpat_`/`AKIA` 等）、JWT、以及 `key:`/`password:` 等赋值式中的敏感值；
-  - 对 thought / 工具入参 / 工具结果 / 答案 / 搜索词按上限截断（thought 2000、工具结果 3000、答案 20000、搜索词 1500 字符），防止数据库膨胀与敏感内容长期留存。
-- 返回给前端的消息为原始完整内容，脱敏**仅作用于持久化存储**。
-
-> 上述加固均为代码层默认行为，无需额外配置即可生效。若需主动放开沙箱网络，请仅按 16.2 的最小必要原则设置 `SANDBOX_NETWORK_ALLOWLIST`。

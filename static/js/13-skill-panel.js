@@ -111,7 +111,7 @@ function renderSkillPanelList() {
       }
     };
     row.addEventListener('click', toggle);
-    row.addEventListener('keydown', (e) => {
+    row.addEventListener('keydown', (/** @type {KeyboardEvent} */ e) => {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
     });
   });

@@ -83,8 +83,8 @@ function attachmentThumbUrl(name, path) {
 // 为什么需要：端点挂掉 / 文件被清理 / 权限变化都会让 <img> 白掉，
 // 浏览器会把 alt 文本画出来——用户看到的是一个"坏掉的图片"，比不给图还糟。
 document.addEventListener('error', function (e) {
-  const img = e.target;
-  if (!img || img.tagName !== 'IMG' || !img.classList.contains('msg-attach-img')) return;
+  const img = asTag(e.target, 'IMG');
+  if (!img || !img.classList.contains('msg-attach-img')) return;
   const cell = img.closest('.msg-attach-thumb');
   const name = img.dataset.name || img.alt || '图片';
   const meta = (state.uploadFiles || {})[name] || {};
@@ -105,8 +105,8 @@ document.addEventListener('error', function (e) {
 const _WIDE_RATIO = 5;
 
 document.addEventListener('load', function (e) {
-  const img = e.target;
-  if (!img || img.tagName !== 'IMG' || !img.classList.contains('msg-attach-img')) return;
+  const img = asTag(e.target, 'IMG');
+  if (!img || !img.classList.contains('msg-attach-img')) return;
   if (!img.naturalWidth || !img.naturalHeight) return;
   if (img.naturalWidth / img.naturalHeight < _WIDE_RATIO) return;
   const cell = img.closest('.msg-attach-thumb');
@@ -141,7 +141,7 @@ function _ensureLightbox() {
   box.innerHTML = _LIGHTBOX_HTML;
   document.body.appendChild(box);
   box.addEventListener('click', (e) => {
-    if (e.target.closest('[data-lightbox-close]')) closeImageLightbox();
+    if (evTarget(e)?.closest('[data-lightbox-close]')) closeImageLightbox();
   });
   return box;
 }
@@ -149,14 +149,15 @@ function _ensureLightbox() {
 function openImageLightbox(src, caption) {
   if (!src) return;
   const box = _ensureLightbox();
-  const img = box.querySelector('.lightbox-img');
-  const cap = box.querySelector('.lightbox-caption');
+  const img = /** @type {HTMLImageElement | null} */ ($('#image-lightbox .lightbox-img'));
+  const cap = $('#image-lightbox .lightbox-caption');
+  if (!box || !img || !cap) return;
   img.src = src;
   img.alt = caption || '';
   cap.textContent = caption || '';
   box.classList.remove('hidden');
   document.body.classList.add('lightbox-open');
-  const btn = box.querySelector('.lightbox-close');
+  const btn = $('#image-lightbox .lightbox-close');
   if (btn) btn.focus();
 }
 
@@ -164,15 +165,16 @@ function closeImageLightbox() {
   const box = document.getElementById('image-lightbox');
   if (!box || box.classList.contains('hidden')) return;
   box.classList.add('hidden');
-  box.querySelector('.lightbox-img').src = '';
+  const img = /** @type {HTMLImageElement | null} */ ($('#image-lightbox .lightbox-img'));
+  if (img) img.src = '';
   document.body.classList.remove('lightbox-open');
 }
 
 // 点缩略图 → 弹窗（阻止默认的"新标签页打开"）
 document.addEventListener('click', function (e) {
-  const cell = e.target.closest && e.target.closest('.msg-attach-thumb');
+  const cell = evTarget(e)?.closest('.msg-attach-thumb');
   if (!cell) return;
-  const img = cell.querySelector('img');
+  const img = asTag(cell.querySelector('img'), 'IMG');
   if (!img) return;
   e.preventDefault();
   openImageLightbox(img.currentSrc || img.src, img.dataset.name || img.alt || '');
@@ -231,6 +233,8 @@ function appendMessage(role, content, attachments, targetContainer) {
   scrollToBottom();
   // 渲染完顺手校准"重新生成"挂在谁身上：最后一条若不是助手回答，上一个气泡的按钮要撤掉
   syncMsgActions(container);
+  // 新增/恢复了消息 → 右侧刻度条要跟着重算（用户消息条数变了）
+  scheduleMsgNavRefresh();
   return div;
 }
 
@@ -360,6 +364,8 @@ function renderHistoryMessage(m, targetContainer) {
   `;
   container.appendChild(div);
   scrollToBottom();
+  // 历史消息是逐条渲染的，每条都排一次刻度 —— scheduleMsgNavRefresh 合并到下一帧，不会 O(n²)
+  scheduleMsgNavRefresh();
 
   // 历史消息中若携带产出文件元数据，还原下载卡片并填充会话文件映射（刷新/重登录后可见）
   const histFiles = (m && m.files) || null;

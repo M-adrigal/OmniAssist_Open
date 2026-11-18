@@ -502,6 +502,9 @@ function updateAnswerArea(stream) {
   stream.answerEl.innerHTML = renderContent(stream.answerContent);
   stream.answerEl.classList.add('streaming-cursor');
   scrollToBottom();
+  // 正文在长高，浮标的「是否贴底」判断和刻度位置都变了。
+  // 走到这里已在外层节流范围内，内部还会再合并一帧，不会每个 token 量一次 DOM。
+  scheduleMsgNavRefresh();
 }
 
 // ===== 可复用的 SSE 事件处理 =====
@@ -509,7 +512,18 @@ function updateAnswerArea(stream) {
 function handleStreamEvent(stream, parsed) {
   // 返回: 'done' | 'error' | null
   if (parsed.type === 'error') {
-    stream.answerEl.textContent = '\u9519\u8bef: ' + parsed.content;
+    // 不要把已输出的正文覆盖掉 —— 用户最在意的往往不是"出错了"，
+    // 而是"我刚看到的回答没了"。有正文就在后面追加一段中断说明；
+    // 正文为空时才把说明当正文显示。
+    const _hadContent = (stream.answerEl.textContent || '').trim().length > 0;
+    if (_hadContent) {
+      const notice = document.createElement('div');
+      notice.className = 'stream-notice';
+      notice.textContent = parsed.content;
+      stream.answerEl.appendChild(notice);
+    } else {
+      stream.answerEl.textContent = parsed.content;
+    }
     stream.answerEl.classList.remove('streaming-cursor');
     showToast(parsed.content, 'error');
     return 'error';

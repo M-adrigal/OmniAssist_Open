@@ -61,7 +61,7 @@ def update_user_api(public_id: str, req: UserUpdateRequest, request: Request):
 def delete_user_api(public_id: str, request: Request, keep_files: bool = False):
     current_user = require_permission(request, "users", "delete")
 
-    if public_id == current_user["id"]:
+    if public_id == current_user["public_id"]:
         raise HTTPException(status_code=400, detail="不能删除自己的账号")
 
     target = get_user_by_public_id(public_id)

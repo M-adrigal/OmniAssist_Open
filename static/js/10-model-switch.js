@@ -184,7 +184,7 @@ function initModelSwitchEvents() {
   const menu = $('#model-menu');
   if (menu) {
     menu.addEventListener('click', (e) => {
-      const item = e.target.closest('[data-entry]');
+      const item = evTarget(e)?.closest('[data-entry]');
       if (item) onPickModel(item.dataset.entry);
     });
   }
@@ -200,7 +200,10 @@ function initModelSwitchEvents() {
   });
 
   document.addEventListener('click', (e) => {
-    if (!e.target.closest('#model-menu') && !e.target.closest('#btn-model')) closeModelMenu();
+    // 注意用 !(x?.closest(...)) 而不是 !x?.closest(...)：后者在"目标不是元素"
+    // 时前半句是 undefined，取反得 true，会误判成"点在菜单外"而关闭菜单。
+    const t = evTarget(e);
+    if (t && !t.closest('#model-menu') && !t.closest('#btn-model')) closeModelMenu();
   });
 
   const ok = $('#btn-confirm-switch-model');

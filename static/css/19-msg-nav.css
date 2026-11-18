@@ -1,0 +1,435 @@
+/* 19-msg-nav.css
+ * 消息导航：右侧问题刻度条 + 回到底部浮标
+ *
+ * 两个控件是同一件事的两半，都解决「滚上去之后找不到自己在哪 / 回不去」：
+ *   ① 刻度条：把每条提问在整段对话里的**相对位置**画成右侧一列短横线。
+ *      悬停时展开成带文字的面板，点一条跳到对应问题。
+ *   ② 回到底部浮标：不在底部时浮在输入框上方，点一下回到最新。
+ *      有后台任务在跑时它带一圈转动的弧，表示「上面还有东西在长」。
+ *
+ * 为什么不合并成一个：刻度条始终在右侧、始终占位（哪怕只有 2 条提问），
+ * 浮标只在「离开底部」时出现、位置贴着输入框。两者出现条件与位置都不同，
+ * 合并会导致「在底部时右侧仍有一列线」或「滚上去后要跑去右边找按钮」。
+ */
+
+/* ===== 右侧问题刻度条 =====
+   两个状态：
+     · 静止：一列短横线，无底色、无内边距，不拦事件。
+     · 悬停：整块撑开成一张面板 —— 带底色、圆角、内边距、投影，
+       每条提问文字 + 右侧横线一起显示，点哪条跳到哪条。
+
+   为什么是"整列一起展开"而不是"只浮出悬停那条"：
+   只浮一条时，用户看不到"总共有几个问题、现在在第几个"，那正是这个
+   控件存在的理由。整列展开才能一眼看到全局。展开后是有底的实体面板，
+   不会像无底文字那样与正文叠成一团。
+
+   ## 静止态是「11 行窗口」，不是「压扁的长条」
+
+   经历过两版错误：
+
+   第一版：由内容撑高。14 条 350px、25 条 625px，超过 max-height 被
+   overflow:hidden 静默硬切 —— 长度不可控。
+
+   第二版（也错）：固定 200px 轨道，把所有条目按 flex:1 均分压进去。
+   长度确实可控了，但 40 条时行距被压到 4.6px，横线糊成一片灰条，
+   根本数不清有几条，也点不准。
+
+   现在这版按参考图做：**间距保持正常（--nav-row: 40px），只显示
+   NAV_SLOTS=11 行，上下各留一行「缩短淡出」暗示还有更多**，
+   超出窗口的条目靠 .msg-nav-track 整体位移来"翻页"。
+   DeepSeek 参考图实测：相邻间距 39.5px、横线 11.5px、高亮 17×4px、
+   整列占视口高 37%。这里取间距 40px × 11 行 = 440px。
+   ⚠️ 行距和横线长度是**联动的**：横线长 / 间距 = 0.291 才是参考图的密度。
+   只把横线改小而不动行距，比值会掉到 0.208，横线稀疏成点阵。
+   要改尺寸就两根一起改，别单独调一个。
+
+   窗口位移由 JS 写 --nav-shift（负值向上移），做法见 14-msg-nav.js
+   的 _syncNavWindow()。为什么不直接用 nav.scrollTop：overflow:hidden
+   元素的可编程滚动在无头环境和部分浏览器里行为不一致，
+   用 transform 位移是确定性的。
+
+   横向位置：**贴聊天区右边缘**，只留 10px。
+   这一点按参考图逐像素量过 —— 深色参考图面板右边缘在 x=855 / 图宽 862
+   （右边距 6px），浅色参考图在 x=770 / 图宽 800（右边距约 25px）。
+   两张图一致说明面板是从窗口右边长出来的，不是浮在正文列右侧的留白里。
+
+   我一度按「对齐正文列右边界」把它往里收了约 70px，理由是
+   "离正文太远读起来跟对话没关系" —— 方向错了。这个面板是**导航浮层**，
+   不是正文的一部分；贴着屏幕边缘既符合"抽屉从边上拉出来"的预期，
+   盖住的正文也更少。定位基准是 #chat-area（已 position:relative），
+   它不含侧栏，所以侧栏收起时面板跟着左移，不会飘出窗口。 */
+.msg-nav {
+  /* 行高必须是真的变量，不能只写 var() 的 fallback —— 后者在
+     getComputedStyle 里查不到，脚本的「变量定义了没有」审计会漏掉它。
+     而且 JS 的窗口位移量要从这里读（见 _navRowPx），
+     所以 CSS 改行高时 JS 自动跟随，不会两边对不上。 */
+  --nav-row: 40px;
+  --nav-slots: 11;
+  position: absolute;
+  top: 50%;
+  /* 10px = 6px 留给 #chat-messages 的滚动条（实测 6px）+ 4px 呼吸。
+     不给 #chat-area 加 padding —— 那会同时挤压消息列宽度，改动面大 */
+  right: 10px;
+  transform: translateY(-50%);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  /* 静止态宽度 34px 而不是 14px：
+     14px 宽、2px 高的横线用鼠标很难命中，实测经常"划过去没反应"。
+     多出来的 20px 是透明感应区，落在正文列右侧的留白里，
+     不压住任何文字（正文右边界约在留白左缘，这里只占留白）。 */
+  width: 34px;
+  /* 高度 = 行数 × 行高，必须是内容区的整数倍。
+     全局 box-sizing:border-box，所以静止态**不能有 border**：
+     1px 边框会吃掉 2px，440px 里只装下 10 整行、首末各露 1px 残边，
+     看起来像"上下两行被切了一半"。透明边框也照样占位，所以这里是
+     border:0，边框只在展开成面板时才加。 */
+  height: calc(var(--nav-row) * var(--nav-slots));
+  border: 0;
+  /* 窗口外的不显示，也不用手动裁：track 位移后自然被切掉 */
+  overflow: hidden;
+  overscroll-behavior: contain;
+  pointer-events: none;
+  padding: 0;
+  border-radius: 14px;
+  background: transparent;
+  box-shadow: none;
+  opacity: 0;
+  /* ⚠️ 只过渡「不改变几何」的属性：opacity / 颜色 / 阴影。
+     **width / height / padding / transform 一律不做过渡。**
+     原因不是审美，是正确性：
+     JS 在加上 `.expanded` 的**同一帧**就要量 rect 来算"让指针那条留在指针下"
+     的位置（见 _openMsgNavPanel）。如果这些属性有过渡，那一刻量到的是
+     **过渡起点**而不是终态 —— 算出来的位移全错。
+     实测（14 条，过渡开着）7 个指针位置只有 1 个对准，偏差 17~110px；
+     而注入 `transition:none` 后 35/35 全对 —— **测试一直是绿的，
+     因为测试自己屏蔽了过渡**。真实浏览器里用户看到的就是"点不到要的那条"。
+     几何过渡与像素级定位不可兼得：要么量到起点（定位错），
+     要么等过渡完再对（看见跳动）。定位正确优先，面板改为瞬时成形 + 淡入。 */
+  transition: opacity 0.16s ease, background-color 0.16s ease,
+              border-color 0.16s ease, box-shadow 0.16s ease;
+}
+.msg-nav.show { opacity: 1; }
+
+/* 位移层：静止态靠它"翻页"，展开态归零。
+   两者都是纵向连续的，所以只过渡 transform 就够，不需要改布局。 */
+.msg-nav-track {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  flex: 0 0 auto;
+  transform: translateY(var(--nav-shift, 0px));
+  transition: transform 0.28s cubic-bezier(0.4, 0.05, 0.2, 1);
+}
+
+/* 展开成面板 —— 由 JS 加 .expanded 类控制，不用 :hover。
+   原因见 14-msg-nav.js「面板展开/收起」那段：纯 :hover 在指针从
+   刻度线移进面板、或去读被盖住的正文时会瞬间收起，点不到目标。
+   宽度与内边距一起过渡，看起来是"从一条线向左长出来"；
+   右边缘固定（right 定位），所以向左展开。 */
+.msg-nav.expanded {
+  pointer-events: auto;
+  overflow-y: auto;
+  /* 面板展开后要压在浮标之上：两者都在右侧同一列，浮标 z-index 35
+     会让它戳在面板右下角，看着像面板上打了一个补丁 */
+  z-index: 40;
+  width: 300px;
+  /* 高度：从 92% 收到 60%（用户「弹窗不用那么长」）。
+     92% 时 14 条能一次铺开，但面板上下只留 4%，几乎把正文整列盖死 ——
+     它终究是个导航浮层，不该占满整屏；留 20% 上下余量才能一眼看出
+     "底下还有对话"。条数多时面板内部滚动，这是浮层该有的行为。
+     height: auto 覆盖静止态的固定窗口高度 —— 面板要靠内容自然高，
+     再由 max-height 封顶。 */
+  height: auto;
+  max-height: 60%;
+  padding: 12px 12px 12px 14px;
+  /* 展开时面板要**纵向让位**：让指针所指的那一条回到指针下方。
+     静止态的行距是 40px、面板只有 29px，行距一变"指针下面是哪条"就变了
+     —— 指针停在第 8 条、展开后指针下成了第 12 条（实测偏 115px），
+     用户点下去会跳到错误的对话，这就是「没有定位到刻度对应的对话」。
+     面板装得下全部条目时（14 条）根本没有滚动空间，**只能挪面板**。
+     位移量由 JS 算（见 _openMsgNavPanel），夹取在聊天区内。
+     过渡只给 transform，宽度/高度各自有过渡，混在一起会互相拖累。 */
+  transform: translateY(calc(-50% + var(--nav-panel-shift, 0px)));
+  /* 同 .msg-nav：几何属性不过渡，只过渡不改变布局的属性。
+     理由见基础类上的长注释 —— JS 在加类的同一帧就要量终态几何。 */
+  transition: opacity 0.16s ease, background-color 0.16s ease,
+              border-color 0.16s ease, box-shadow 0.16s ease;
+  /* 边框只在面板态出现：静止态那 1px 会吃掉 440px 窗口的 2px，
+     导致装不下 11 整行（见 .msg-nav 上的注释）。 */
+  border: 1px solid var(--line-soft);
+  background: var(--surface-dialog);
+  box-shadow: 0 12px 34px rgba(16, 24, 40, 0.16), 0 2px 6px rgba(16, 24, 40, 0.06);
+}
+/* 面板态 dispels 位移：所有条目按自然顺序铺开、由面板自己滚 */
+.msg-nav.expanded .msg-nav-track { transform: none; }
+
+/* 单条刻度 = 一行，行高固定。
+   固定行高是这一版的关键 —— 上一版用 flex:1 均分，40 条时被压到 4.6px，
+   横线糊成一片。行高不由条数决定，条数只决定"窗口里显示哪 11 行"。 */
+.msg-nav-item {
+  flex: 0 0 var(--nav-row);
+  height: var(--nav-row);
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: right;
+  cursor: pointer;
+  outline: none;
+  transition: color 0.14s ease;
+}
+
+/* 横线本体：不用 border 而用一个 span，才能单独给长度做过渡。
+
+   尺寸按用户给的 DeepSeek 截图**逐像素量过**（canvas 读原图像素，
+   并剔除顶部浏览器工具栏的白色噪点）：
+     普通 11.5×3、高亮 17×4、相邻间距 39.5、整列占视口 37%。
+
+   绝对值不能直接照搬（截图 1920 宽、我们视口 1280，且图自带缩放），
+   但**比例与缩放无关**。正确做法是拿横线跟**它自己的行距**比，
+   而不是跟正文行距或视口宽比 —— 刻度是等距排列的，
+   决定观感的是"横线长 / 相邻间距"这个密度比：
+     · DeepSeek: 11.5 / 39.5 = 0.291
+     · 我们:     12 / 40   = 0.300   （差 3%，肉眼无差）
+   所以行距 48 → 40 时，横线必须跟着 16 → 12 一起缩。
+   只缩横线不动行距，比值掉到 0.208，整列会退化成"稀疏点阵" ——
+   这就是先前单独把横线改小反而更难看的原因。**两者是联动的。**
+
+   高度取 3px：DeepSeek 是 3，且 2px 在非整数 DPR 下会糊成半透明灰影，
+   3px 是能稳定渲染成"一根线"的最小值。
+   高亮 17×4：倍数 17/11.5 = 1.48，我们 17/12 = 1.42，接近；
+   厚度多 1px，"当前项"才跳得出来。 */
+.msg-nav-dash {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 3px;
+  /* 1.5px = 高度的一半，两端是完整半圆；写 2px 会让 3px 高的线
+     上下被削平，看着像小方块 */
+  border-radius: 1.5px;
+  background: currentColor;
+  opacity: 0.42;
+  transition: width 0.18s ease, height 0.18s ease,
+              opacity 0.18s ease, background 0.18s ease;
+}
+
+/* 窗口上下沿的「还有更多」提示：中间 9 条完整，首末各 1 条缩短 + 淡出。
+   那是"后面还有内容"的视觉暗示，不是装饰。
+
+   ⚠️ 这里踩过一个坑：最初写成 `.is-truncated-top .msg-nav-item:first-child`，
+   结果缩短的是 **DOM 里的第一条**（第 1 条提问），而窗口平移到中段后
+   它早就滚出可见区了 —— 用户看到的窗口内首末两行一点变化都没有，
+   变量和 class 全对，只有"缩短"这个效果永远看不见。
+   :first-child 是"整个列表的第一个"，不是"窗口里的第一个"。
+   所以改由 JS 在 _syncNavWindow 里把 is-edge-top/is-edge-bottom
+   精确打到**当前窗口内**的首末行上。真首条/真末条不加（贴边时不缩）。 */
+.msg-nav-item.is-edge-top .msg-nav-dash {
+  /* 8px = 普通 12px 的 67%，DeepSeek 的比例是 11.5 → 约 8（0.70）。
+     再短就只剩 7 个像素、在非整数 DPR 下会掉成 6 或 5，读起来像渲染残片。
+     弱化靠三个维度同时做：长度 67%、透明度 .18、颜色不变 —— 缺一个都不够。 */
+  width: 8px;
+  opacity: 0.18;
+}
+.msg-nav-item.is-edge-bottom .msg-nav-dash {
+  width: 8px;
+  opacity: 0.18;
+}
+/* 缩短的两条别抢当前项 —— 如果正好是 active，以 active 为准 */
+.msg-nav-item.is-edge-top.active .msg-nav-dash,
+.msg-nav-item.is-edge-bottom.active .msg-nav-dash {
+  width: 17px;
+  opacity: 1;
+}
+
+/* 标题：静止时宽度 0（不是 opacity:0 —— 那样仍占位，14 条会把整列
+   撑成一面墙）。单行截断，长问题不会把面板撑到半个屏幕。 */
+.msg-nav-title {
+  flex: 0 1 auto;
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: 0;
+  transition: max-width 0.2s ease, opacity 0.16s ease;
+}
+
+/* 展开面板：整列一起放开标题与行距。
+   行高必须改回 flex:0 0 auto —— 静止态是固定 40px 行（窗口），
+   展开后要按内容自然排、由面板滚动，两者不能共用一套值。
+   padding 5px → 行高 29px：面板上限 60% 的容量下，14 条正好铺满。
+   14 条是最常见的规模，常见规模要一眼看全才有"总共有几个问题"的意义。 */
+.msg-nav.expanded .msg-nav-item {
+  flex: 0 0 auto;
+  height: auto;
+  padding: 5px 0;
+  color: var(--text-secondary);
+}
+.msg-nav.expanded .msg-nav-title {
+  max-width: 240px;
+  opacity: 1;
+}
+/* 面板态不做"缩短首末条"—— 那里是完整清单，缩短只会看着像渲染不全 */
+.msg-nav.expanded .msg-nav-item.is-edge-top .msg-nav-dash,
+.msg-nav.expanded .msg-nav-item.is-edge-bottom .msg-nav-dash {
+  width: 12px;
+  opacity: 0.42;
+}
+
+/* 当前阅读位置（滚动时由 JS 算最近的提问）：文字变亮、线变长变亮。
+   DeepSeek 里当前那行是蓝色长横线（17×4），一眼能找到"我读到哪了"。 */
+.msg-nav-item.active { color: var(--text-primary); }
+.msg-nav-item.active .msg-nav-dash {
+  width: 17px;
+  height: 4px;
+  border-radius: 2px;
+  opacity: 1;
+  background: var(--accent);
+}
+
+.msg-nav-item:hover,
+.msg-nav-item:focus-visible { color: var(--text-primary); }
+.msg-nav-item:hover .msg-nav-dash,
+.msg-nav-item:focus-visible .msg-nav-dash {
+  width: 17px;
+  height: 4px;
+  border-radius: 2px;
+  opacity: 1;
+  background: var(--accent);
+}
+
+/* 深色：面板比画布亮两档，横线暗一档 —— 深底上高对比的细线会发毛 */
+.dark .msg-nav.expanded {
+  background: #26262e;
+  border-color: rgba(255, 255, 255, 0.09);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.66), 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+.dark .msg-nav-item { color: #8a8a99; }
+.dark .msg-nav.expanded .msg-nav-item { color: #b9b9c6; }
+.dark .msg-nav-dash { background: #9a9aa8; opacity: 0.34; }
+.dark .msg-nav-item.active { color: #f0f0f4; }
+.dark .msg-nav-item.active .msg-nav-dash { background: var(--accent); opacity: 1; }
+.dark .msg-nav-item:hover { color: #ffffff; }
+
+/* 窄屏：正文两边本来就不宽，右侧刻度条会压到内容上，直接不显示 */
+@media (max-width: 900px) {
+  .msg-nav { display: none; }
+}
+
+/* ===== 回到底部浮标 =====
+   挂在 .chat-composer **内部**，用 bottom:100% 浮在输入卡上沿。
+
+   为什么不挂在外面靠 JS 算坐标（那段弯路值得记）：
+   曾经为了让它和右侧刻度条共用一根右缘竖线，把它挂到 #chat-area 上，
+   右偏移直接写 10px。但两者的盒子根本不同 —— #chat-area 右缘是窗口，
+   而输入卡宽 850、居中，右缘比窗口内缩 103px。结果浮标落在
+   x=1270，输入卡右缘在 1177：**整个浮标飘在卡片外侧的空白里**，
+   垂直方向只差 14px 也救不回来，看着跟输入框完全没关系。
+   还额外引入了一个由 JS 现算的 --fab-bottom 变量和 ResizeObserver。
+
+   现在的写法不给任何误差机会：浮标是 .chat-composer 的子元素，
+   `right` 相对卡片的 padding box 算，`bottom:100%` 相对卡片的上边界算。
+   卡片多宽、在哪、圆角多大都不需要知道。免责声明、审批栏、textarea
+   自动增高改变的是卡片高度，而 bottom:100% 永远贴住卡片上沿，不用改。
+   （.chat-composer 已有 border-radius 但没设 position —— 见下方那条规则，
+    绝对定位的基准因此必须是它自己，否则会一路找到 #chat-area。） */
+.chat-composer { position: relative; }
+
+.scroll-bottom-fab {
+  position: absolute;
+  /* 8px：卡片内边距是 10px，贴太紧会压到圆角弧线；30px 宽的圆钮放在
+     padding box 内、留 8px 就刚好落在卡片右上角的视觉内侧 */
+  right: 8px;
+  bottom: 100%;
+  transform: translateY(6px);
+  z-index: 35;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  /* 与卡片上沿留 8px 呼吸，不贴着输入卡边框 */
+  margin-bottom: 8px;
+  border-radius: 50%;
+  /* 半透明 + 模糊：它是浮在正文之上的，实心块会盖住文字。
+     毛玻璃让底下的字仍可辨，同时保证箭头有足够对比度。 */
+  border: 1px solid var(--line-soft);
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  box-shadow: 0 2px 10px rgba(16, 24, 40, 0.1);
+  transition: opacity 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+}
+.scroll-bottom-fab.show {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+/* 刻度面板展开时浮标让位：面板展开后有 300px 宽，会盖住输入卡右上角
+   那一带（浮标正浮在卡片上沿、靠右）。浮标此刻既看不清也点不到
+   （被压在下面），留着只会让人以为"这里有两个圆点"——
+   直接淡出，面板收起再回来。
+
+   选择器必须跟着浮标的实际层级走：浮标现在是
+   #chat-area > #chat-input-container > .chat-composer > 浮标，
+   而面板是 #chat-area > nav。两者隔了两层，所以用
+   `~ .chat-input-container` 下钻。这类"位置挪了但选择器没跟着改"
+   的失效永远不报错 —— 只表现为面板展开时浮标仍然亮着。 */
+.msg-nav.expanded ~ .chat-input-container .scroll-bottom-fab {
+  opacity: 0;
+  pointer-events: none;
+}
+.scroll-bottom-fab:hover {
+  color: var(--text-primary);
+  box-shadow: 0 4px 14px rgba(16, 24, 40, 0.16);
+}
+.scroll-bottom-fab svg { display: block; }
+
+.dark .scroll-bottom-fab {
+  /* 深色下用半透明黑 + 模糊：既压得住底下的正文，又不会在深画布上
+     显出一块明显更亮的补丁（#3xxxxx 实心块就会那样） */
+  background: rgba(58, 58, 70, 0.9);
+  border-color: rgba(255, 255, 255, 0.14);
+  color: #d6d6e0;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.5);
+}
+.dark .scroll-bottom-fab:hover {
+  background: rgba(74, 74, 88, 0.95);
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+}
+
+/* 有任务在跑：外圈一道转动的弧。
+   用伪元素画而不是换图标 —— 箭头位置不能变，否则"回到最新"这个动作
+   在等待期间会变得认不出来。 */
+.scroll-bottom-fab.busy::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--accent);
+  animation: fab-spin 0.9s linear infinite;
+}
+@keyframes fab-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 窄屏：输入区已经很挤，浮标往上挪一点避开发送按钮那一排 */
+@media (max-width: 600px) {
+  .scroll-bottom-fab { margin-bottom: 4px; }
+}

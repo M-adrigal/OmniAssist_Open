@@ -37,6 +37,93 @@ def _get_connection() -> sqlite3.Connection:
     return _local.conn
 
 
+def _backfill_and_enforce_public_id(conn: sqlite3.Connection):
+    """补齐缺失的 public_id，并把该列升级为 NOT NULL。
+
+    为什么要动表结构（SQLite 不支持 `ALTER COLUMN ... SET NOT NULL`）：
+    `public_id` 是用户身份的唯一对外锚点。它若为 NULL，`get_current_user`
+    会解析失败返回 None → 该用户所有接口 401，**永久无法登录**，
+    而且现象是"密码明明对"这种最难查的形态。建表能写 NOT NULL，
+    但存量库的列是后加的（ADD COLUMN 加不上 NOT NULL），必须重建表。
+
+    迁移策略（幂等，可反复执行）：
+      1. 先回填：NULL / 空串的 public_id 补成新生成的 `u_<20hex>`；
+      2. 再检查列的 notnull 标记，已是 NOT NULL 就直接返回（不重建）；
+      3. 否则重建 users 表（保留 id，因为 id 是全库外键的锚点）。
+
+    为何保留 id：sessions / model_configs / memory / secrets / skills 等
+    9 张表都以 users.id 为外键。重建表时若让 id 重新自增，等于**把每个用户的
+    历史数据全部指向别人**。所以显式复制 id。
+    """
+    # --- 1. 回填 ---
+    rows = conn.execute(
+        "SELECT id FROM users WHERE public_id IS NULL OR TRIM(public_id) = ''"
+    ).fetchall()
+    for r in rows:
+        conn.execute("UPDATE users SET public_id = ? WHERE id = ?",
+                     (_gen_public_id(), r["id"]))
+    if rows:
+        logger.warning(f"已为 {len(rows)} 个存量用户回填 public_id（缺失时会导致该账号永久 401）")
+        conn.commit()
+
+    # --- 2. 判断列约束 ---
+    info = conn.execute("PRAGMA table_info(users)").fetchall()
+    pid_col = next((c for c in info if c[1] == "public_id"), None)
+    if pid_col is None or pid_col[3] == 1:      # 无此列（异常）或已是 NOT NULL
+        return
+
+    # --- 3. 重建表 ---
+    # 前置检查：重建语句里写死了一份列清单。若将来 users 表加了新列，而某个
+    # 存量库还没升到 NOT NULL，这里的 INSERT ... SELECT 就会把新列丢掉。
+    # 与其静默丢数据，不如放弃加约束（回填已经完成，登录是好的）并留下告警。
+    _EXPECTED = {"id", "username", "password_hash", "user_type", "description",
+                 "must_change_password", "public_id", "created_at", "updated_at"}
+    _actual = {c[1] for c in info}
+    if _actual - _EXPECTED:
+        logger.warning(
+            "users 表存在重建清单外的列 %s，跳过 NOT NULL 升级（public_id 已回填，"
+            "登录不受影响）。请同步更新 _backfill_and_enforce_public_id 的列清单。",
+            sorted(_actual - _EXPECTED),
+        )
+        return
+
+    logger.info("users.public_id 升级为 NOT NULL（重建表，保留原 id）")
+    conn.execute("PRAGMA foreign_keys=OFF")     # 重建期间不校验外键，避免中途失败
+    try:
+        conn.execute("""
+            CREATE TABLE users_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                user_type TEXT NOT NULL DEFAULT 'user',
+                description TEXT DEFAULT '',
+                must_change_password INTEGER DEFAULT 0,
+                public_id TEXT NOT NULL UNIQUE,
+                created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+                updated_at TIMESTAMP DEFAULT (datetime('now','localtime'))
+            )
+        """)
+        conn.execute("""
+            INSERT INTO users_new
+                (id, username, password_hash, user_type, description,
+                 must_change_password, public_id, created_at, updated_at)
+            SELECT id, username, password_hash, user_type, description,
+                   COALESCE(must_change_password, 0), public_id,
+                   created_at, updated_at
+            FROM users
+        """)
+        conn.execute("DROP TABLE users")
+        conn.execute("ALTER TABLE users_new RENAME TO users")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_public_id ON users(public_id)")
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        # 迁移失败不能拖垮启动：回填已生效（登录能用），只是没加上约束
+        logger.error(f"users.public_id NOT NULL 迁移失败（已回滚，不影响登录）: {e}")
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
 def init_db() -> str:
     """初始化数据库，创建用户表并插入默认管理员。返回管理员初始密码。"""
     os.makedirs(DB_DIR, exist_ok=True)
@@ -48,6 +135,10 @@ def init_db() -> str:
     conn.execute("PRAGMA busy_timeout=5000")
 
     conn.execute("""
+        -- 全库时间口径：统一写**本地时间**（datetime.now / datetime('now','localtime'))。
+        -- 历史教训：CURRENT_TIMESTAMP 是 UTC，存量代码路径都显式传值才没踩坑；
+        -- search_usage 曾因此与同行 day 差 8 小时（2026-10-27 数据审计）。
+        -- 新增时间列/写入路径必须显式传本地时间，不要依赖默认值。
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
@@ -55,9 +146,12 @@ def init_db() -> str:
             user_type TEXT NOT NULL DEFAULT 'user',
             description TEXT DEFAULT '',
             must_change_password INTEGER DEFAULT 0,
-            public_id TEXT UNIQUE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            -- 对外不透明标识，NOT NULL：没有它就等于这个用户永远解析不到身份
+            -- （get_current_user 返回 None → 所有接口 401 锁死）。
+            -- 旧库该列可为空，由 _backfill_and_enforce_public_id 兜底补齐。
+            public_id TEXT NOT NULL UNIQUE,
+            created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+            updated_at TIMESTAMP DEFAULT (datetime('now','localtime'))
         )
     """)
 
@@ -78,14 +172,16 @@ def init_db() -> str:
     except sqlite3.OperationalError:
         pass
 
+    _backfill_and_enforce_public_id(conn)
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
             user_id INTEGER NOT NULL,
             title TEXT DEFAULT '新对话',
             messages TEXT DEFAULT '[]',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+            updated_at TIMESTAMP DEFAULT (datetime('now','localtime')),
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     """)
@@ -104,8 +200,8 @@ def init_db() -> str:
             thinking_mode TEXT DEFAULT 'low',
             temperature_mode TEXT DEFAULT 'auto',
             temperature REAL DEFAULT 0.7,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+            updated_at TIMESTAMP DEFAULT (datetime('now','localtime')),
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     """)
@@ -146,10 +242,20 @@ def init_db() -> str:
         CREATE TABLE IF NOT EXISTS search_config (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             tavily_api_key_encrypted TEXT DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+            updated_at TIMESTAMP DEFAULT (datetime('now','localtime'))
         )
     """)
+    # 联网搜索换成可切换供应商（v2.4.0）：tavily | deepseek
+    # 用幂等 ALTER 补齐，老库重启即完成，不需要迁移脚本。
+    for _sql in (
+        "ALTER TABLE search_config ADD COLUMN provider TEXT DEFAULT 'tavily'",
+        "ALTER TABLE search_config ADD COLUMN deepseek_api_key_encrypted TEXT DEFAULT ''",
+    ):
+        try:
+            conn.execute(_sql)
+        except sqlite3.OperationalError:
+            pass
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS permissions (
@@ -157,7 +263,7 @@ def init_db() -> str:
             role TEXT NOT NULL,
             resource TEXT NOT NULL,
             action TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
             UNIQUE(role, resource, action)
         )
     """)
@@ -170,7 +276,7 @@ def init_db() -> str:
             operator TEXT DEFAULT '',
             operator_id INTEGER DEFAULT 0,
             details TEXT DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT (datetime('now','localtime'))
         )
     """)
 
@@ -189,8 +295,8 @@ def init_db() -> str:
             source TEXT DEFAULT 'editor',
             risk_level TEXT DEFAULT 'low',
             confirmed_at TIMESTAMP DEFAULT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+            updated_at TIMESTAMP DEFAULT (datetime('now','localtime')),
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     """)
@@ -217,8 +323,8 @@ def init_db() -> str:
             user_id INTEGER NOT NULL,
             key_name TEXT NOT NULL,
             encrypted_value TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT (datetime('now','localtime')),
+            updated_at TIMESTAMP DEFAULT (datetime('now','localtime')),
             UNIQUE(user_id, key_name),
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )
@@ -247,9 +353,9 @@ def init_db() -> str:
         password_hash = _hash_password(admin_password)
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute(
-            "INSERT INTO users (username, password_hash, user_type, description, must_change_password, created_at, updated_at) "
-            "VALUES (?, ?, 'admin', '系统管理员', 1, ?, ?)",
-            ("admin", password_hash, now, now)
+            "INSERT INTO users (username, password_hash, user_type, description, must_change_password, public_id, created_at, updated_at) "
+            "VALUES (?, ?, 'admin', '系统管理员', 1, ?, ?, ?)",
+            ("admin", password_hash, _gen_public_id(), now, now)
         )
         conn.commit()
 
@@ -439,10 +545,15 @@ def get_user_must_change(user_id: int) -> bool:
 
 
 def authenticate(username: str, password: str) -> Optional[dict]:
-    """验证用户，成功返回用户信息字典，失败返回 None。"""
+    """验证用户，成功返回用户信息字典，失败返回 None。
+
+    返回的字典同时带 `id`（内部整数主键）与 `public_id`（对外不透明标识）：
+    登录成功后签 token 要用 public_id，写 DB / 判权限要用 id，两个都得给，
+    否则调用方只能自己再查一次库，或者退化成"拿一个凑合用"。
+    """
     conn = _get_connection()
     row = conn.execute(
-        "SELECT id, username, password_hash, user_type, description, must_change_password FROM users WHERE username = ?",
+        "SELECT id, username, password_hash, user_type, description, must_change_password, public_id FROM users WHERE username = ?",
         (username,)
     ).fetchone()
     if row and verify_password(password, row["password_hash"]):
@@ -459,6 +570,7 @@ def authenticate(username: str, password: str) -> Optional[dict]:
                 pass
         return {
             "id": row["id"],
+            "public_id": row["public_id"],
             "username": row["username"],
             "user_type": row["user_type"],
             "description": row["description"],
@@ -995,28 +1107,53 @@ def get_search_config() -> dict:
     conn = _get_connection()
     row = conn.execute("SELECT * FROM search_config WHERE id = 1").fetchone()
     if not row:
-        return {"tavily_api_key": "", "tavily_api_key_masked": "(未设置)"}
+        return {
+            "provider": "tavily",
+            "tavily_api_key": "", "tavily_api_key_masked": "(未设置)",
+            "deepseek_api_key": "", "deepseek_api_key_masked": "(未设置)",
+        }
     d = dict(row)
+    d["provider"] = (d.get("provider") or "tavily").strip().lower()
     d["tavily_api_key"] = _decrypt_db(d.get("tavily_api_key_encrypted", ""))
     d["tavily_api_key_masked"] = _mask_key(d["tavily_api_key"])
+    d["deepseek_api_key"] = _decrypt_db(d.get("deepseek_api_key_encrypted", ""))
+    d["deepseek_api_key_masked"] = _mask_key(d["deepseek_api_key"])
     return d
 
 
-def save_search_config(tavily_api_key: str = None) -> dict:
+def save_search_config(tavily_api_key: str = None, provider: str = None,
+                       deepseek_api_key: str = None) -> dict:
+    """保存联网搜索配置。
+
+    三个参数都支持"只改一项"：传 None 表示保持原值（空串表示清空）。
+    这样前端只改供应商时不必把已存的 Key 再回传一遍（回传等于把明文又发一次）。
+    """
     conn = _get_connection()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    encrypted = _encrypt_db(tavily_api_key or "")
+    existing = conn.execute("SELECT * FROM search_config WHERE id = 1").fetchone()
+    row = dict(existing) if existing else {}
 
-    existing = conn.execute("SELECT id FROM search_config WHERE id = 1").fetchone()
+    new_tavily = (_encrypt_db(tavily_api_key) if tavily_api_key is not None
+                  else row.get("tavily_api_key_encrypted", ""))
+    new_deepseek = (_encrypt_db(deepseek_api_key) if deepseek_api_key is not None
+                    else row.get("deepseek_api_key_encrypted", ""))
+    new_provider = ((provider or "").strip().lower()
+                    or row.get("provider") or "tavily")
+    if new_provider not in ("tavily", "deepseek"):
+        new_provider = "tavily"
+
     if existing:
         conn.execute(
-            "UPDATE search_config SET tavily_api_key_encrypted = ?, updated_at = ? WHERE id = 1",
-            (encrypted, now)
+            "UPDATE search_config SET tavily_api_key_encrypted = ?, "
+            "deepseek_api_key_encrypted = ?, provider = ?, updated_at = ? WHERE id = 1",
+            (new_tavily, new_deepseek, new_provider, now)
         )
     else:
         conn.execute(
-            "INSERT INTO search_config (id, tavily_api_key_encrypted, created_at, updated_at) VALUES (1, ?, ?, ?)",
-            (encrypted, now, now)
+            "INSERT INTO search_config (id, tavily_api_key_encrypted, "
+            "deepseek_api_key_encrypted, provider, created_at, updated_at) "
+            "VALUES (1, ?, ?, ?, ?, ?)",
+            (new_tavily, new_deepseek, new_provider, now, now)
         )
     conn.commit()
     return get_search_config()

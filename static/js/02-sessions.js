@@ -145,6 +145,10 @@ async function pollTaskStatus() {
     if (needsRender) {
       renderSessions();
     }
+    // 任务状态可能刚变（running → completed）：浮标的转圈要跟着停。
+    // 只在 needsRender 里刷新不够 —— 完成那一刻 needsRender 恰好可能为 false，
+    // 圈会一直转到下次状态变化为止。
+    refreshScrollFab();
     // 有任务运行时提高轮询频率，让完成气泡更及时
     _taskPollTick = hasRunning ? 2000 : 5000;
   } catch (e) {

@@ -1,0 +1,17 @@
+{
+  "// 说明": "只做类型检查，不产出文件。前端仍是原生 JS 平铺加载，浏览器直接跑 static/js/*.js，没有任何构建步骤。",
+  "// 关键": "必须让所有文件被当作「全局脚本」而非模块，否则跨文件函数互相看不见，会报 1200+ 个 Cannot find name。",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "moduleDetection": "legacy",
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["static/js/**/*.js", "static/js/**/*.d.ts"]
+}

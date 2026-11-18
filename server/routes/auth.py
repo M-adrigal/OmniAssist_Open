@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import time
 from base64 import b64encode as std_b64encode, urlsafe_b64encode, urlsafe_b64decode
@@ -25,6 +26,21 @@ from agent.logger import get_logger
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 logger = get_logger("auth")
+
+# public_id 的形状：`u_` + 20 位小写 hex（见 database._gen_public_id）。
+# 单独抽成一函数，是为了在 get_current_user 边界上把"两套 ID 混用"拦在入口，
+# 而不是等它变成 `WHERE user_id=?` 的静默空结果。
+_PUBLIC_ID_RE = re.compile(r"^u_[0-9a-f]{20}$")
+
+
+def _looks_like_public_id(value) -> bool:
+    """判断是否为合法的对外不透明用户标识。
+
+    故意严格（定长 + 固定前缀 + 小写 hex）：宽松匹配等于没校验，
+    真正的价值在于"整数 db_id 或前端随手拼的字符串一定过不了"。
+    """
+    return isinstance(value, str) and bool(_PUBLIC_ID_RE.match(value))
+
 
 # 令牌有效期：7 天。配合中间件滑动续期（剩余 < 阈值时自动换发新令牌），
 # 活跃用户可一直保持登录，无需重新登录。
@@ -286,18 +302,23 @@ def _sign_payload(payload: dict) -> str:
     return token
 
 
-def _generate_token(user_id: int, username: str, user_type: str) -> str:
-    # 对外仅暴露不透明 public_id，不暴露自增主键
-    pid = None
-    try:
-        _u = get_user_by_id(user_id)
-        pid = _u.get("public_id") if _u else None
-    except Exception:
-        pid = None
-    if not pid:
-        pid = str(user_id)  # 兜底（迁移后所有用户均有 public_id）
+def _generate_token(public_id: str, username: str, user_type: str) -> str:
+    """签发登录令牌。
+
+    参数必须是 `public_id`（`u_` + 20 hex），**不是 `db_id`**。
+
+    旧实现形参叫 `user_id`，内部又拿它去 `get_user_by_id()` 查一次、查不到就
+    把入参原样当 uid 塞进载荷 —— 于是传整数 db_id 和传 public_id **都能"跑通"**，
+    只是结果对错靠运气。这种"两个 ID 碰巧都能用"的签名必须消灭，否则下游改一行
+    就可能在令牌里漏出可枚举的自增主键。
+    """
+    if not _looks_like_public_id(public_id):
+        raise ValueError(
+            f"_generate_token 只接受 public_id（形如 u_ + 20 位小写 hex），收到 {public_id!r}；"
+            "内部整数主键绝不可写进令牌载荷"
+        )
     payload = {
-        "uid": pid,
+        "uid": public_id,
         "un": username,
         "ut": user_type,
         "iat": int(time.time()),
@@ -348,6 +369,19 @@ def validate_token(token: str) -> bool:
 
 
 def get_current_user(request: Request) -> Optional[dict]:
+    """解析当前登录用户。
+
+    返回两个 ID，语义严格分离（详见 docs/ARCHITECTURE.md「用户双 ID」）：
+
+      public_id  对外不透明标识（`u_` + 20 位 hex）。用于 JWT 载荷、URL 参数、
+                 文件目录名、前端可见的一切地方。**不是主键，不能当外键用。**
+      db_id      users 表自增主键。用于所有 DB 关联、权限判定、沙箱目录。
+                 **绝不可暴露给前端**，否则自增序列就把用户规模泄了。
+
+    ⚠️ 键名故意不叫 "id"：曾经叫 "id" 而值是 public_id，任何人都可能顺手把它
+    传进 `WHERE user_id=?`（该列是 INTEGER），结果是**静默返回 0 条**而不是报错
+    —— 项目里 `/task-status/all` 永远返回 `{}` 就是这么来的。
+    """
     token = request.cookies.get("auth_token") or request.headers.get("Authorization", "").replace("Bearer ", "")
     if not token:
         return None
@@ -359,8 +393,12 @@ def get_current_user(request: Request) -> Optional[dict]:
     db_user = get_user_by_public_id(pid) if pid else None
     if not db_user:
         return None
+    # 边界校验：两套 ID 的形态必须区分得开，否则下游混用无法被察觉
+    if not _looks_like_public_id(pid) or not isinstance(db_user.get("id"), int):
+        logger.warning(f"用户标识形态异常，拒绝该会话: uid={pid!r}")
+        return None
     return {
-        "id": pid,                      # 对外不透明 id（字符串），前端不直接感知自增主键
+        "public_id": pid,               # 对外不透明 id（字符串），前端不直接感知自增主键
         "db_id": db_user["id"],         # 内部整数 id，仅用于 DB 关联与权限判定
         "username": db_user["username"],
         "user_type": db_user["user_type"],
@@ -417,7 +455,7 @@ def login(req: LoginRequest, request: Request):
 
     for k in keys:
         _reset_login_failures(k)
-    token = _generate_token(user["id"], user["username"], user["user_type"])
+    token = _generate_token(user["public_id"], user["username"], user["user_type"])
     logger.info(f"用户登录成功: {req.username} (user_id={user['id']}, type={user['user_type']}) from {ip}")
     return LoginResponse(
         token=token,

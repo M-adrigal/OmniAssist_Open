@@ -20,6 +20,26 @@
 
 .modal.hidden { display: none; }
 
+/* ===== 确认类弹窗必须盖在其它弹窗之上 =====
+
+   它们是「在已打开的弹窗里再问一句」，必须压住底下那个弹窗：
+   删文件（文件库）、删记忆条目（记忆面板）、放弃改动（记忆面板）等
+   都是这种用法。而它们与 .modal 同为 z-index 200，且 DOM 位置靠前
+   （index.html 第 609/638/813 行，早于文件库 688、技能列表 730、记忆 894），
+   同层级下后面的元素覆盖前面的 → 确认框被底下那个弹窗压住，
+   只露一角、点不到按钮，看起来像「点了删除没反应」。
+
+   三个一起抬高：只改 #modal-generic-confirm 会漏掉「删除用户」
+   （#modal-confirm-delete）与「权限确认」（#modal-perm-confirm），
+   它们同样是叠在别的弹窗上问一句。
+   值取 500：高于 .modal(200)、低于技能面板(9400)/图片预览(10000)，
+   那些是独立整屏层，不该被确认框盖过。 */
+#modal-generic-confirm,
+#modal-confirm-delete,
+#modal-perm-confirm {
+  z-index: 500;
+}
+
 /* 遮罩：不再用 60% 纯黑。降低不透明度 + 轻微模糊，背景仍有上下文，弹窗才不显得"压"在黑洞上 */
 .modal-overlay {
   position: absolute;

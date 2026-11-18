@@ -9,11 +9,17 @@
     my_skill/
       SKILL.md          # 技能描述（Markdown）
       scripts/
-        tool_name.json  # 工具定义（JSON Schema 格式）
+        tool_name.py    # 工具脚本（完整 Python 源码，必须含 execute 函数）
+
+工具 schema 由 AST 从 execute() 的签名与 docstring 自动解析生成（与系统技能
+同构），**不要**手写 JSON Schema —— 2026-10-27 事故：create_user_skill 的参数
+说明曾让模型传「工具定义 JSON」，落盘成 .json 后没有任何可执行代码，
+运行时直接 NameError: name 'execute' is not defined。
 
 用户 Skill 与系统 Skill 同名时会覆盖系统 Skill。
 """
 
+import ast
 import json
 import os
 import re
@@ -89,6 +95,60 @@ def validate_skill_md(content: str):
 
 # ==================== 工具执行函数 ====================
 
+def _validate_script_code(t_name: str, code) -> tuple:
+    """校验用户技能脚本：必须是含 execute() 的完整 Python 源码。
+
+    2026-10-27 事故的守门员：曾经 tools 参数说明让模型传「工具定义 JSON」，
+    落盘后没有任何可执行代码，运行时报 NameError: name 'execute' is not defined。
+    校验必须发生在**写盘之前**，且任何一个脚本不合法就整体拒绝 ——
+    半成品技能（SKILL.md 在、脚本缺失）比创建失败更难排查。
+    """
+    if isinstance(code, dict):
+        return False, (
+            f"脚本 {t_name} 传的是工具定义 JSON（只有 schema，没有代码）。"
+            f"请把**完整的 Python 源码**（含 def execute(...) 函数）放在 code 字段；"
+            f"工具的参数 schema 不需要手写，系统会从 execute 的签名自动解析")
+    if not isinstance(code, str) or not code.strip():
+        return False, (
+            f"脚本 {t_name} 缺少代码。code 必须是完整的 Python 源码文本"
+            f"（含 def execute(...) 函数，返回字符串结果）")
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return False, f"脚本 {t_name} 语法错误（第 {e.lineno} 行）: {e.msg}"
+    has_exec = any(
+        isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "execute"
+        for n in ast.walk(tree)
+    )
+    if not has_exec:
+        return False, (
+            f"脚本 {t_name} 缺少 execute 函数：工具入口必须是 "
+            f"def execute(...)，函数参数就是工具参数，返回字符串结果")
+    return True, ""
+
+
+def _prepare_scripts(tools: list) -> tuple:
+    """把 tools 列表整体校验并规整为 [(name, code), ...]。
+
+    全部合法才返回；任何一个不合法立即返回 (None, 错误消息)。
+    """
+    prepared = []
+    for t in tools or []:
+        if not isinstance(t, dict):
+            return None, "工具脚本列表的每一项都必须是对象（含 name 与 code 字段）"
+        t_name = _sanitize_name(t.get("name", ""))
+        if not t_name:
+            continue
+        code = t.get("code")
+        if code is None and isinstance(t.get("content"), str):
+            code = t["content"]   # 兼容：content 直接给了源码字符串
+        ok, msg = _validate_script_code(t_name, code)
+        if not ok:
+            return None, msg
+        prepared.append((t_name, code))
+    return prepared, ""
+
+
 def create_user_skill(user_id: int, name: str, skill_md: str, tools: list = None) -> dict:
     """创建用户 Skill
 
@@ -96,7 +156,9 @@ def create_user_skill(user_id: int, name: str, skill_md: str, tools: list = None
         user_id: 用户 ID
         name: Skill 名称（英文标识）
         skill_md: SKILL.md 内容（Markdown 格式的技能描述）
-        tools: 工具脚本列表 [{"name": "tool_name", "content": {...JSON Schema...}}, ...]
+        tools: 工具脚本列表 [{"name": "tool_name", "code": "<完整 Python 源码>"}]。
+               code 必须是含 def execute(...) 的**完整 Python 源码**；
+               工具参数 schema 由系统从 execute 签名自动解析，不要手写 JSON Schema。
 
     Returns:
         {"success": True/False, "message": "...", "path": "..."}
@@ -110,6 +172,12 @@ def create_user_skill(user_id: int, name: str, skill_md: str, tools: list = None
     if not valid:
         logger.warning(f"创建 Skill 校验未通过 (user={user_id}, name={safe_name}): {vmsg}")
         return {"success": False, "message": f"SKILL.md 校验未通过: {vmsg}"}
+
+    # 脚本先整体校验，全部合法才动磁盘（避免半成品技能）
+    prepared, err = _prepare_scripts(tools)
+    if err:
+        logger.warning(f"创建 Skill 脚本校验未通过 (user={user_id}, name={safe_name}): {err}")
+        return {"success": False, "message": err}
 
     user_dir = _ensure_user_dir(user_id)
     skill_dir = os.path.join(user_dir, safe_name)
@@ -125,21 +193,14 @@ def create_user_skill(user_id: int, name: str, skill_md: str, tools: list = None
     with open(os.path.join(skill_dir, "SKILL.md"), 'w', encoding='utf-8') as f:
         f.write(skill_md)
 
-    # 写入工具脚本
-    tool_count = 0
-    if tools:
-        for t in tools:
-            t_name = _sanitize_name(t.get("name", ""))
-            if not t_name:
-                continue
-            t_content = t.get("content", {})
-            with open(os.path.join(scripts_dir, f"{t_name}.json"), 'w', encoding='utf-8') as f:
-                json.dump(t_content, f, ensure_ascii=False, indent=2)
-            tool_count += 1
+    # 写入工具脚本（.py 源码；工具 schema 由 AST 自动解析生成）
+    for t_name, code in prepared:
+        with open(os.path.join(scripts_dir, f"{t_name}.py"), 'w', encoding='utf-8') as f:
+            f.write(code)
 
     return {
         "success": True,
-        "message": f"Skill '{safe_name}' 创建成功，包含 {tool_count} 个工具",
+        "message": f"Skill '{safe_name}' 创建成功，包含 {len(prepared)} 个工具",
         "path": skill_dir,
         # 表同步结果（磁盘是真相源，表是索引；同步失败不影响创建本身）
         "db_sync": _sync_to_db(user_id, safe_name),
@@ -194,22 +255,21 @@ def update_user_skill(user_id: int, name: str, skill_md: str = None, tools: list
         updated.append("SKILL.md")
 
     if tools is not None:
+        # 先整体校验再清目录：写盘失败留下「脚本被清空」的半成品比更新失败更难查
+        # （2026-10-23 删除事故的同款教训：先破坏、后失败 = 数据丢失）
+        prepared, err = _prepare_scripts(tools)
+        if err:
+            logger.warning(f"更新 Skill 脚本校验未通过 (user={user_id}, name={safe_name}): {err}")
+            return {"success": False, "message": err}
         scripts_dir = os.path.join(skill_dir, "scripts")
-        # 清空旧脚本
         if os.path.isdir(scripts_dir):
             shutil.rmtree(scripts_dir)
         os.makedirs(scripts_dir, exist_ok=True)
 
-        tool_count = 0
-        for t in tools:
-            t_name = _sanitize_name(t.get("name", ""))
-            if not t_name:
-                continue
-            t_content = t.get("content", {})
-            with open(os.path.join(scripts_dir, f"{t_name}.json"), 'w', encoding='utf-8') as f:
-                json.dump(t_content, f, ensure_ascii=False, indent=2)
-            tool_count += 1
-        updated.append(f"{tool_count} 个工具脚本")
+        for t_name, code in prepared:
+            with open(os.path.join(scripts_dir, f"{t_name}.py"), 'w', encoding='utf-8') as f:
+                f.write(code)
+        updated.append(f"{len(prepared)} 个工具脚本")
 
     if not updated:
         return {"success": False, "message": "未提供任何更新内容"}
@@ -404,6 +464,23 @@ def cleanup_all_trashed_skills(retention_days: int = None, dry_run: bool = False
     return {"users": users, "removed": total_removed, "detail": detail}
 
 
+def _parse_frontmatter(content: str) -> tuple:
+    """从 SKILL.md 拆出 frontmatter 字典与正文。
+
+    返回 (fm: dict, body: str)。没有 frontmatter 时 fm 为空字典、body 为原文。
+    """
+    m = _FRONTMATTER_RE.match(content or "")
+    if not m:
+        return {}, (content or "").strip()
+    fm = {}
+    for line in m.group(1).splitlines():
+        if ":" not in line:
+            continue
+        k, v = line.split(":", 1)
+        fm[k.strip()] = v.strip()
+    return fm, m.group(2).strip()
+
+
 def list_user_skills(user_id: int) -> dict:
     """列出用户的所有 Skill
 
@@ -432,16 +509,34 @@ def list_user_skills(user_id: int) -> dict:
             with open(md_path, 'r', encoding='utf-8') as f:
                 md_content = f.read()
 
+        # ⚠️ 2026-10-27 事故：这里曾数 `scripts/*.json`，而落盘的是 `.py`，
+        # 于是 tool_count 永远是 0 —— 用户看到「已更新 2 个工具脚本」
+        # 但列表里显示 0 个，误以为注册链路坏了。二者必须同一判据：
+        # 只统计真能被 ScriptDef 解析成工具的文件。
         scripts_dir = os.path.join(skill_dir, "scripts")
-        tool_count = 0
+        tool_names = []
         if os.path.isdir(scripts_dir):
-            tool_count = len([f for f in os.listdir(scripts_dir)
-                              if f.endswith('.json') and not f.startswith('.')])
+            for fn in sorted(os.listdir(scripts_dir)):
+                if not fn.endswith(".py") or fn.startswith(("_", ".")):
+                    continue
+                try:
+                    from agent.skill_registry import ScriptDef
+                    ScriptDef.from_file(os.path.join(scripts_dir, fn), is_system=False)
+                    tool_names.append(fn[:-3])
+                except Exception as e:
+                    # 解析不出来的不算工具（它运行时也确实调不到），但要留痕
+                    logger.warning(f"技能 {name} 的脚本 {fn} 无法解析为工具: {e}")
+
+        # 描述只取 frontmatter 里 description 那一行。
+        # 原来截 md_content[:200] 会把 `---\nname: ...\ndescription:` 整段吞进去。
+        fm, _body = _parse_frontmatter(md_content)
+        description = fm.get("description") or "(无描述)"
 
         skills.append({
             "name": name,
-            "description": md_content[:200] if md_content else "(无描述)",
-            "tool_count": tool_count,
+            "description": description,
+            "tool_count": len(tool_names),
+            "tools": tool_names,
         })
 
     return {"skills": skills, "count": len(skills)}
@@ -471,13 +566,21 @@ def get_user_skill(user_id: int, name: str) -> dict:
     tools = []
     scripts_dir = os.path.join(skill_dir, "scripts")
     if os.path.isdir(scripts_dir):
+        # 与 create/update 的落盘格式一致：.py 源码（schema 由 AST 解析）。
+        # 原来这里是读 .json，导致 get_user_skill 对任何真实技能都回 tools=[]，
+        # 模型据此以为"技能里没有工具"，进而重复创建。
         for fname in sorted(os.listdir(scripts_dir)):
-            if not fname.endswith('.json') or fname.startswith('.'):
+            if not fname.endswith('.py') or fname.startswith(('_', '.')):
                 continue
-            with open(os.path.join(scripts_dir, fname), 'r', encoding='utf-8') as f:
-                tools.append({
-                    "name": fname[:-5],
-                    "content": json.load(f),
-                })
+            try:
+                with open(os.path.join(scripts_dir, fname), 'r', encoding='utf-8') as f:
+                    code = f.read()
+            except Exception as e:
+                logger.warning(f"读取技能脚本失败 {fname}: {e}")
+                continue
+            tools.append({
+                "name": fname[:-3],
+                "code": code,   # 字段名与 create/update 的入参对齐，便于直接回写
+            })
 
     return {"name": safe_name, "skill_md": skill_md, "tools": tools}

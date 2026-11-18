@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """回归测试总入口：一条命令跑完全部，不用记解释器差异。
 
-为什么不是「把 18 个文件合并成 1 个」：
+为什么不是「把 30 个文件合并成 1 个」：
   · 每个用例都要建**自己的临时库 / 临时技能目录**（避免污染 data/users.db）。
     挤进一个进程里，前一个用例改过的全局状态（monkeypatch、模块级缓存）会漏给下一个。
   · 依赖不同：5 个要 fastapi、1 个要 openai、2 个要 Chrome、1 个要真实沙箱子进程。
@@ -36,10 +36,12 @@ CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 NEEDS_FASTAPI = {
     "test_doc_on_demand.py", "test_image_round_isolation.py", "test_model_config.py",
     "test_skill_upload.py", "test_usage_pending.py", "test_security_fixes.py",
-    "test_memory_routes.py",
+    "test_memory_routes.py", "test_user_skill_scripts.py", "test_dual_id.py",
+    "test_users_migration.py",
 }
 NEEDS_OPENAI = {"test_usage_calibration.py"}
-NEEDS_CHROME = {"test_frontend_flows.py", "test_send_body.py"}
+NEEDS_CHROME = {"test_frontend_flows.py", "test_send_body.py", "test_msg_nav.py",
+                "test_input_keys.py"}
 # 每个用例一句话说明（新增测试时在这里补一行，否则显示「(未登记)」）
 DESC = {
     "test_loop_guard.py": "循环防护判据（含误杀场景回归）",
@@ -48,7 +50,6 @@ DESC = {
     "test_skill_sync.py": "技能磁盘↔表对账（含上传技能不被当幽灵清）",
     "test_skill_upload.py": "上传技能：结构校验 / 风险分级 / 软删",
     "test_agent_audit.py": "执行审计：脱敏 / 落盘 / 检索",
-    "test_fixes_integration.py": "跨模块集成：自伤工具隔离 + 审计轨迹",
     "test_security_fixes.py": "安全基线（XFO / MIME / 归属校验）",
     "test_model_config.py": "模型配置：全局隔离 / 编辑 / 自定义供应商",
     "test_usage_calibration.py": "用量双轨 / 图片计数 / 单价语义",
@@ -59,9 +60,27 @@ DESC = {
     "test_sandbox_compat.py": "沙箱：依赖可用 + 越权仍被拒",
     "test_send_body.py": "前端发送请求体（抓作用域错）",
     "test_frontend_flows.py": "前端主流程（真实页面 + 无头 Chrome）",
+    "test_msg_nav.py": "消息导航：刻度跳转 + 回底浮标显隐/忙碌态",
     "test_memory.py": "记忆：四段读写 / 上限 / 导入导出 / 注入",
     "test_memory_routes.py": "记忆接口：归属 / 上限 / 关≠删 / 整理三结局",
     "security_audit_admin.py": "权限溢出审计",
+    "test_user_skill_scripts.py": "用户技能脚本链路 + 审批记忆",
+    "test_block_fallbacks.py": "阻断/中断时的兜底话术（说清原因 + 内容还在 + 给下一步）",
+    "test_ctx_reset_and_model_gate.py": "/reset 上下文边界 + 模型可见性门禁",
+    "test_fetch_guard.py": "抓取的 SSRF 守卫（内网 / 本机 / 元数据服务全拒）",
+    "test_import_app.py": "主应用加载冒烟（真 import server.main）",
+    "test_prompt_tools.py": "prompt 点名的工具必须真实存在（名单从脚本反推）",
+    "test_pycompat.py": "语法兼容性（拦住只有 3.12+ 才支持的写法）",
+    "test_redis_live.py": "真实 Redis + 两个真实 PID 的跨进程审批（没起则跳过）",
+    "test_search_client.py": "搜索/抓取客户端（请求体 / 鉴权 / 错误码→人话，不联网）",
+    "test_search_runtime.py": "搜索缓存与用量计数（内存库，不联网）",
+    "test_frontend_types.py": "前端类型检查（tsc checkJs，无构建产物；没装 node 则跳过）",
+    "test_shared_state.py": "审批与信任模式跨进程共享（模拟两个 worker）",
+    "test_skill_context.py": "技能上下文注入（is_system 传染 / 上限 / 去重 / 边界）",
+    "test_user_tools.py": "用户技能工具化（前缀隔离 / 懒注册 / 跨用户拒绝）",
+    "test_dual_id.py": "双 ID：形态 / 签发收窄 / 混用静默失败 / NOT NULL 约束",
+    "test_users_migration.py": "users 表迁移：全新安装 / 存量升级保留 id / 幂等",
+    "test_input_keys.py": "输入框按键：Enter 发送 / Shift·Cmd·Ctrl·Alt+Enter 换行",
 }
 
 
@@ -152,9 +171,14 @@ def main():
         if not args.quiet:
             print(f"[{i}/{len(files)}] {f.name:32} …", end="", flush=True)
         t0 = time.time()
+        # 子进程日志写 logs/test/，不得污染生产 error.log / app.log。
+        # 很多用例故意制造错误来断言"必须被拒绝"，那些 ERROR 落到生产日志里
+        # 会被人当成真实线上故障（2026-10-28：error.log 全是 s-bad 用例产物）。
+        child_env = dict(os.environ)
+        child_env["OMNIASSIST_TEST_LOG"] = "1"
         try:
             r = subprocess.run([exe, str(f)], cwd=str(ROOT), capture_output=True,
-                               text=True, timeout=args.timeout)
+                               text=True, timeout=args.timeout, env=child_env)
             ok = r.returncode == 0
             out = (r.stdout or "") + (r.stderr or "")
         except subprocess.TimeoutExpired:

@@ -62,7 +62,7 @@ def _resolve_session_dir(user: dict, session_id: str, *, must_own: bool = True) 
 
     project_root = _get_project_root()
     uploads_root = os.path.realpath(
-        os.path.join(project_root, "document_output", str(user["id"]), "uploads")
+        os.path.join(project_root, "document_output", str(user["public_id"]), "uploads")
     )
     target = os.path.realpath(os.path.join(uploads_root, sid))
     if target != uploads_root and not target.startswith(uploads_root + os.sep):
@@ -241,7 +241,7 @@ def _safe_filename(filename: str) -> str:
 def list_all_uploads(request: Request, search: str = Query("")):
     user = get_current_user(request)
     project_root = _get_project_root()
-    uploads_root = os.path.join(project_root, "document_output", str(user["id"]), "uploads")
+    uploads_root = os.path.join(project_root, "document_output", str(user["public_id"]), "uploads")
     if not os.path.isdir(uploads_root):
         return {"files": [], "count": 0}
 
@@ -280,7 +280,7 @@ def list_all_uploads(request: Request, search: str = Query("")):
 def delete_all_upload(request: Request, path: str = Query(...)):
     user = get_current_user(request)
     project_root = _get_project_root()
-    uploads_root = os.path.join(project_root, "document_output", str(user["id"]), "uploads")
+    uploads_root = os.path.join(project_root, "document_output", str(user["public_id"]), "uploads")
 
     full_path = os.path.realpath(os.path.join(project_root, path))
     _uploads_real = os.path.realpath(uploads_root)
@@ -310,7 +310,7 @@ async def reference_files(request: Request):
         raise HTTPException(status_code=400, detail=f"一次最多引用 {MAX_UPLOAD_COUNT} 个文件")
 
     project_root = _get_project_root()
-    uploads_root = os.path.join(project_root, "document_output", str(user["id"]), "uploads")
+    uploads_root = os.path.join(project_root, "document_output", str(user["public_id"]), "uploads")
     target_dir = _resolve_session_dir(user, target_session_id)
     os.makedirs(target_dir, exist_ok=True)
 

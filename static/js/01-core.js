@@ -55,7 +55,13 @@ let state = {
   selectedCommandIdx: -1,
   currentUser: null,
   permissions: {},
-  webSearch: 'off',
+  // 联网搜索开关持久化：刷新后保持上次选择。
+  // 之前只存内存，每次刷新都静默回到「关」，而按钮又显示成「联网搜索」，
+  // 于是「我开了」和「实际没开」能同时成立 —— 排查成本极高，别改回去。
+  webSearch: (function () {
+    try { return localStorage.getItem('webSearch') === 'auto' ? 'auto' : 'off'; }
+    catch (e) { return 'off'; }
+  })(),
   thinkingMode: 'low',  // 思考模式：off(关) / low(低) / high(高)
   attachedFiles: [],
   // 当前会话已上传文件：文件名 → { path, type }。
@@ -92,8 +98,84 @@ function _loadCurrentSessionId() {
   try { return localStorage.getItem(_SID_KEY) || ''; } catch (e) { return ''; }
 }
 
-function $(sel) { return document.querySelector(sel); }
-function $$(sel) { return document.querySelectorAll(sel); }
+/**
+ * 取单个元素。
+ *
+ * @param {string} sel
+ * @returns {HTMLElement | null}
+ */
+function $(sel) { return /** @type {any} */ (document.querySelector(sel)); }
+
+/**
+ * 取多个元素（静态 NodeList）。
+ * @param {string} sel
+ * @returns {NodeListOf<HTMLElement>}
+ */
+function $$(sel) { return /** @type {any} */ (document.querySelectorAll(sel)); }
+
+/**
+ * 判断是否指定标签名的元素，收窄类型。
+ *
+ * 为什么需要：`e.target.tagName === 'IMG'` 这种写法运行时是安全的，但 TS
+ * 不会据此收窄 EventTarget，后面读 naturalWidth / closest 依然报错。
+ * 用这个函数把"判断 + 收窄"合成一步：
+ *   const img = asTag(e.target, 'IMG'); if (!img) return; img.naturalWidth
+ *
+ * @param {EventTarget | null | undefined} t
+ * @param {string} tag  大写标签名，如 'IMG'
+ * @returns {any}  命中返回该元素（调用方可自行标注具体类型），否则 null
+ */
+function asTag(t, tag) {
+  return (t && /** @type {any} */ (t).nodeType === 1
+    && /** @type {Element} */ (t).tagName === tag) ? /** @type {any} */ (t) : null;
+}
+
+/**
+ * 把事件目标收窄成元素。
+ *
+ * 为什么需要：`e.target` 的静态类型是 EventTarget，运行时不保证是元素 ——
+ * 点到按钮里的文字节点时 target 是 Text（没有 closest），点 SVG 图形时是
+ * SVGElement（有 closest 但语义不同）。原来 16 处直接 `e.target.closest(...)`
+ * 在这种情形下抛 TypeError，整个点击处理器静默失效。
+ *
+ * @param {Event} e
+ * @returns {Element | null}  不是元素时返回 null，调用方按"没命中"处理即可
+ */
+function evTarget(e) {
+  const t = e && e.target;
+  return (t && /** @type {any} */ (t).nodeType === 1) ? /** @type {Element} */ (t) : null;
+}
+
+/**
+ * 在 textarea 光标处插入文本，并保持「可撤销」。
+ *
+ * 为什么不用 `input.value = a + text + b` 这种拼法：
+ * 直接赋值会把整个撤销栈清掉（用户按 Cmd+Z 会一次性丢掉全部内容），
+ * 也不会触发 `input` 事件 —— 而输入框的自动增高、命令补全都挂在
+ * input 事件上，拼完高度不更新，多插一个换行也看不出来。
+ *
+ * `setRangeText` 会同时做对这三件事：保留撤销栈、把光标移到插入内容之后、
+ * 触发 input 事件。Safari 从 10.1 起支持，够用。
+ *
+ * @param {HTMLTextAreaElement} el
+ * @param {string} text  要插入的文本（换行传 '\n'）
+ */
+function insertTextAtCursor(el, text) {
+  if (!el) return;
+  const start = el.selectionStart != null ? el.selectionStart : el.value.length;
+  const end = el.selectionEnd != null ? el.selectionEnd : el.value.length;
+  // 'end' = 插入后光标落在文本末尾（默认 replace 会把选区一起替换掉）
+  if (typeof el.setRangeText === 'function') {
+    el.setRangeText(text, start, end, 'end');
+  } else {
+    // 兜底：老浏览器。功能可用，代价是撤销栈不连续
+    el.value = el.value.slice(0, start) + text + el.value.slice(end);
+    el.selectionStart = el.selectionEnd = start + text.length;
+  }
+  // setRangeText 在部分浏览器里不派发 input 事件，手动补一次，
+  // 保证自动增高与命令补全都能跟上。重复派发是无害的（处理器幂等）。
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+}
 
 // ===== 欢迎页（品牌 + 能力入口）=====
 // 与 index.html 的静态首屏保持一致，三处容器创建统一调用这里
@@ -141,7 +223,7 @@ function _welcomeHtml() {
 // 用事件委托，静态首屏与 JS 动态生成的欢迎页都走同一套逻辑
 function initCapCards() {
   document.addEventListener('click', (e) => {
-    const btn = e.target.closest('.cap-card');
+    const btn = evTarget(e)?.closest('.cap-card');
     if (!btn) return;
     const input = $('#chat-input');
     if (!input) return;
@@ -194,6 +276,11 @@ function showSessionContainer(sessionId) {
   }
   state.sessionContainers[sid].element.style.display = '';
   wrap.scrollTop = wrap.scrollHeight;
+  // 换了一个会话 → 刻度条要按新会话的用户消息重建。
+  // 不重置 dataset.fp 的话，两个会话的标题恰好相同时会误判成"没变化"而跳过重建。
+  const nav = $('#msg-nav');
+  if (nav) nav.dataset.fp = '';
+  scheduleMsgNavRefresh();
 }
 
 function removeSessionContainer(sessionId) {
@@ -229,14 +316,20 @@ let _switchSeqId = 0;
 function scrollToBottom() {
   const wrap = $('#chat-messages');
   wrap.scrollTop = wrap.scrollHeight;
+  // 主动滚到底了，浮标得立刻收起来 —— 只依赖 scroll 事件会慢一帧（那是异步派发的），
+  // 用户看到的是"已经到底了但箭头还挂着"。
+  refreshScrollFab();
 }
 
 function showToast(msg, type = 'info') {
   const toast = $('#toast');
+  if (!toast) return;
   toast.textContent = msg;
   toast.className = `toast ${type}`;
-  clearTimeout(toast._timeout);
-  toast._timeout = setTimeout(() => toast.classList.add('hidden'), 3000);
+  // _timeout 是挂在元素上的自定义属性（非 DOM 标准），用来清掉上一条 toast 的定时器
+  const t = /** @type {any} */ (toast);
+  clearTimeout(t._timeout);
+  t._timeout = setTimeout(() => toast.classList.add('hidden'), 3000);
 }
 
 function showConfirmDialog(title, message, confirmText = '确认', danger = true) {
@@ -284,8 +377,25 @@ function formatSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
-function formatTime(ts) {
-  const d = new Date(ts * 1000);
+// 时间显示。**同时接受秒级时间戳和 "YYYY-MM-DD HH:MM:SS" 字符串**。
+// 历史上这里只按时间戳处理（ts * 1000），而后端 created_at 后来改成了字符串，
+// 于是字符串 * 1000 = NaN → 界面显示 "Invalid Date"。这类「字段格式变了、消费方
+// 没跟上」不会抛错，只会显示错，所以统一收在一个函数里，调用方不用关心形态。
+function formatTime(value) {
+  if (value === null || value === undefined || value === '') return '';
+
+  let d;
+  const raw = String(value);
+  if (typeof value === 'number' || /^\d+$/.test(raw)) {
+    const n = Number(value);
+    d = new Date(raw.length > 10 ? n : n * 1000);   // 10 位按秒，13 位按毫秒
+  } else {
+    // 浏览器要求 T 分隔符才按本地时间解析 "2026-10-26 06:00:00"
+    d = new Date(raw.replace(' ', 'T'));
+  }
+
+  if (isNaN(d.getTime())) return raw.slice(0, 16);   // 解析不了就原样截断，不显示 Invalid Date
+
   const now = new Date();
   if (d.toDateString() === now.toDateString()) {
     return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });

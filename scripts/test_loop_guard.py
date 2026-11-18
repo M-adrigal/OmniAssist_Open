@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """loop_guard 判据单元测试。
 
-覆盖两个关键场景（都是 2026-10-23 线上事故）：
+覆盖 2026-10-23 与 2026-10-27 两轮误杀判据的回归（A~G 旧判据 + H 新调优）：
   A. 查日志式探索（参数每次都变）→ **不得**被判为空转
   B. 真重复（工具名+参数完全相同）→ **必须**被判为空转
 
@@ -132,6 +132,103 @@ def main():
     ok = stopped == 3
     print(f"  {'✓' if ok else '✗'} 旧判据仍在第 {stopped} 轮停止（期望 3）")
     all_ok &= ok
+
+    # ============================================================
+    print("\n【H】2026-10-27 调优：权限豁免 / 进展清零 / 无害工具")
+    # ============================================================
+    from agent.loop_guard import HARMLESS_TOOLS
+
+    # H1 同一权限错误：首次豁免、第 2 次硬停
+    state = new_loop_state()
+    sig_a = _call_signature("save_word", {"filename": "x"})
+    m1, _ = evaluate(state, _no_files, False, True, ["save_word"], [sig_a], None, [sig_a])
+    e1 = state["guard_events"][-1]["rule"] if state["guard_events"] else None
+    ok1 = m1 is None and e1 == "perm_absorbed"
+    m2, _ = evaluate(state, _no_files, False, True, ["save_word"], [sig_a], None, [sig_a])
+    ok1 = ok1 and m2 is not None and "两次" in m2
+    print(f"  {'✓' if ok1 else '✗'} 同一权限错误首次豁免、第 2 次硬停")
+    all_ok &= ok1
+
+    # H2 换路子：A 被拒 → 改调 B 又被拒 → 都只豁免一次；回头再试 A（第 2 次）才停
+    state = new_loop_state()
+    sig_b = _call_signature("run_command", {"command": "cat /etc/passwd"})
+    m1, _ = evaluate(state, _no_files, False, True, ["save_word"], [sig_a], None, [sig_a])
+    m2, _ = evaluate(state, _no_files, False, True, ["run_command"], [sig_b], None, [sig_b])
+    m3, _ = evaluate(state, _no_files, False, True, ["save_word"], [sig_a], None, [sig_a])
+    ok2 = m1 is None and m2 is None and m3 is not None
+    print(f"  {'✓' if ok2 else '✗'} 不同权限错误各豁免一次，回头再试同一种才停")
+    all_ok &= ok2
+
+    # H3 无签名兼容：拿不到签名时保持旧的立即硬停
+    state = new_loop_state()
+    m1, _ = evaluate(state, _no_files, False, True, ["save_word"], [sig_a], None)
+    ok3 = m1 is not None
+    print(f"  {'✓' if ok3 else '✗'} 无权限签名时退回立即硬停（兼容）")
+    all_ok &= ok3
+
+    # H4 有产出进展 → 失败计数清零（批量坏文件的误杀场景）
+    files = set()
+    state = new_loop_state(seen_files=files)
+    stopped = None
+    for i in range(12):   # 12 轮里每轮失败 1 次但都有新文件 —— 远超 8 次上限也不许停
+        files.add(f"out_{i}.txt")
+        m, _ = evaluate(state, lambda f=files: set(f), True, False,
+                        ["convert"], [f"cv{i}"], [f"cv{i}"])
+        if m:
+            stopped = i + 1
+            break
+    ok4 = stopped is None
+    print(f"  {'✓' if ok4 else '✗'} 每轮有新产出则失败计数清零（12 轮不停）")
+    all_ok &= ok4
+
+    # H5 无进展时 8 次上限仍然生效
+    state = new_loop_state()
+    stopped = None
+    for i in range(10):
+        m, _ = evaluate(state, _no_files, True, False,
+                        ["convert"], [f"cv{i}"], [f"cv{i}"])
+        if m:
+            stopped = i + 1
+            break
+    ok5 = stopped == 8
+    print(f"  {'✓' if ok5 else '✗'} 无进展时累计失败第 {stopped} 轮停止（期望 8）")
+    all_ok &= ok5
+
+    # H6 无害工具不进空转签名：每轮都查时间也不算原地打转
+    state = new_loop_state()
+    time_sig = _call_signature("get_datetime", {"format": "datetime"})
+    stopped = None
+    for i in range(5):
+        m, _ = evaluate(state, _no_files, False, False, ["get_datetime"], [time_sig])
+        if m:
+            stopped = i + 1
+            break
+    ok6 = stopped is None and all(
+        "get_datetime" not in s.split(":")[0] for r in state["recent_signatures"] for s in r)
+    print(f"  {'✓' if ok6 else '✗'} 纯无害工具轮次不触发空转（5 轮不停且不进签名）")
+    all_ok &= ok6
+
+    # H7 真重复照旧要停：无害工具 + 同一真实调用连发 3 轮
+    state = new_loop_state()
+    real_sig = _call_signature("web_search", {"query": "同一句话"})
+    stopped = None
+    for i in range(4):
+        m, _ = evaluate(state, _no_files, False, False,
+                        ["get_datetime", "web_search"], [time_sig, real_sig])
+        if m:
+            stopped = i + 1
+            break
+    ok7 = stopped == 3
+    print(f"  {'✓' if ok7 else '✗'} 真实调用连发第 {stopped} 轮仍判空转（期望 3）")
+    all_ok &= ok7
+
+    # H8 全部触发/豁免事件都进了 guard_events
+    state2 = new_loop_state()
+    evaluate(state2, _no_files, False, True, ["save_word"], [sig_a], None, [sig_a])
+    events = [e["rule"] for e in state2["guard_events"]]
+    ok8 = events == ["perm_absorbed"]
+    print(f"  {'✓' if ok8 else '✗'} 防护事件写入 guard_events 供审计（{events}）")
+    all_ok &= ok8
 
     print("\n" + "=" * 62)
     print("✓ 全部通过" if all_ok else "✗ 存在失败用例")

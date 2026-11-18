@@ -79,6 +79,8 @@
 }
 .cfg-field { margin-bottom: 4px; }
 .cfg-field input { width: 100%; }
+/* 下拉框要和输入框同宽：上面那条只命中 input，select 默认是内容宽度，会窄一截 */
+.cfg-field select { width: 100%; }
 
 .cfg-current-main {
   font-size: 15px;

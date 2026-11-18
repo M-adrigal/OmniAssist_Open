@@ -30,12 +30,14 @@ sys.modules["server.routes"] = routes_pkg
 
 # auth stub：路由只从它拿当前用户，测试里可随时切换身份
 auth_stub = types.ModuleType("server.routes.auth")
-_current = {"db_id": 1, "id": "u_admin", "user_type": "admin", "public_id": "u_admin"}
+# 与真实 get_current_user 的返回结构保持一致：只有 public_id / db_id，
+# 不再有语义含混的 "id"（那是改名前的旧键，留着会让测试放过真实的串用 bug）。
+_current = {"db_id": 1, "user_type": "admin", "public_id": "u_admin"}
 
 
 def set_current(db_id, user_type):
     global _current
-    _current = {"db_id": db_id, "id": f"u_{db_id}", "user_type": user_type,
+    _current = {"db_id": db_id, "user_type": user_type,
                 "public_id": f"u_{db_id}"}
 
 

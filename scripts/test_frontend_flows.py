@@ -542,6 +542,41 @@ BODY = r"""
       return v ? (v.textContent.indexOf('还没有内容') >= 0) : null;
     })();
 
+    // 确认弹窗必须盖在其它弹窗之上。
+    // 2026-10-28 的 bug：showConfirmDialog 用的 #modal-generic-confirm 与文件库
+    // 同为 z-index 200，而它在 index.html 里排在第 638 行、文件库在 688 行 ——
+    // 同层级下后者覆盖前者，于是点「删除文件」后确认框被列表压住，只露一角、
+    // 按钮点不到，看起来像「点了没反应」。CSS 改了但没人测过层级，所以补这一条。
+    step('确认弹窗层级', function () {
+      var cf = document.getElementById('modal-generic-confirm');
+      var cfm = document.getElementById('modal-confirm-delete');
+      var pm = document.getElementById('modal-perm-confirm');
+      var base = document.querySelector('.modal');   // 任意普通弹窗，取 .modal 的层级
+      if (!cf || !base) { out.dom.confirmZ = null; return; }
+      var z = function (el) { return el ? parseInt(getComputedStyle(el).zIndex, 10) || 0 : 0; };
+      out.dom.confirmZ = z(cf);
+      out.dom.baseModalZ = z(base);
+      out.dom.deleteUserZ = z(cfm);
+      out.dom.permConfirmZ = z(pm);
+
+      // 真实遮挡测试：把文件库和确认框同时打开，看确认框中心点是谁。
+      // 光比 z-index 数字不够 —— 父级堆叠上下文、transform 都可能改变实际结果。
+      var lib = document.getElementById('modal-cloud-files');
+      var wasLib = lib && !lib.classList.contains('hidden');
+      var wasCf = !cf.classList.contains('hidden');
+      if (lib) {
+        lib.classList.remove('hidden');
+        cf.classList.remove('hidden');
+        var box = cf.querySelector('.modal-content').getBoundingClientRect();
+        var hit = document.elementFromPoint(
+          Math.round(box.left + box.width / 2), Math.round(box.top + box.height / 2));
+        out.dom.confirmHitSelf = !!(hit && hit.closest('#modal-generic-confirm'));
+        out.dom.confirmHitEl = hit ? (hit.id || hit.className || hit.tagName) : null;
+        if (!wasCf) cf.classList.add('hidden');
+        if (!wasLib) lib.classList.add('hidden');
+      }
+    });
+
     out.stage = 'done';
     flush();
   })().catch(function (e) {
@@ -666,6 +701,18 @@ def main():
     check("审批卡片渲染出来了", d.get("approvalCard") is True, d.get("approvalCard"))
     check("产出文件卡片渲染出来了", (d.get("outputFiles") or 0) >= 1, d.get("outputFiles"))
     check("正文累积到 answerEl", "正文" in (d.get("answerText") or ""), d.get("answerText"))
+
+    # 确认类弹窗必须压住底下那个弹窗（2026-10-28：确认框被文件库压住，点不到按钮）
+    check("确认框层级高于普通弹窗",
+          (d.get("confirmZ") or 0) > (d.get("baseModalZ") or 0),
+          {"confirm": d.get("confirmZ"), "base": d.get("baseModalZ")})
+    check("删除用户 / 权限确认也一起抬高（同类用法，不能只改一个）",
+          (d.get("deleteUserZ") or 0) > (d.get("baseModalZ") or 0)
+          and (d.get("permConfirmZ") or 0) > (d.get("baseModalZ") or 0),
+          {"deleteUser": d.get("deleteUserZ"), "perm": d.get("permConfirmZ")})
+    check("打开文件库时，确认框中心点命中自己（没被列表遮住）",
+          d.get("confirmHitSelf") is True,
+          {"hit": d.get("confirmHitEl")})
 
     # status 事件（2026-10-24 之前前端完全不处理，任务被掐断时用户毫无提示）
     check("status 事件会显示状态行",
